@@ -87,9 +87,6 @@ impl PlanDocument {
 
     /// A single readable body shared by the transcript and sidebar reference.
     pub fn markdown_body(&self) -> String {
-        if let Some(markdown) = &self.markdown {
-            return markdown.clone();
-        }
         fn exhibit(value: &Exhibit, out: &mut String) {
             match value {
                 Exhibit::Code { language, text, .. } => {
@@ -172,6 +169,9 @@ impl PlanDocument {
                 }
                 claims(&claim.children, depth + 1, out);
             }
+        }
+        if let Some(markdown) = &self.markdown {
+            return markdown.clone();
         }
         let mut out = format!("# {}\n", self.title);
         if let Some(summary) = &self.summary {
@@ -1117,9 +1117,6 @@ impl PlanStore {
     /// Human-readable presentation of an exact locally generated plan request.
     /// Provider payloads and saved transcript items remain unchanged.
     pub fn response_display_text(&self, text: &str) -> Option<String> {
-        if !text.starts_with("# Plan review: ") {
-            return None;
-        }
         fn literal(text: &str) -> String {
             text.chars().fold(String::new(), |mut out, ch| {
                 if "\\`*_{}[]<>#!|".contains(ch) {
@@ -1128,6 +1125,41 @@ impl PlanStore {
                 out.push(ch);
                 out
             })
+        }
+        // JSON object order can change when saved HashMaps are restored.
+        // Compare only fenced protocol values structurally; all surrounding
+        // prose (including quoted custom answers) must still match exactly.
+        fn same_request(mut expected: &str, mut actual: &str) -> bool {
+            loop {
+                match (
+                    expected.split_once("\n```json\n"),
+                    actual.split_once("\n```json\n"),
+                ) {
+                    (Some((left, rest)), Some((right, other))) if left == right => {
+                        let (Some((json, tail)), Some((other_json, other_tail))) =
+                            (rest.split_once("\n```"), other.split_once("\n```"))
+                        else {
+                            return false;
+                        };
+                        let (Ok(value), Ok(other_value)) = (
+                            serde_json::from_str::<serde_json::Value>(json),
+                            serde_json::from_str::<serde_json::Value>(other_json),
+                        ) else {
+                            return false;
+                        };
+                        if value != other_value {
+                            return false;
+                        }
+                        expected = tail;
+                        actual = other_tail;
+                    }
+                    (None, None) => return expected == actual,
+                    _ => return false,
+                }
+            }
+        }
+        if !text.starts_with("# Plan review: ") {
+            return None;
         }
         for revision in &self.revisions {
             if !matches!(
@@ -1151,38 +1183,6 @@ impl PlanStore {
                     let _ = writeln!(payload,
                         "\nOriginal decision definitions (reference context):\n```json\n{definitions}\n```"
                     );
-                }
-            }
-            // JSON object order can change when saved HashMaps are restored.
-            // Compare only fenced protocol values structurally; all surrounding
-            // prose (including quoted custom answers) must still match exactly.
-            fn same_request(mut expected: &str, mut actual: &str) -> bool {
-                loop {
-                    match (
-                        expected.split_once("\n```json\n"),
-                        actual.split_once("\n```json\n"),
-                    ) {
-                        (Some((left, rest)), Some((right, other))) if left == right => {
-                            let (Some((json, tail)), Some((other_json, other_tail))) =
-                                (rest.split_once("\n```"), other.split_once("\n```"))
-                            else {
-                                return false;
-                            };
-                            let (Ok(value), Ok(other_value)) = (
-                                serde_json::from_str::<serde_json::Value>(json),
-                                serde_json::from_str::<serde_json::Value>(other_json),
-                            ) else {
-                                return false;
-                            };
-                            if value != other_value {
-                                return false;
-                            }
-                            expected = tail;
-                            actual = other_tail;
-                        }
-                        (None, None) => return expected == actual,
-                        _ => return false,
-                    }
                 }
             }
             if !same_request(payload.trim(), text.trim()) {
@@ -1226,7 +1226,7 @@ impl PlanStore {
             for (id, answer) in answers {
                 let decisions = definitions.document.all_decisions();
                 let decision = decisions.iter().find(|decision| decision.id == *id);
-                let label = decision.map(|d| d.prompt.as_str()).unwrap_or(id);
+                let label = decision.map_or(id.as_str(), |d| d.prompt.as_str());
                 let _ = writeln!(display, "\n**{}**\n", literal(label));
                 for line in literal(answer).lines() {
                     let _ = writeln!(display, "> {line}");

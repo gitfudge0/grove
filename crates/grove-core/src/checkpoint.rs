@@ -1,13 +1,16 @@
 //! Filesystem snapshots using private Git indexes. HEAD and the user's index are never changed.
 use serde::{Deserialize, Serialize};
+use std::io::{Read as _, Seek as _};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
-static RESTORE_RESERVATIONS: OnceLock<Mutex<Vec<(u64, Vec<PathBuf>)>>> = OnceLock::new();
+type RestoreReservations = Mutex<Vec<(u64, Vec<PathBuf>)>>;
+
+static RESTORE_RESERVATIONS: OnceLock<RestoreReservations> = OnceLock::new();
 static NEXT_RESERVATION: AtomicU64 = AtomicU64::new(1);
-fn reservations() -> &'static Mutex<Vec<(u64, Vec<PathBuf>)>> {
+fn reservations() -> &'static RestoreReservations {
     RESTORE_RESERVATIONS.get_or_init(|| Mutex::new(Vec::new()))
 }
 fn overlap(a: &Path, b: &Path) -> bool {
@@ -120,7 +123,7 @@ fn git(root: &Path, index: Option<&Path>, args: &[&str]) -> Result<Vec<u8>, Stri
     if let Some(index) = index {
         command.env("GIT_INDEX_FILE", index);
     }
-    let deadline = SEND_DEADLINE.with(|slot| slot.get());
+    let deadline = SEND_DEADLINE.with(std::cell::Cell::get);
     if deadline.is_some_and(|deadline| std::time::Instant::now() >= deadline) {
         return Err("Send-time checkpoint exceeded its time budget".into());
     }
@@ -152,7 +155,6 @@ fn git(root: &Path, index: Option<&Path>, args: &[&str]) -> Result<Vec<u8>, Stri
             }
             std::thread::sleep(std::time::Duration::from_millis(5));
         };
-        use std::io::{Read, Seek};
         let read = |mut file: std::fs::File| -> Result<Vec<u8>, String> {
             file.rewind().map_err(|e| e.to_string())?;
             let mut bytes = Vec::new();
@@ -503,7 +505,7 @@ mod tests {
         let started = std::time::Instant::now();
         assert!(capture_for_send(&[directory.path().to_path_buf()]).is_err());
         assert!(started.elapsed() < std::time::Duration::from_secs(2));
-        assert!(SEND_DEADLINE.with(|slot| slot.get()).is_none());
+        assert!(SEND_DEADLINE.with(std::cell::Cell::get).is_none());
         // No partial checkpoint escaped; a subsequent ordinary snapshot works.
         git(
             directory.path(),
@@ -548,7 +550,7 @@ mod tests {
         // Same-size writes inside one timestamp interval can match copied index
         // metadata even though their bytes differ. A workspace snapshot must
         // capture bytes rather than use that cache as its source of truth.
-        let modified = std::time::UNIX_EPOCH + std::time::Duration::from_secs(3600);
+        let modified = std::time::UNIX_EPOCH + std::time::Duration::from_hours(1);
         fs_err::File::options()
             .write(true)
             .open(root.join("tracked"))
@@ -649,7 +651,7 @@ mod tests {
         fs_err::write(root.join("link"), "regular").unwrap();
         saved.restore().unwrap();
         assert_eq!(
-            std::fs::read_link(root.join("link")).unwrap(),
+            fs_err::read_link(root.join("link")).unwrap(),
             PathBuf::from("tracked")
         );
         assert_eq!(

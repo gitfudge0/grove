@@ -149,7 +149,7 @@ fn main() -> Result<(), String> {
     connection.handle.send(Action::UpdatePlanReview {
         plan_id: "smoke".into(),
         revision_id: "r2".into(),
-        review,
+        review: Box::new(review),
     })?;
     connection.handle.send(Action::SendPlanResponse {
         plan_id: "smoke".into(),

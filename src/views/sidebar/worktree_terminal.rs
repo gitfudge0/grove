@@ -457,7 +457,7 @@ mod tests {
                     path: path.clone(),
                     archived: false,
                     worktree_dir: None,
-                    scripts: Default::default(),
+                    scripts: grove_core::storage::ProjectScripts::default(),
                 }],
                 sidebar_collapsed: true,
                 native_agents_enabled: true,
@@ -549,7 +549,7 @@ mod tests {
             draw(cx);
         }
         cx.update(|_, cx| {
-            sidebar.update(cx, |sidebar, cx| sidebar.open_worktree_terminal(&path, cx))
+            sidebar.update(cx, |sidebar, cx| sidebar.open_worktree_terminal(&path, cx));
         });
         cx.simulate_resize(gpui::size(gpui::px(760.), gpui::px(640.)));
         draw(cx);
@@ -569,7 +569,9 @@ mod tests {
             sidebar.update(cx, |sidebar, cx| {
                 sidebar.hide_worktree_terminal(&path, window, cx);
                 let (_, started, _, _) = sidebar.worktree_terminal.motion.as_mut().unwrap();
-                *started = Instant::now() - Duration::from_millis(MOTION_BASE_MS / 2);
+                *started = Instant::now()
+                    .checked_sub(Duration::from_millis(MOTION_BASE_MS / 2))
+                    .unwrap();
                 let fraction = sidebar.worktree_terminal_fraction(&path);
                 assert!(fraction > 0. && fraction < 1.);
                 sidebar.open_worktree_terminal(&path, cx);

@@ -82,7 +82,7 @@ impl Sidebar {
     ) {
         if destination == Destination::NewSession {
             if self.navigation_available() {
-                cx.emit(SidebarEvent::NewSessionRequested);
+                cx.emit(SidebarEvent::NewSession);
             }
             return;
         }
@@ -110,7 +110,6 @@ impl Sidebar {
             self.focus.focus(window, cx);
         } else if destination == Destination::Home {
             self.open_dashboard(window, cx);
-            self.focus.focus(window, cx);
         } else {
             self.destination = destination;
             self.dashboard_open = false;
@@ -183,7 +182,7 @@ impl Sidebar {
                 .debug_selector(move || id.clone())
                 .track_focus(&self.navigation_focus[index])
                 .on_click(cx.listener(move |this, _, window, cx| {
-                    if destination != Destination::NewSession {
+                    if !matches!(destination, Destination::NewSession | Destination::Home) {
                         this.navigation_focus[index].focus(window, cx);
                     }
                 }))
@@ -293,15 +292,21 @@ impl Sidebar {
             }
             if !showing_history {
                 group = group.child(
-                    self.control("session-grid", "Grid view", Action::ToggleGrid, cx)
-                        .debug_selector(|| "session-grid".into())
-                        .track_focus(&self.navigation_focus[3])
+                    self.control("sidebar-grid", "Grid view", Action::ToggleGrid, cx)
+                        .debug_selector(|| "sidebar-grid".into())
+                        .track_focus(&self.session_grid_focus)
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(|this, _, window, cx| {
+                                if this.grid_navigation_available() {
+                                    this.session_grid_focus.focus(window, cx);
+                                }
+                            }),
+                        )
                         .size(rpx(STEPPER_BTN_W))
                         .justify_center()
                         .aria_selected(self.is_grid())
-                        .when(self.is_grid(), |row| {
-                            row.bg(c::BG_HOVER()).text_color(c::FG())
-                        })
+                        .when(self.is_grid(), |row| row.text_color(c::FG()))
                         .child(icon(
                             "grid",
                             ICON_SM,
@@ -425,9 +430,19 @@ impl Sidebar {
                             .size(rpx(ICON_LG))
                             .flex_shrink_0(),
                     )
-                    .child(div().flex_1().child("Grove"))
+                    .child(div().flex_1().min_w_0().truncate().child("Grove"))
                     .child(
                         self.control("sidebar-settings", "Settings", Action::OpenSettings, cx)
+                            .debug_selector(|| "sidebar-settings".into())
+                            .track_focus(&self.sidebar_settings_focus)
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(|this, _, window, cx| {
+                                    if this.navigation_available() {
+                                        this.sidebar_settings_focus.focus(window, cx);
+                                    }
+                                }),
+                            )
                             .child(icon("cog", ICON_LG, c::FG_DIM())),
                     ),
             )
@@ -589,7 +604,7 @@ mod tests {
             projects: vec![grove_core::storage::Project {
                 name: "Example".into(),
                 path: "/grove-single-sidebar-example".into(),
-                scripts: Default::default(),
+                scripts: grove_core::storage::ProjectScripts::default(),
                 archived: false,
                 worktree_dir: None,
             }],
@@ -624,17 +639,17 @@ mod tests {
                     ("claude-record", grove_core::codex::Provider::Claude),
                 ] {
                     let saved = grove_core::codex::SavedSession {
-                        session_review: Default::default(),
-                        rich_plans: Default::default(),
-                        side_chats: Default::default(),
+                        session_review: grove_core::codex::SessionReview::default(),
+                        rich_plans: grove_core::rich_plan::PlanStore::default(),
+                        side_chats: std::collections::HashMap::default(),
                         fork_origin: None,
                         claude_resume: None,
-                        claude_subagents: Default::default(),
+                        claude_subagents: std::collections::HashMap::default(),
                         edit_checkpoints: Vec::new(),
                         pending_edit: None,
                         rewind_drafts: Vec::new(),
                         provider,
-                        composer: Default::default(),
+                        composer: grove_core::codex::ComposerSettings::default(),
                         context: None,
                         context_details: None,
                         key: key.into(),
@@ -786,30 +801,29 @@ mod tests {
                 SettingsState::update(cx, |store| store.sidebar_width = Some(width));
             });
             draw(cx);
-            let workspace = cx.debug_bounds("header-workspace").unwrap();
-            let destination = cx.debug_bounds("global-nav-new-session").unwrap();
-            let heading = cx.debug_bounds("sidebar-sessions-heading").unwrap();
-            let terminals = cx.debug_bounds("single-terminals-scroll").unwrap();
+            let navigation = cx.debug_bounds("global-navigation").unwrap();
+            let home = cx.debug_bounds("global-nav-home").unwrap();
             let history = cx.debug_bounds("global-nav-history").unwrap();
             let projects = cx.debug_bounds("global-nav-projects").unwrap();
-            let home = cx.debug_bounds("global-nav-home").unwrap();
-            assert!(workspace.bottom() <= home.top());
+            let terminals = cx.debug_bounds("single-terminals-scroll").unwrap();
+            let heading = cx.debug_bounds("sidebar-sessions-heading").unwrap();
+            let grid = cx.debug_bounds("sidebar-grid").unwrap();
+            assert!(home.top() >= gpui::px(APPBAR_TOTAL_H));
+            assert!(home.left() >= navigation.left() && home.right() <= navigation.right());
             assert!(home.bottom() <= history.top());
             assert!(history.bottom() <= projects.top());
-            assert!(projects.bottom() <= heading.top());
-            assert!(destination.left() >= heading.left());
-            assert_eq!(
-                destination.right(),
-                heading.right()
-                    - rpx(SIDEBAR_CONTENT_INSET)
-                        .to_pixels(cx.update(|window, _| window.rem_size()))
-            );
-            let group = cx.debug_bounds("session-group-worktrees").unwrap();
-            assert!(group.right() <= destination.left());
-            assert!(destination.top() >= heading.top());
-            assert!(destination.bottom() <= heading.bottom());
-            assert!(heading.bottom() <= terminals.top());
-            assert!(history.bottom() <= projects.top());
+            assert!(projects.bottom() <= terminals.top());
+            assert!(terminals.bottom() <= heading.top());
+            for selector in [
+                "session-group-false",
+                "session-group-worktrees",
+                "sidebar-grid",
+            ] {
+                let control = cx.debug_bounds(selector).unwrap();
+                assert!(control.left() >= heading.left() && control.right() <= heading.right());
+                assert!(control.top() >= heading.top() && control.bottom() <= heading.bottom());
+            }
+            assert_eq!(grid.size.width, gpui::px(STEPPER_BTN_W));
         }
         let projects = cx.debug_bounds("global-nav-projects").unwrap();
         cx.simulate_click(projects.center(), gpui::Modifiers::default());
@@ -848,7 +862,7 @@ mod tests {
                 s.open_destination(Destination::Home, window, cx);
                 assert!(s.is_collapsed(cx));
                 assert!(s.dashboard_open);
-            })
+            });
         });
     }
     #[gpui::test]
@@ -864,7 +878,7 @@ mod tests {
         cx.update(|_, cx| {
             let requests = requests.clone();
             cx.subscribe(&sidebar, move |_, event, _| {
-                if *event == SidebarEvent::NewSessionRequested {
+                if *event == SidebarEvent::NewSession {
                     requests.set(requests.get() + 1);
                 }
             })
@@ -879,10 +893,10 @@ mod tests {
         });
         cx.simulate_input("Keep my workspace draft");
         draw(cx);
-        let new_session = cx.debug_bounds("global-nav-new-session").unwrap();
+        let new_session = cx.debug_bounds("global-nav-home").unwrap();
         cx.simulate_click(new_session.center(), gpui::Modifiers::default());
         draw(cx);
-        assert_eq!(requests.get(), 1);
+        assert_eq!(requests.get(), 0);
         cx.update(|_, cx| {
             let owner = sidebar.read(cx);
             let dashboard = owner.dashboard.as_ref().unwrap();
@@ -894,7 +908,7 @@ mod tests {
                 "Keep my workspace draft"
             );
         });
-        assert!(cx.debug_bounds("dashboard-summary").is_some());
+        assert!(cx.debug_bounds("codex-composer").is_some());
     }
 
     #[gpui::test]
@@ -1027,7 +1041,7 @@ mod tests {
                 let legacy: grove_core::storage::Store =
                     serde_json::from_str(r#"{"sidebar_group_by_project":true}"#).unwrap();
                 assert_eq!(SessionGrouping::current(&legacy), SessionGrouping::Activity);
-            })
+            });
         });
     }
     #[gpui::test]
@@ -1072,7 +1086,7 @@ mod tests {
                         .sum::<usize>(),
                     2
                 );
-            })
+            });
         });
     }
     #[test]

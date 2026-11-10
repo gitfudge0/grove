@@ -607,9 +607,9 @@ mod tests {
         ]});
         let set_context = |turn: &str| {
             server.set_context(
-                crate::tasks::current(&[checklist.clone()]),
+                crate::tasks::current(std::slice::from_ref(&checklist)),
                 Some(turn.into()),
-            )
+            );
         };
         let report = |task: &str, status: &str| {
             json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"report_activity","arguments":{"id":"action","task_id":task,"status":status,"label":"Checked behavior"}}}).to_string()

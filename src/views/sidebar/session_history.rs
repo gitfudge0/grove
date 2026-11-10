@@ -507,7 +507,7 @@ impl Sidebar {
                     );
             }
         }
-        for s in records.iter() {
+        for s in &records {
             let title = s.title.as_deref().unwrap_or(&s.label);
             let selector = format!("session-history-{}", s.key);
             let row = self
@@ -536,7 +536,7 @@ impl Sidebar {
                 .child(history_card_content(title, &query, transcript_match(s, &query)));
             rows = rows.child(row);
         }
-        for s in cli_records.iter() {
+        for s in &cli_records {
             let title = s.title.as_deref().unwrap_or(&s.label);
             let selector = format!("cli-history-{}", s.key);
             let row = self

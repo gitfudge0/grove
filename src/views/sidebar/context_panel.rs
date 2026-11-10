@@ -3,6 +3,7 @@ use super::*;
 use crate::views::components::{form_action, project_field_well};
 use gpui_component::Disableable;
 use grove_core::provider::{self, ContextCategoryKind, ContextMeasurement, Provider, Status};
+use std::fmt::Write as _;
 
 const METER_H: f32 = 5.;
 const WARNING_PERCENT: u32 = 80;
@@ -217,8 +218,8 @@ impl Sidebar {
             let target = session.clone();
             cx.defer(move |cx| {
                 target.update(cx, |session, cx| {
-                    session.send(provider::Action::RefreshContext, cx)
-                })
+                    session.send(provider::Action::RefreshContext, cx);
+                });
             });
         }
         let usage = state.saved.context.filter(|u| u.window > 0);
@@ -327,7 +328,7 @@ impl Sidebar {
                     .tooltip("Measure context details")
                     .on_click(cx.listener(move |_, _, _, cx| {
                         refresh_session.update(cx, |session, cx| {
-                            session.send(provider::Action::RefreshContext, cx)
+                            session.send(provider::Action::RefreshContext, cx);
                         });
                     })),
             );
@@ -352,7 +353,7 @@ impl Sidebar {
             model.map_or(String::new(), |m| format!(" · {m}"))
         );
         if !provenance.is_empty() {
-            identity.push_str(&format!(" · {provenance}"));
+            let _ = write!(identity, " · {provenance}");
         }
         panel = panel.child(
             div()
@@ -577,7 +578,7 @@ mod tests {
         }
         let session = cx.new(|cx| crate::entities::codex_session::CodexSession::history(saved, cx));
         registry.update(cx, |registry, _| {
-            registry.attach_codex(id, session.clone(), provider::Handle::channel().0)
+            registry.attach_codex(id, session.clone(), provider::Handle::channel().0);
         });
         sidebar.selection = Some(Selection::Session(id));
         sidebar.dashboard_open = false;
@@ -742,7 +743,7 @@ mod tests {
             sidebar.update(cx, |sidebar, cx| {
                 sidebar.selection = Some(Selection::Session(first));
                 cx.notify();
-            })
+            });
         });
         cx.run_until_parked();
         cx.update(|window, cx| {
@@ -769,7 +770,7 @@ mod tests {
                     session.state.saved.context_details = None;
                     cx.notify();
                 });
-            })
+            });
         });
         cx.run_until_parked();
         cx.update(|window, cx| {
@@ -806,10 +807,10 @@ mod tests {
                     .registry
                     .clone()
                     .update(cx, |registry, _| {
-                        registry.attach_codex(first, live.clone(), handle)
+                        registry.attach_codex(first, live.clone(), handle);
                     });
                 cx.notify();
-            })
+            });
         });
         cx.run_until_parked();
         cx.update(|window, cx| {
@@ -917,7 +918,7 @@ mod tests {
             sidebar.update(cx, |sidebar, cx| {
                 sidebar.dashboard_open = true;
                 cx.notify();
-            })
+            });
         });
         cx.run_until_parked();
         cx.update(|window, cx| {

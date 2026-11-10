@@ -32,8 +32,8 @@ impl Render for NativeSideChat {
 
 fn saved(path: &str, provider: grove_core::codex::Provider) -> grove_core::codex::SavedSession {
     grove_core::codex::SavedSession {
-        session_review: Default::default(),
-                        rich_plans: Default::default(),
+        session_review: grove_core::codex::SessionReview::default(),
+                        rich_plans: grove_core::rich_plan::PlanStore::default(),
         side_chats: HashMap::from([(
             path.to_owned(),
             grove_core::codex::SavedSideChat {
@@ -50,12 +50,12 @@ fn saved(path: &str, provider: grove_core::codex::Provider) -> grove_core::codex
         )]),
         fork_origin: None,
             claude_resume: None,
-        claude_subagents: Default::default(),
+        claude_subagents: std::collections::HashMap::default(),
         edit_checkpoints: Vec::new(),
         pending_edit: None,
             rewind_drafts: Vec::new(),
         provider,
-        composer: Default::default(),
+        composer: grove_core::codex::ComposerSettings::default(),
         context: None,
             context_details: None,
         key: "side-chat-native-capture".into(),

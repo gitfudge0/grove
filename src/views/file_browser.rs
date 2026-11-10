@@ -117,7 +117,7 @@ struct Entry {
 fn read_directory(root: &Path, path: &Path) -> Result<Vec<Entry>, String> {
     let path = checked_path(root, path)?;
     let mut entries = Vec::new();
-    for item in std::fs::read_dir(path)
+    for item in fs_err::read_dir(path)
         .map_err(|e| e.to_string())?
         .take(MAX_DIRECTORY_ENTRIES + 1)
     {
@@ -190,13 +190,13 @@ fn read_content(root: &Path, path: &Path, transcript_link: bool) -> Result<Conte
     } else {
         checked_path(root, path)?
     };
-    if !std::fs::metadata(&path)
+    if !fs_err::metadata(&path)
         .map_err(|e| e.to_string())?
         .is_file()
     {
         return Err("Choose a regular file to preview.".into());
     }
-    let mut file = std::fs::File::open(&path).map_err(|e| e.to_string())?;
+    let mut file = fs_err::File::open(&path).map_err(|e| e.to_string())?;
     let metadata = file.metadata().map_err(|e| e.to_string())?;
     if !metadata.is_file() {
         return Err("Choose a regular file to preview.".into());
@@ -345,7 +345,7 @@ impl FileBrowser {
         if self.root == root {
             return;
         }
-        self.root = root.clone();
+        self.root.clone_from(&root);
         self.root_generation = self.root_generation.wrapping_add(1);
         self.generation = self.generation.wrapping_add(1);
         self.visible = false;
@@ -430,13 +430,7 @@ impl FileBrowser {
         }
         cx.notify();
     }
-    fn rows(
-        &mut self,
-        path: &Path,
-        depth: usize,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> Vec<AnyElement> {
+    fn rows(&mut self, path: &Path, depth: usize, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let Some(entries) = self.directories.get(path).cloned() else {
             return vec![div()
                 .px(rpx(SPACE_LG))
@@ -507,11 +501,11 @@ impl FileBrowser {
                 ),
             )
             .on_mouse_down(gpui::MouseButton::Left, move |_, window, cx| {
-                mouse_focus.focus(window, cx)
+                mouse_focus.focus(window, cx);
             })
             .on_click(cx.listener(move |this, _, window, cx| {
                 if directory {
-                    this.toggle_directory(path.clone(), cx)
+                    this.toggle_directory(path.clone(), cx);
                 } else {
                     this.open(
                         FileTarget {
@@ -521,14 +515,14 @@ impl FileBrowser {
                         },
                         window,
                         cx,
-                    )
+                    );
                 }
             }))
             .on_key_down(cx.listener(
                 move |this, event: &gpui::KeyDownEvent, window, cx| {
                     if matches!(event.keystroke.key.as_str(), "enter" | "space") && !event.is_held {
                         if directory {
-                            this.toggle_directory(keyboard_path.clone(), cx)
+                            this.toggle_directory(keyboard_path.clone(), cx);
                         } else {
                             this.open(
                                 FileTarget {
@@ -538,7 +532,7 @@ impl FileBrowser {
                                 },
                                 window,
                                 cx,
-                            )
+                            );
                         }
                         window.prevent_default();
                         cx.stop_propagation();
@@ -547,7 +541,7 @@ impl FileBrowser {
             ));
             rows.push(row.into_any_element());
             if directory && expanded {
-                rows.extend(self.rows(&entry.path, depth + 1, window, cx));
+                rows.extend(self.rows(&entry.path, depth + 1, cx));
             }
         }
         rows
@@ -556,7 +550,7 @@ impl FileBrowser {
         &mut self,
         project: String,
         worktree: String,
-        window: &mut Window,
+        _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         self.explorer_seen = std::time::Instant::now();
@@ -589,7 +583,7 @@ impl FileBrowser {
             }
         }
         let root = self.root.clone();
-        let rows = self.rows(&root, 0, window, cx);
+        let rows = self.rows(&root, 0, cx);
         div()
             .debug_selector(|| "file-explorer".into())
             .size_full()
@@ -821,14 +815,14 @@ impl Render for FileBrowser {
                         }
                     ) && !this.source_focus.is_focused(window)
                     {
-                        this.source_focus.focus(window, cx)
+                        this.source_focus.focus(window, cx);
                     } else if this.target.as_ref().is_some_and(|t| {
                         crate::platform::inline_html::browser_supported_path(&t.path)
                     }) && !this.browser_focus.is_focused(window)
                     {
-                        this.browser_focus.focus(window, cx)
+                        this.browser_focus.focus(window, cx);
                     } else {
-                        this.back_focus.focus(window, cx)
+                        this.back_focus.focus(window, cx);
                     }
                     window.prevent_default();
                     cx.stop_propagation();
@@ -943,7 +937,7 @@ mod tests {
         cx.update(gpui_component::init);
         let root = tempfile::tempdir().unwrap();
         let nested = root.path().join("nested");
-        std::fs::create_dir(&nested).unwrap();
+        fs_err::create_dir(&nested).unwrap();
         let (browser, cx) =
             cx.add_window_view(|window, cx| FileBrowser::new(root.path().to_owned(), window, cx));
         cx.run_until_parked();
@@ -951,7 +945,7 @@ mod tests {
             browser.update(cx, |browser, cx| {
                 browser.toggle_directory(nested.clone(), cx);
                 let _ = browser.explorer("Project".into(), "Checkout".into(), window, cx);
-            })
+            });
         });
         cx.run_until_parked();
         let first = nested.join("created.rs");
@@ -962,9 +956,9 @@ mod tests {
             (Some(&renamed), None),
         ] {
             match (before, after) {
-                (None, Some(path)) => std::fs::write(path, "fn main() {}").unwrap(),
-                (Some(old), Some(new)) => std::fs::rename(old, new).unwrap(),
-                (Some(path), None) => std::fs::remove_file(path).unwrap(),
+                (None, Some(path)) => fs_err::write(path, "fn main() {}").unwrap(),
+                (Some(old), Some(new)) => fs_err::rename(old, new).unwrap(),
+                (Some(path), None) => fs_err::remove_file(path).unwrap(),
                 _ => unreachable!(),
             }
             cx.executor()
@@ -1065,7 +1059,7 @@ mod tests {
         let first = tempfile::tempdir().unwrap();
         let second = tempfile::tempdir().unwrap();
         let file = first.path().join("first.rs");
-        std::fs::write(&file, "fn first() {}\n").unwrap();
+        fs_err::write(&file, "fn first() {}\n").unwrap();
         cx.update(gpui_component::init);
         let (browser, cx) =
             cx.add_window_view(|window, cx| FileBrowser::new(first.path().to_owned(), window, cx));
@@ -1081,7 +1075,7 @@ mod tests {
                     cx,
                 );
                 browser.set_root(second.path().to_owned(), cx);
-            })
+            });
         });
         cx.run_until_parked();
         browser.read_with(cx, |browser, _| {
@@ -1153,7 +1147,7 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let outside = tempfile::tempdir().unwrap();
         let path = outside.path().join("output.md");
-        std::fs::write(&path, "# Selected file").unwrap();
+        fs_err::write(&path, "# Selected file").unwrap();
         assert!(read_content(root.path(), &path, false).is_err());
         assert!(matches!(
             read_content(root.path(), &path, true).unwrap(),
@@ -1168,10 +1162,10 @@ mod tests {
         let outside = tempfile::NamedTempFile::new().unwrap();
         assert!(checked_path(root.path(), outside.path()).is_err());
         let binary = root.path().join("binary");
-        std::fs::write(&binary, b"a\0b").unwrap();
+        fs_err::write(&binary, b"a\0b").unwrap();
         assert!(read_content(root.path(), &binary, false).is_err());
         let large = root.path().join("large.rs");
-        let f = std::fs::File::create(&large).unwrap();
+        let f = fs_err::File::create(&large).unwrap();
         f.set_len(MAX_FILE_BYTES + 1).unwrap();
         assert!(read_content(root.path(), &large, false).is_err());
     }

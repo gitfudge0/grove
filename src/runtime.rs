@@ -794,9 +794,9 @@ impl Runtime {
             }
         };
         let saved = grove_core::codex::SavedSession {
-            session_review: Default::default(),
+            session_review: grove_core::codex::SessionReview::default(),
             rich_plans: grove_core::rich_plan::PlanStore::default(),
-            side_chats: Default::default(),
+            side_chats: HashMap::default(),
             fork_origin: None,
             claude_resume: None,
             claude_subagents: std::collections::HashMap::default(),
@@ -1593,7 +1593,7 @@ mod tests {
             (&context, &context, true),
         ] {
             cx.update(|cx|{
-                cx.set_global(SettingsState::new(grove_core::storage::Store{native_agents_enabled:true,projects:[("Primary",&primary),("Context",&context)].into_iter().map(|(name,path)|grove_core::storage::Project{name:name.into(),path:path.clone(),scripts:Default::default(),archived:false,worktree_dir:None}).collect(),..Default::default()}));
+                cx.set_global(SettingsState::new(grove_core::storage::Store{native_agents_enabled:true,projects:[("Primary",&primary),("Context",&context)].into_iter().map(|(name,path)|grove_core::storage::Project{name:name.into(),path:path.clone(),scripts:grove_core::storage::ProjectScripts::default(),archived:false,worktree_dir:None}).collect(),..Default::default()}));
                 cx.set_global(crate::zoom::CurrentPtyDims::default());
                 let runtime=cx.new(Runtime::new);
                 runtime.read(cx).projects.clone().update(cx,|service,_|service.mark_history_removal_for_test(project,worktree.then_some(path.as_str())));
@@ -1861,7 +1861,7 @@ mod tests {
             service.update(cx, |service, cx| {
                 service
                     .kill_sessions_for_project_path(root.to_str().unwrap(), cx)
-                    .unwrap()
+                    .unwrap();
             });
             assert!(runtime
                 .read(cx)
@@ -1887,7 +1887,7 @@ mod tests {
             assert!(!runtime.update(cx, |runtime, cx| runtime.spawn_wt_shell(path, cx)));
             cx.global_mut::<SettingsState>().store.projects[0].archived = false;
             runtime.read(cx).projects.clone().update(cx, |service, _| {
-                service.mark_history_removal_for_test(path, Some(path))
+                service.mark_history_removal_for_test(path, Some(path));
             });
             assert!(!runtime.update(cx, |runtime, cx| runtime.spawn_wt_shell(path, cx)));
             assert!(runtime
@@ -2282,9 +2282,9 @@ mod tests {
                 )
             });
             let saved = grove_core::codex::SavedSession {
-                session_review: Default::default(),
+                session_review: grove_core::codex::SessionReview::default(),
                 rich_plans: grove_core::rich_plan::PlanStore::default(),
-                side_chats: Default::default(),
+                side_chats: HashMap::default(),
                 fork_origin: None,
                 claude_resume: None,
                 claude_subagents: std::collections::HashMap::default(),

@@ -156,9 +156,7 @@ impl Sidebar {
                     checkout: target.path.clone(),
                     scope: entry.scope.clone()?,
                 };
-                if self.description_session(entry.session?, cx).is_none() {
-                    return None;
-                }
+                self.description_session(entry.session?, cx)?;
                 let equal = match (&source.scope, &candidate.scope) {
                     (Scope::PullRequest { .. }, Scope::PullRequest { .. }) => candidate
                         .normalized()
@@ -236,7 +234,7 @@ impl Sidebar {
                 || SavedSession::empty(new_key.clone(), provider, project.clone(), path.clone()),
                 |seed| seed.independent_conversation(new_key.clone()),
             );
-            saved.cwd = path.clone();
+            saved.cwd.clone_from(&path);
             saved.project = project;
             saved.roots.clear();
             let title = match &scope {
@@ -661,7 +659,7 @@ impl Sidebar {
                 {
                     match result {
                         Ok(Some(description)) if entry.result.as_deref() != Some(&description) => {
-                            install_result(entry, description, cx)
+                            install_result(entry, description, cx);
                         }
                         Ok(_) => {}
                         Err(error) => entry.error = Some(error),
@@ -808,7 +806,10 @@ mod tests {
             sidebar
         });
         cx.update(|_, cx| {
-            sidebar.update(cx, |sidebar, cx| sidebar.restore_session_description(cx))
+            sidebar.update(
+                cx,
+                crate::views::sidebar::Sidebar::restore_session_description,
+            );
         });
         for _ in 0..100 {
             cx.run_until_parked();
@@ -900,7 +901,7 @@ mod tests {
         });
         let target = target.unwrap();
         cx.update(|_, cx| {
-            sidebar.update(cx, |sidebar, cx| sidebar.cancel_description(&target, cx))
+            sidebar.update(cx, |sidebar, cx| sidebar.cancel_description(&target, cx));
         });
         for _ in 0..100 {
             cx.run_until_parked();

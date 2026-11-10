@@ -163,7 +163,7 @@ pub fn file_drop_overlay() -> Div {
         .text_size(rpx(TEXT_SMALL))
         .invisible()
         .cursor_default()
-        .group_drag_over::<gpui::ExternalPaths>("input-file-drop", |style| style.visible())
+        .group_drag_over::<gpui::ExternalPaths>("input-file-drop", gpui::Styled::visible)
         .child(crate::icons::icon("paperclip", ICON_SM, c::FG_DIM()))
         .child(
             div()

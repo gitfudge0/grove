@@ -758,11 +758,11 @@ impl HtmlSession {
                             })
                             .child(label.to_owned())
                             .on_mouse_down(gpui::MouseButton::Left, move |_, window, cx| {
-                                mouse_focus.focus(window, cx)
+                                mouse_focus.focus(window, cx);
                             })
                             .on_click(move |_, _, cx| {
                                 let _ = owner.update(cx, |session, cx| {
-                                    session.activate_file_link(file.clone(), browser, cx)
+                                    session.activate_file_link(file.clone(), browser, cx);
                                 });
                                 cx.stop_propagation();
                             })
@@ -775,7 +775,7 @@ impl HtmlSession {
                                             keyboard_file.clone(),
                                             browser,
                                             cx,
-                                        )
+                                        );
                                     });
                                     window.prevent_default();
                                     cx.stop_propagation();
@@ -1514,7 +1514,7 @@ impl Render for HtmlArtifact {
                         Ok(url) => {
                             crate::platform::inline_html::open_in_browser(url.to_string()).await
                         }
-                        Err(_) => Err("Invalid document path".to_owned()),
+                        Err(()) => Err("Invalid document path".to_owned()),
                     },
                     Err(error) => Err(error),
                 };

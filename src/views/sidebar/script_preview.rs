@@ -137,9 +137,10 @@ impl Sidebar {
         self.checkout_panel.stopping_runs.insert(id);
         let action = format!("run-{id}");
         let token = self.begin_panel_feedback(&run.checkout_path, &action, "Stopping run…", cx);
-        let result = run
-            .terminal
-            .update(cx, |terminal, cx| terminal.request_script_stop(cx));
+        let result = run.terminal.update(
+            cx,
+            crate::entities::terminal_session::TerminalSession::request_script_stop,
+        );
         if let Err(error) = result {
             self.checkout_panel.stopping_runs.remove(&id);
             self.finish_panel_feedback(&run.checkout_path, &action, token, None, cx);

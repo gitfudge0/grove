@@ -72,22 +72,35 @@ const HEAD_H: f32 = 36.0;
 const ROW_H: f32 = 28.0;
 // Expanded project navigation keeps session activity, identity and changes on one line.
 const HIERARCHY_INSET: f32 = SIDEBAR_CONTENT_INSET - SPACE_LG;
+#[cfg(test)]
 const HIERARCHY_GAP: f32 = 7.0;
+#[cfg(test)]
 const HIERARCHY_ICON_SLOT: f32 = 18.0;
+#[cfg(test)]
 const HIERARCHY_ICON: f32 = 15.0;
+#[cfg(test)]
 const HIERARCHY_LABEL_INSET: f32 = HIERARCHY_INSET + HIERARCHY_ICON_SLOT + HIERARCHY_GAP;
 // Three distinct leading edges: project, worktree and session.
 const WORKTREE_LEADING_INSET: f32 = HIERARCHY_INSET + SPACE_2XL;
 const SESSION_LEADING_INSET: f32 = WORKTREE_LEADING_INSET + SPACE_3XL;
+#[cfg(test)]
 const WORKTREE_GROUP_GAP: f32 = 18.0;
 const HIERARCHY_META_TEXT: f32 = TEXT_MICRO;
+#[cfg(test)]
 const HIERARCHY_TRAILING_W: f32 = 24.0;
+#[cfg(test)]
 const PROJECT_GROUP_GAP: f32 = 14.0;
+#[cfg(test)]
 const PROJECT_ROW_H: f32 = 35.0;
+#[cfg(test)]
 const PROJECT_TEXT: f32 = TEXT_TITLE;
+#[cfg(test)]
 const PROJECT_TITLE_LINE_H: f32 = 21.0;
+#[cfg(test)]
 const WORKTREE_ROW_H: f32 = ROW_H;
+#[cfg(test)]
 const WORKTREE_TITLE_LINE_H: f32 = 17.0;
+#[cfg(test)]
 const WORKTREE_ACTION_W: f32 = CHROME_CONTROL_H;
 const SESSION_ROW_H: f32 = 43.0;
 const SESSION_TREE_ROW_H: f32 = 32.0;
@@ -99,6 +112,7 @@ const SESSION_LIST_CARD_H: f32 = 78.0;
 const SESSION_LIST_HEADER_H: f32 = 20.0;
 const SESSION_LIST_TITLE_H: f32 = 20.0;
 const SESSION_LIST_FOOTER_H: f32 = 16.0;
+#[cfg(test)]
 const SESSION_FIRST_GAP: f32 = SPACE_XS;
 #[cfg(test)]
 const SESSION_SPINNER_PERIOD: Duration = Duration::from_millis(1200);
@@ -268,9 +282,10 @@ fn structured_session_status(
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum SidebarEvent {
-    NewSessionRequested,
-    SettingsRequested,
-    NewMultiProjectSessionRequested,
+    NewSession,
+    Settings,
+    #[cfg(test)]
+    NewMultiProjectSession,
 }
 #[derive(Default)]
 struct Navigation {
@@ -281,6 +296,7 @@ struct Navigation {
 enum Action {
     Destination(global_navigation::Destination),
     Select(Selection),
+    #[cfg(test)]
     ToggleProject(String),
     ToggleProjectsDestination(String),
     Mode(ViewMode),
@@ -296,11 +312,13 @@ enum Action {
     ArchivedProjects,
     Reveal(String),
     RemoveProject(String),
+    #[cfg(test)]
     ConfirmRemove(usize),
     RemoveWorktree(usize, String),
     ConfirmWorktreeRemoval,
     SkipWorktreeTeardown,
     DismissWorktreeRemoval,
+    #[cfg(test)]
     Launch(usize, String, Agent),
     RunScript(String, String),
     RunNamedScript(String, String, String),
@@ -332,6 +350,7 @@ enum Action {
     AddTerminal,
     OpenSettings,
     UpdateApp,
+    #[cfg(test)]
     NewMultiProjectSession,
     ToggleSidebar,
     ToggleGrid,
@@ -347,6 +366,28 @@ enum Action {
     CloseHome(SessionId),
     ConfirmHome(SessionId),
     Cancel,
+}
+impl Action {
+    fn is_fixture_launch(&self) -> bool {
+        #[cfg(test)]
+        {
+            matches!(self, Self::Launch(..))
+        }
+        #[cfg(not(test))]
+        {
+            false
+        }
+    }
+    fn is_fixture_remove(&self) -> bool {
+        #[cfg(test)]
+        {
+            matches!(self, Self::ConfirmRemove(_))
+        }
+        #[cfg(not(test))]
+        {
+            false
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -501,7 +542,10 @@ pub struct Sidebar {
     history_canvas_destination: global_navigation::Destination,
     navigation_transition: Option<(Instant, f32, f32)>,
     navigation_width_override: Option<f32>,
-    navigation_focus: [FocusHandle; 4],
+    navigation_focus: [FocusHandle; 3],
+    session_grid_focus: FocusHandle,
+    grid_blocked_by_shell: bool,
+    sidebar_settings_focus: FocusHandle,
     session_history: Vec<grove_core::codex::SavedSession>,
     cli_session_history: Vec<grove_core::session_meta::ClosedCliSession>,
     session_history_loading: bool,
@@ -523,6 +567,7 @@ pub struct Sidebar {
     collapsed_projects: HashSet<String>,
     worktree_focus: HashMap<String, FocusHandle>,
     worktree_diff_focus: HashMap<String, FocusHandle>,
+    #[cfg(test)]
     hovered_worktree: Option<String>,
     session_diff_focus: HashMap<SessionId, FocusHandle>,
     session_diff_observers: HashMap<SessionId, (gpui::Subscription, gpui::Subscription)>,
@@ -760,6 +805,9 @@ impl Sidebar {
             navigation_transition: None,
             navigation_width_override: None,
             navigation_focus: std::array::from_fn(|_| cx.focus_handle().tab_stop(true)),
+            session_grid_focus: cx.focus_handle().tab_stop(true),
+            grid_blocked_by_shell: false,
+            sidebar_settings_focus: cx.focus_handle().tab_stop(true),
             session_history: Vec::new(),
             cli_session_history: Vec::new(),
             session_history_loading: false,
@@ -781,6 +829,7 @@ impl Sidebar {
             collapsed_projects: HashSet::new(),
             worktree_focus: HashMap::new(),
             worktree_diff_focus: HashMap::new(),
+            #[cfg(test)]
             hovered_worktree: None,
             session_diff_focus: HashMap::new(),
             session_diff_observers: HashMap::new(),
@@ -806,7 +855,7 @@ impl Sidebar {
             header_tasks: task_glance::HeaderTasks::default(),
             dashboard_timelines: dashboard_timeline::DashboardTimelines::default(),
             session_motion: session_motion::SessionMotion::default(),
-            session_placement: Default::default(),
+            session_placement: session_placement::SessionPlacement::default(),
             placement_timer: None,
             age_timer: None,
             #[cfg(test)]
@@ -1581,6 +1630,7 @@ impl Sidebar {
         }
         cx.notify();
     }
+    #[cfg(test)]
     fn open_menu_on_hover(&mut self, idx: usize, cx: &mut Context<Self>) {
         if self.menu == Some(idx) || self.confirmation_open() {
             return;
@@ -1771,6 +1821,7 @@ impl Sidebar {
         }
         cx.notify();
     }
+    #[cfg(test)]
     fn view_controls_with_gap(&self, gap: f32, cx: &mut Context<Self>) -> AnyElement {
         let target = if self.mode == ViewMode::Grid {
             self.last_mode
@@ -1837,6 +1888,7 @@ impl Sidebar {
             ))
             .into_any_element()
     }
+    #[cfg(test)]
     fn navigation_heading(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
         let project = self.mode == ViewMode::Project;
         let gap = if project { SPACE_SM } else { SPACE_LG };
@@ -1970,10 +2022,9 @@ impl Sidebar {
         );
         let project_diff_button = self.mode == ViewMode::Project
             && matches!(&action, Action::OpenDiff(_) | Action::OpenWorktreeDiff(_));
-        let quiet_launch_control = matches!(
-            &action,
-            Action::Launch(..) | Action::RunScript(..) | Action::RunNamedScript(..)
-        );
+        let quiet_launch_control =
+            matches!(&action, Action::RunScript(..) | Action::RunNamedScript(..));
+        let quiet_launch_control = quiet_launch_control || action.is_fixture_launch();
         let project_disclosure = matches!(
             &action,
             Action::GroupSessions(_)
@@ -1984,24 +2035,23 @@ impl Sidebar {
                 | Action::MarkActivityDone(_)
         );
         let grouping_control = matches!(&action, Action::GroupSessions(_) | Action::ToggleGrid);
+        let enabled = !matches!(&action, Action::ToggleGrid) || self.grid_navigation_available();
         let danger = matches!(action, Action::ConfirmWorktreeRemoval);
         let primary = matches!(action, Action::DismissWorktreeRemoval);
-        let confirm = matches!(
-            action,
-            Action::ConfirmClose(_) | Action::ConfirmHome(_) | Action::ConfirmRemove(_)
-        );
+        let confirm = matches!(action, Action::ConfirmClose(_) | Action::ConfirmHome(_));
+        let confirm = confirm || action.is_fixture_remove();
         let cancel = matches!(action, Action::Cancel);
         let confirming = self.confirmation_open();
         let decision = matches!(
             action,
             Action::ConfirmClose(_)
                 | Action::ConfirmHome(_)
-                | Action::ConfirmRemove(_)
                 | Action::ConfirmWorktreeRemoval
                 | Action::SkipWorktreeTeardown
                 | Action::DismissWorktreeRemoval
                 | Action::Cancel
         );
+        let decision = decision || action.is_fixture_remove();
         div()
             .id(id)
             .relative()
@@ -2011,10 +2061,21 @@ impl Sidebar {
                     .inset_0(),
             )
             .role(gpui::Role::Button)
-            .when(!confirming || decision, gpui::Styled::cursor_pointer)
-            .when(confirming && !decision, gpui::Styled::cursor_default)
+            .when(
+                enabled && (!confirming || decision),
+                gpui::Styled::cursor_pointer,
+            )
+            .when(
+                !enabled || confirming && !decision,
+                gpui::Styled::cursor_default,
+            )
+            .when(!enabled, |control| control.opacity(OPACITY_DISABLED))
             .aria_label(label.clone())
-            .tab_index(if confirming && !decision { -1 } else { 0 })
+            .tab_index(if !enabled || confirming && !decision {
+                -1
+            } else {
+                0
+            })
             .when(confirm, |d| d.track_focus(&self.confirm_focus))
             .when(cancel, |d| d.track_focus(&self.cancel_focus))
             .size(rpx(CHROME_CONTROL_H))
@@ -2026,11 +2087,11 @@ impl Sidebar {
             .rounded(rpx(RADIUS_CONTROL))
             .text_color(c::FG_DIM())
             .when(
-                (!confirming || decision) && !danger && !primary,
+                enabled && (!confirming || decision) && !danger && !primary,
                 |control| control.group("neutral-control"),
             )
             .hover(move |s| {
-                if confirming && !decision {
+                if !enabled || confirming && !decision {
                     s
                 } else if danger {
                     s.text_color(c::RED())
@@ -2043,7 +2104,9 @@ impl Sidebar {
                 }
             })
             .focus_visible(move |s| {
-                if grouping_control || hierarchy_row {
+                if !enabled {
+                    s
+                } else if grouping_control || hierarchy_row {
                     s.border_1().border_color(c::FG())
                 } else if project_session_row {
                     s.bg(if selected_session_row {
@@ -2073,14 +2136,18 @@ impl Sidebar {
             })
             .on_click(cx.listener(move |this, _, window, cx| {
                 cx.stop_propagation();
-                if matches!(
-                    &click,
-                    Action::Launch(..)
-                        | Action::RunScript(..)
-                        | Action::RunNamedScript(..)
-                        | Action::RemoveWorktree(..)
-                        | Action::HistoryFilterMenu(..)
-                ) {
+                if !enabled {
+                    return;
+                }
+                if click.is_fixture_launch()
+                    || matches!(
+                        &click,
+                        Action::RunScript(..)
+                            | Action::RunNamedScript(..)
+                            | Action::RemoveWorktree(..)
+                            | Action::HistoryFilterMenu(..)
+                    )
+                {
                     this.action_source_bounds.set(click_bounds.get());
                 }
                 #[cfg(test)]
@@ -2101,16 +2168,20 @@ impl Sidebar {
             }))
             .on_key_down(
                 cx.listener(move |this, event: &gpui::KeyDownEvent, window, cx| {
+                    if !enabled {
+                        return;
+                    }
                     if matches!(event.keystroke.key.as_str(), "enter" | "space") {
                         cx.stop_propagation();
-                        if matches!(
-                            &action,
-                            Action::Launch(..)
-                                | Action::RunScript(..)
-                                | Action::RunNamedScript(..)
-                                | Action::RemoveWorktree(..)
-                                | Action::HistoryFilterMenu(..)
-                        ) {
+                        if action.is_fixture_launch()
+                            || matches!(
+                                &action,
+                                Action::RunScript(..)
+                                    | Action::RunNamedScript(..)
+                                    | Action::RemoveWorktree(..)
+                                    | Action::HistoryFilterMenu(..)
+                            )
+                        {
                             this.action_source_bounds.set(key_bounds.get());
                         }
                         this.act(action.clone(), window, cx);
@@ -2161,11 +2232,6 @@ impl Sidebar {
                 d.bg(c::alpha(c::FG(), 0.14)).text_color(c::FG())
             })
     }
-    #[cfg(test)]
-    pub(crate) fn new_session_focus_for_test(&self) -> FocusHandle {
-        self.navigation_focus[3].clone()
-    }
-
     #[cfg(test)]
     pub(crate) fn dashboard_draft_for_test(&self, cx: &App) -> Option<String> {
         self.dashboard
@@ -2691,8 +2757,21 @@ impl Sidebar {
         self.act(Action::Mode(target), window, cx);
     }
 
+    /// Preserve Shell's modal/Settings gate after moving Grid into the sidebar.
+    /// Other destinations retain their existing independent navigation rules.
+    pub(crate) fn set_grid_blocked_by_shell(&mut self, blocked: bool, cx: &mut Context<Self>) {
+        if self.grid_blocked_by_shell != blocked {
+            self.grid_blocked_by_shell = blocked;
+            cx.notify();
+        }
+    }
+
+    fn grid_navigation_available(&self) -> bool {
+        self.navigation_available() && !self.grid_blocked_by_shell
+    }
+
     pub(crate) fn toggle_grid(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.navigation_available() {
+        if !self.grid_navigation_available() {
             return;
         }
         let target = if self.mode == ViewMode::Grid {
@@ -2949,25 +3028,24 @@ impl Sidebar {
             || self.pending_close.is_some()
             || self.pending_home_close.is_some()
             || self.pending_remove.is_some())
+            && !action.is_fixture_remove()
             && !matches!(
                 action,
-                Action::ConfirmClose(_)
-                    | Action::ConfirmHome(_)
-                    | Action::ConfirmRemove(_)
-                    | Action::Cancel
+                Action::ConfirmClose(_) | Action::ConfirmHome(_) | Action::Cancel
             )
         {
             return;
         }
         let was_project_flyout = self.project_flyout.is_some();
-        if !matches!(
-            &action,
-            Action::Launch(..)
-                | Action::Close(_)
-                | Action::FinishSession(_)
-                | Action::ConfirmClose(_)
-                | Action::Cancel
-        ) {
+        if !action.is_fixture_launch()
+            && !matches!(
+                &action,
+                Action::Close(_)
+                    | Action::FinishSession(_)
+                    | Action::ConfirmClose(_)
+                    | Action::Cancel
+            )
+        {
             self.dismiss_project_context(cx);
             self.track_project_flyout_pointer(window.mouse_position(), window, cx);
         }
@@ -3066,6 +3144,7 @@ impl Sidebar {
                 }
                 cx.notify();
             }
+            #[cfg(test)]
             Action::ToggleProject(path) => {
                 if self.project_path_is_active(&path, cx) {
                     let leaving_project_panel = self.project_panel.is_some();
@@ -3083,9 +3162,10 @@ impl Sidebar {
             Action::ArchivedProjects => {
                 self.open_project_panel(projects::Page::Archived, window, cx);
             }
+            #[cfg(test)]
             Action::NewMultiProjectSession => {
                 if self.navigation_available() {
-                    cx.emit(SidebarEvent::NewMultiProjectSessionRequested);
+                    cx.emit(SidebarEvent::NewMultiProjectSession);
                 }
             }
             Action::UpdateApp => {
@@ -3102,7 +3182,7 @@ impl Sidebar {
             Action::Destination(destination) => self.open_destination(destination, window, cx),
             Action::OpenSettings => {
                 if self.navigation_available() {
-                    cx.emit(SidebarEvent::SettingsRequested);
+                    cx.emit(SidebarEvent::Settings);
                 }
             }
             Action::EditProject(path) => {
@@ -3277,6 +3357,7 @@ impl Sidebar {
                 }
                 self.open_project_panel(projects::Page::Remove(path), window, cx);
             }
+            #[cfg(test)]
             Action::ConfirmRemove(i) => {
                 self.runtime
                     .read(cx)
@@ -3362,6 +3443,7 @@ impl Sidebar {
                     self.focus.focus(window, cx);
                 }
             }
+            #[cfg(test)]
             Action::Launch(i, path, agent) => {
                 if self.launch(i, path, agent, cx) {
                     if was_project_flyout {
@@ -3922,6 +4004,7 @@ impl Sidebar {
         let verb = match &action {
             Action::ConfirmClose(_) => "Close session",
             Action::ConfirmHome(_) => "Close terminal",
+            #[cfg(test)]
             Action::ConfirmRemove(_) => "Remove project",
             _ => "Confirm",
         };
@@ -4026,6 +4109,57 @@ impl Sidebar {
             .child(action_row);
         motion::slow(confirmation, format!("sidebar-confirmation-{verb}"), cx)
     }
+    /// Keep source-attached close dialogs mounted independently of the row's
+    /// visibility, including responsive navigation collapse and list filtering.
+    fn navigation_close_confirmation(
+        &self,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        if self.canvas_close_anchor.is_some() {
+            return None;
+        }
+        let (id, message, action, source) = if let Some(id) = self.pending_close {
+            let registry = self.runtime.read(cx).registry.read(cx);
+            let meta = registry.meta(id)?;
+            (
+                id,
+                format!(
+                    "Close {} in {}? Its process will stop. The worktree stays on disk.",
+                    meta.label, meta.project
+                ),
+                Action::ConfirmClose(id),
+                self.session_close_bounds.get(&id)?.get(),
+            )
+        } else if let Some(id) = self.pending_home_close {
+            let registry = self.runtime.read(cx).registry.read(cx);
+            let meta = registry
+                .home_terminals()
+                .iter()
+                .find(|meta| meta.id == id)?;
+            (
+                id,
+                format!(
+                    "Close {}? Its shell and running commands will stop. Files remain on disk.",
+                    meta.label
+                ),
+                Action::ConfirmHome(id),
+                self.home_close_bounds.get(&id)?.get(),
+            )
+        } else {
+            return None;
+        };
+        let popup = self.confirmation_popup(&message, action, source, window, cx);
+        Some(
+            div()
+                .id(("session-close-popup", id.raw()))
+                .absolute()
+                .debug_selector(move || format!("session-close-popup-{}", id.raw()))
+                .child(gpui::deferred(popup))
+                .into_any_element(),
+        )
+    }
+
     fn confirmation_popup(
         &self,
         label: &str,
@@ -4544,25 +4678,6 @@ impl Sidebar {
                 .child("Retry"),
             );
         }
-        if self.pending_close == Some(id) && self.canvas_close_anchor.is_none() {
-            if let Some(bounds) = self.session_close_bounds.get(&id) {
-                result = result.child(
-                    div()
-                        .id(("session-close-popup", id.raw()))
-                        .debug_selector(move || format!("session-close-popup-{}", id.raw()))
-                        .child(gpui::deferred(self.confirmation_popup(
-                            &format!(
-                        "Close {} in {}? Its process will stop. The worktree stays on disk.",
-                        meta.label, meta.project
-                    ),
-                            Action::ConfirmClose(id),
-                            bounds.get(),
-                            window,
-                            cx,
-                        ))),
-                );
-            }
-        }
         result.into_any_element()
     }
     fn project_popup(&self, idx: usize, window: &Window, cx: &mut Context<Self>) -> AnyElement {
@@ -4705,6 +4820,7 @@ impl Sidebar {
             .child(motion::fast(panel, format!("project-menu-enter-{idx}"), cx))
             .into_any_element()
     }
+    #[cfg(test)]
     fn project_tree(
         &self,
         project_filter: Option<usize>,
@@ -5395,14 +5511,6 @@ impl Sidebar {
                     .child(icon("close", ICON_XS, c::FG_DIM())),
                 ),
             );
-            if self.pending_home_close == Some(id) && self.canvas_close_anchor.is_none() {
-                if let Some(bounds) = self.home_close_bounds.get(&id) {
-                    panel = panel.child(gpui::deferred(self.confirmation_popup(
-                            &format!("Close {}? Its shell and running commands will stop. Files remain on disk.", meta.label),
-                            Action::ConfirmHome(id), bounds.get(), window, cx,
-                        )));
-                }
-            }
         }
         panel.into_any_element()
     }
@@ -5475,6 +5583,7 @@ impl Render for Sidebar {
         }
         let global_rail = self.global_rail(window, cx);
         let content = self.render_content(window, cx);
+        let navigation_close_confirmation = self.navigation_close_confirmation(window, cx);
         let confirming = self.project_decision
             || self.pending_close.is_some()
             || self.pending_home_close.is_some()
@@ -5722,6 +5831,9 @@ impl Render for Sidebar {
                         )
                     }),
             )
+            .when_some(navigation_close_confirmation, |root, popup| {
+                root.child(popup)
+            })
             .when_some(self.render_branch_peek(window, cx), |root, peek| {
                 root.child(peek)
             })
@@ -5922,12 +6034,42 @@ mod tests {
 
     struct WorkspaceHeaderFixture {
         sidebar: Entity<Sidebar>,
+        _observers: Vec<gpui::Subscription>,
+    }
+    impl WorkspaceHeaderFixture {
+        fn new(sidebar: Entity<Sidebar>, cx: &mut Context<Self>) -> Self {
+            let observers = vec![
+                cx.observe(&sidebar, |_, _, cx| cx.notify()),
+                cx.observe_global::<SettingsState>(|_, cx| cx.notify()),
+            ];
+            Self {
+                sidebar,
+                _observers: observers,
+            }
+        }
     }
     impl Render for WorkspaceHeaderFixture {
-        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-            // The workspace/update controls now belong to the actual sidebar.
-            // Mounting a second header copy would duplicate their IDs and anchors.
-            div().size_full().child(self.sidebar.clone())
+        fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            // Shell owns this shared header above the sidebar. Mount its actual
+            // control here because this component fixture does not mount Shell.
+            let header = self.sidebar.update(cx, |sidebar, cx| {
+                let width = sidebar.rail_width(window, cx);
+                (width > 0.).then(|| {
+                    div()
+                        .absolute()
+                        .top_0()
+                        .left_0()
+                        .w(rpx(width))
+                        .h(rpx(APPBAR_TOTAL_H))
+                        .px(rpx(SIDEBAR_CONTENT_INSET))
+                        .child(sidebar.header_workspace_control(cx))
+                })
+            });
+            div()
+                .size_full()
+                .relative()
+                .child(self.sidebar.clone())
+                .children(header)
         }
     }
 
@@ -6231,7 +6373,7 @@ mod tests {
         cx.update(|window, cx| {
             let requests = requests.clone();
             cx.subscribe(&sidebar, move |_, event, _| {
-                if matches!(event, SidebarEvent::NewMultiProjectSessionRequested) {
+                if matches!(event, SidebarEvent::NewMultiProjectSession) {
                     requests.set(requests.get() + 1);
                 }
             })
@@ -6634,7 +6776,7 @@ mod tests {
             Some(Selection::Project(0))
         );
         assert!(cx.debug_bounds("projects-destination").is_some());
-        assert!(cx.debug_bounds("project-0").is_some());
+        assert!(cx.debug_bounds("projects-open-0").is_some());
     }
 
     #[test]
@@ -6878,8 +7020,9 @@ mod tests {
         });
         draw(cx);
         assert!(cx.debug_bounds("home-title-2").is_some());
-        assert!(cx.debug_bounds("home-status-2").is_some());
-        assert!(cx.debug_bounds("home-launch-cwd-2").is_some());
+        let row = cx.debug_bounds("home-2").unwrap();
+        let title = cx.debug_bounds("home-title-2").unwrap();
+        assert!(title.left() >= row.left() && title.right() <= row.right());
     }
 
     #[gpui::test]
@@ -6977,7 +7120,7 @@ mod tests {
                     });
                     let fixture = cx.new(|cx| {
                         cx.observe(&sidebar, |_, _, cx| cx.notify()).detach();
-                        WorkspaceHeaderFixture { sidebar }
+                        WorkspaceHeaderFixture::new(sidebar, cx)
                     });
                     cx.new(|cx| gpui_component::Root::new(fixture, window, cx).bordered(false).bg(c::BG()))
                 }).unwrap();
@@ -7015,7 +7158,7 @@ mod tests {
             let runtime = cx.new(Runtime::new);
             let sidebar = cx.new(|cx| Sidebar::new(runtime, window, cx));
             cx.observe(&sidebar, |_, _, cx| cx.notify()).detach();
-            WorkspaceHeaderFixture { sidebar }
+            WorkspaceHeaderFixture::new(sidebar, cx)
         });
         let sidebar = fixture.read_with(cx, |fixture, _| fixture.sidebar.clone());
         draw(cx);
@@ -7071,7 +7214,7 @@ mod tests {
             cx.subscribe(&sidebar, move |_, event, _| {
                 assert!(matches!(
                     event,
-                    SidebarEvent::SettingsRequested | SidebarEvent::NewMultiProjectSessionRequested
+                    SidebarEvent::Settings | SidebarEvent::NewMultiProjectSession
                 ));
                 requests_for_event.set(requests_for_event.get() + 1);
             })
@@ -7086,7 +7229,7 @@ mod tests {
         });
         assert_eq!(requests.get(), 2);
         draw(cx);
-        assert!(cx.debug_bounds("sidebar-settings").is_none());
+        assert!(cx.debug_bounds("sidebar-settings").is_some());
     }
 
     #[test]
@@ -7779,9 +7922,7 @@ mod tests {
             for (card_id, close_id) in [
                 ("session-1", "close-session-1"),
                 ("session-2", "close-session-2"),
-            ]
-            .into_iter()
-            {
+            ] {
                 let card = cx.debug_bounds(card_id).unwrap();
                 let close = cx.debug_bounds(close_id).unwrap();
                 assert!(card.left() >= rail.left() + gpui::px(SPACE_LG - 1.0));
@@ -8950,9 +9091,9 @@ for line in sys.stdin:
                     registry.insert_meta("demo".into(), path.into(), agent)
                 });
                 let saved = grove_core::codex::SavedSession {
-                    session_review: Default::default(),
+                    session_review: grove_core::codex::SessionReview::default(),
                     rich_plans: grove_core::rich_plan::PlanStore::default(),
-                    side_chats: Default::default(),
+                    side_chats: std::collections::HashMap::default(),
                     fork_origin: None,
                     claude_resume: None,
                     claude_subagents: std::collections::HashMap::default(),
@@ -9136,9 +9277,9 @@ for line in sys.stdin:
             let (handle, _actions) = grove_core::codex::Handle::channel();
             let (_updates, receive) = std::sync::mpsc::channel();
             let saved = grove_core::codex::SavedSession {
-            session_review: Default::default(),
+            session_review: grove_core::codex::SessionReview::default(),
             rich_plans: grove_core::rich_plan::PlanStore::default(),
-            side_chats: Default::default(),
+            side_chats: std::collections::HashMap::default(),
                 fork_origin: None,
             claude_resume: None,
                 claude_subagents: std::collections::HashMap::default(),
@@ -9937,7 +10078,7 @@ for line in sys.stdin:
         let root = tempfile::tempdir().unwrap();
         let path = root.path().to_str().unwrap();
         let file = root.path().join("review.md");
-        std::fs::write(&file, "# Review").unwrap();
+        fs_err::write(&file, "# Review").unwrap();
         cx.update(|cx| {
             gpui_component::init(cx);
             cx.set_global(SettingsState::new(grove_core::storage::Store::default()));
@@ -10045,9 +10186,9 @@ for line in sys.stdin:
         let (handle, _actions) = grove_core::codex::Handle::channel();
         let (_updates, receive) = std::sync::mpsc::channel();
         let saved = grove_core::codex::SavedSession {
-            session_review: Default::default(),
+            session_review: grove_core::codex::SessionReview::default(),
             rich_plans: grove_core::rich_plan::PlanStore::default(),
-            side_chats: Default::default(),
+            side_chats: std::collections::HashMap::default(),
             fork_origin: None,
             claude_resume: None,
             claude_subagents: std::collections::HashMap::default(),
@@ -11105,6 +11246,12 @@ for line in sys.stdin:
             });
             for width in [1600., 768., 600.] {
                 cx.simulate_resize(gpui::size(gpui::px(width), gpui::px(900.)));
+                cx.update(|window, cx| {
+                    sidebar.update(cx, |sidebar, cx| {
+                        sidebar.checkout_panel.hidden = true;
+                        sidebar.toggle_session_panel(window, cx);
+                    })
+                });
                 draw(cx);
                 let ids = [
                     "sidebar-canvas",

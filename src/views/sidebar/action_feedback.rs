@@ -250,7 +250,11 @@ mod tests {
             collapse: true,
         };
         assert!(feedback.visible(now + LIFETIME));
-        assert!(feedback.visible(now + LIFETIME + COLLAPSE - Duration::from_millis(1)));
+        assert!(feedback.visible(
+            (now + LIFETIME + COLLAPSE)
+                .checked_sub(Duration::from_millis(1))
+                .unwrap()
+        ));
         assert!(!feedback.visible(now + LIFETIME + COLLAPSE));
     }
 
@@ -263,7 +267,11 @@ mod tests {
             completed: Some(now),
             collapse: false,
         };
-        assert!(feedback.visible(now + DRAW + HOLD - Duration::from_millis(1)));
+        assert!(feedback.visible(
+            (now + DRAW + HOLD)
+                .checked_sub(Duration::from_millis(1))
+                .unwrap()
+        ));
         assert!(!feedback.visible(now + DRAW + HOLD));
     }
 }

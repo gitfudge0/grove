@@ -27,7 +27,7 @@ fn wait(
     connection: &codex::Connection,
     ready: impl Fn(&Snapshot) -> bool,
 ) -> Result<Snapshot, String> {
-    let deadline = Instant::now() + Duration::from_secs(120);
+    let deadline = Instant::now() + Duration::from_mins(2);
     loop {
         if Instant::now() >= deadline {
             return Err("Timed out waiting for live rewind state".into());
@@ -51,7 +51,7 @@ fn live(provider: Provider) {
     let _environment = Environment::new(&directory.path().join("config"));
     let main = directory.path().join("project");
     let checkout = directory.path().join("worktree");
-    std::fs::create_dir(&main).unwrap();
+    fs_err::create_dir(&main).unwrap();
     for args in [
         vec!["init", "-q"],
         vec![
@@ -82,7 +82,7 @@ fn live(provider: Provider) {
         .unwrap()
         .success());
     let file = checkout.join("work");
-    std::fs::write(&file, "before first prompt").unwrap();
+    fs_err::write(&file, "before first prompt").unwrap();
     let key = grove_core::identity::random_id().unwrap();
     let saved: SavedSession = serde_json::from_value(serde_json::json!({
         "provider":provider,"key":key,"project":"Rewind live QA","cwd":checkout,"label":provider.label(),
@@ -121,7 +121,7 @@ fn live(provider: Provider) {
                 completed.rewind_files_unavailable(index)
             ));
         }
-        std::fs::write(&file, "later workspace").map_err(|e| e.to_string())?;
+        fs_err::write(&file, "later workspace").map_err(|e| e.to_string())?;
         connection
             .handle
             .send(Action::Draft("independent draft".into()))?;
@@ -142,7 +142,7 @@ fn live(provider: Provider) {
         {
             return Err("Rewind did not restore prompt and preserve draft".into());
         }
-        if std::fs::read_to_string(&file).unwrap() != "later workspace" {
+        if fs_err::read_to_string(&file).unwrap() != "later workspace" {
             return Err("Keep-files rewind changed files".into());
         }
         println!(
@@ -155,7 +155,7 @@ fn live(provider: Provider) {
             .recv_timeout(Duration::from_secs(15))
             .map_err(|e| e.to_string())?;
         let disk: SavedSession = serde_json::from_slice(
-            &std::fs::read(codex::recovery_dir().unwrap().join(format!("{key}.json")))
+            &fs_err::read(codex::recovery_dir().unwrap().join(format!("{key}.json")))
                 .map_err(|e| e.to_string())?,
         )
         .map_err(|e| e.to_string())?;
@@ -184,7 +184,7 @@ fn live(provider: Provider) {
             .as_str()
             .ok_or("Missing resent id")?
             .to_owned();
-        std::fs::write(&file, "changes after corrected turn").map_err(|e| e.to_string())?;
+        fs_err::write(&file, "changes after corrected turn").map_err(|e| e.to_string())?;
         connection.handle.send(Action::RewindMessage {
             index,
             message_id,
@@ -196,7 +196,7 @@ fn live(provider: Provider) {
         if rewound.saved.draft != corrected || !rewound.saved.items.is_empty() {
             return Err("Repeated rewind did not restore corrected prompt".into());
         }
-        if std::fs::read_to_string(&file).unwrap() != "later workspace" {
+        if fs_err::read_to_string(&file).unwrap() != "later workspace" {
             return Err("Restore-files rewind used the wrong turn checkpoint".into());
         }
         println!(

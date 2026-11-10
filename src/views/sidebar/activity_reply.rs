@@ -83,7 +83,7 @@ impl Sidebar {
                 cx.notify();
             });
             entry.insert(ActivityReply {
-                progress: Default::default(),
+                progress: std::rc::Rc::default(),
                 generation: 0,
                 closing: false,
                 motion_task: None,
@@ -95,7 +95,7 @@ impl Sidebar {
                 error: None,
                 receipt: None,
                 receipt_closing: false,
-                receipt_height: Default::default(),
+                receipt_height: std::rc::Rc::default(),
                 mode: SubmissionMode::Steer,
                 submitted_mode: SubmissionMode::Steer,
                 turn: None,
@@ -110,7 +110,9 @@ impl Sidebar {
         {
             self.close_activity_reply(old, window, cx);
         }
-        let reply = self.dashboard_timelines.replies.get_mut(&key).unwrap();
+        let Some(reply) = self.dashboard_timelines.replies.get_mut(&key) else {
+            return;
+        };
         reply.generation += 1;
         reply.closing = false;
         reply.motion_task = None;
@@ -693,7 +695,7 @@ mod tests {
     use std::sync::mpsc::Receiver;
 
     struct ReplyProbe {
-        _transport: Option<Receiver<ProviderAction>>,
+        transport: Option<Receiver<ProviderAction>>,
         provider: Provider,
         sidebar: Entity<Sidebar>,
         id: SessionId,
@@ -771,7 +773,7 @@ mod tests {
         });
         (
             ReplyProbe {
-                _transport: None,
+                transport: None,
                 provider,
                 sidebar,
                 id,
@@ -805,7 +807,7 @@ mod tests {
                         }
                     });
                     sidebar.update(cx, |sidebar, cx| {
-                        sidebar.act(Action::MarkActivityDone(id), window, cx)
+                        sidebar.act(Action::MarkActivityDone(id), window, cx);
                     });
                     assert!(sidebar
                         .read(cx)
@@ -824,7 +826,7 @@ mod tests {
                     assert_eq!(session.state.session_status(), "Ready");
                 });
                 sidebar.update(cx, |sidebar, cx| {
-                    sidebar.act(Action::MarkActivityDone(id), window, cx)
+                    sidebar.act(Action::MarkActivityDone(id), window, cx);
                 });
                 assert!(sidebar
                     .read(cx)
@@ -884,7 +886,7 @@ mod tests {
                     .input
                     .clone()
                     .update(cx, |input, cx| {
-                        input.set_value("Check narrow layout", window, cx)
+                        input.set_value("Check narrow layout", window, cx);
                     });
             });
             cx.simulate_keystrokes("tab tab tab");
@@ -934,8 +936,8 @@ mod tests {
             });
             cx.update(|window, cx| {
                 probe.read(cx).sidebar.clone().update(cx, |sidebar, cx| {
-                    sidebar.open_activity_reply(key, window, cx)
-                })
+                    sidebar.open_activity_reply(key, window, cx);
+                });
             });
             cx.simulate_keystrokes("enter");
             cx.run_until_parked();
@@ -956,7 +958,7 @@ mod tests {
                 session.update(cx, |session, cx| {
                     session.state.accepted_submission = Some(id);
                     cx.notify();
-                })
+                });
             });
             cx.run_until_parked();
             cx.update(|_, cx| {
@@ -1010,16 +1012,16 @@ mod tests {
             cx.update(|_, cx| cx.set_reduce_motion(true));
             cx.update(|window, cx| {
                 probe.read(cx).sidebar.clone().update(cx, |sidebar, cx| {
-                    sidebar.open_activity_reply(key, window, cx)
-                })
+                    sidebar.open_activity_reply(key, window, cx);
+                });
             });
             cx.update(|window, cx| {
                 probe.read(cx).sidebar.read(cx).dashboard_timelines.replies[&key]
                     .input
                     .clone()
                     .update(cx, |input, cx| {
-                        input.set_value("Steer narrow layout", window, cx)
-                    })
+                        input.set_value("Steer narrow layout", window, cx);
+                    });
             });
             cx.simulate_keystrokes("secondary-enter");
             cx.run_until_parked();
@@ -1037,7 +1039,7 @@ mod tests {
                     s.state.rejected_submission = Some(id);
                     s.state.error = Some("Turn changed".into());
                     cx.notify();
-                })
+                });
             });
             cx.run_until_parked();
             cx.update(|_, cx| {
@@ -1072,7 +1074,7 @@ mod tests {
                     s.state.queue_uncertain.push(id);
                     s.state.status = Status::Disconnected;
                     cx.notify();
-                })
+                });
             });
             cx.run_until_parked();
             cx.update(|_, cx| {
@@ -1126,7 +1128,7 @@ mod tests {
                         window.set_rem_size(gpui::px(rem));
                         let (mut probe, _, receiver) = fixture(window, cx, Provider::Codex);
                         // Keep a deterministic transport alive without starting any CLI.
-                        probe._transport = Some(receiver);
+                        probe.transport = Some(receiver);
                         let sidebar = probe.sidebar.clone();
                         let key = (1, probe.id);
                         sidebar.update(cx, |sidebar, cx| {
@@ -1138,7 +1140,7 @@ mod tests {
                                         "Also check the wrapped label at a narrow window width.",
                                         window,
                                         cx,
-                                    )
+                                    );
                                 },
                             );
                         });

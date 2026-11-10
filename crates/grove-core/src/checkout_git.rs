@@ -1,4 +1,5 @@
 //! Bounded, noninteractive Git operations for the checkout context card.
+use std::io::Write as _;
 use std::{
     fs::File,
     io::{Read, Seek, SeekFrom},
@@ -819,7 +820,6 @@ pub fn discard_tracked(path: &Path, expected: &CheckoutGitState) -> Result<(), S
     let paths = discard_tracked_paths(path, expected)?;
     let mut pathspec =
         tempfile::NamedTempFile::new().map_err(|_| "Could not prepare discard scope")?;
-    use std::io::Write as _;
     for name in paths {
         pathspec
             .write_all(format!(":(top,literal){name}\0").as_bytes())

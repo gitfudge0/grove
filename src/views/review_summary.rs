@@ -109,10 +109,6 @@ impl ReviewSummary {
         Self::parse_bounded(source, cwd, 240)
     }
     fn parse_bounded(source: &str, cwd: &Path, limit: usize) -> Self {
-        let Ok(root) = markdown::to_mdast(source, &markdown::ParseOptions::gfm()) else {
-            return Self::default();
-        };
-        let mut definitions = HashMap::new();
         fn definitions_in(node: &Node, out: &mut HashMap<String, String>) {
             if let Node::Definition(def) = node {
                 out.entry(def.identifier.clone())
@@ -124,8 +120,6 @@ impl ReviewSummary {
                 }
             }
         }
-        definitions_in(&root, &mut definitions);
-        let mut result = Self::default();
         fn visit(
             node: &Node,
             cwd: &Path,
@@ -156,6 +150,12 @@ impl ReviewSummary {
                 }
             }
         }
+        let Ok(root) = markdown::to_mdast(source, &markdown::ParseOptions::gfm()) else {
+            return Self::default();
+        };
+        let mut definitions = HashMap::new();
+        definitions_in(&root, &mut definitions);
+        let mut result = Self::default();
         visit(&root, cwd, &definitions, &mut result, limit);
         result
     }
@@ -325,7 +325,7 @@ impl ReviewSummary {
                         })
                         .clone()
                         .update(cx, |view, cx| {
-                            view.text = self.text.clone();
+                            view.text.clone_from(&self.text);
                             cx.entity()
                         }),
                 )
@@ -490,7 +490,7 @@ mod tests {
     fn artifacts() -> tempfile::TempDir {
         let dir = tempfile::tempdir().unwrap();
         for name in ["mock.html", "mock file.html", "notes.md"] {
-            std::fs::write(dir.path().join(name), "fixture").unwrap();
+            fs_err::write(dir.path().join(name), "fixture").unwrap();
         }
         dir
     }
@@ -561,9 +561,9 @@ mod tests {
             "image.PNG",
             "report.pdf",
         ] {
-            std::fs::write(dir.path().join(name), "fixture").unwrap();
+            fs_err::write(dir.path().join(name), "fixture").unwrap();
         }
-        std::fs::create_dir(dir.path().join("directory.html")).unwrap();
+        fs_err::create_dir(dir.path().join("directory.html")).unwrap();
         let summary = ReviewSummary::parse(
             "Done. [script](install.sh) [workflow](ci.yml) [source](main.rs) [line](mock.html:250) [missing](missing.pdf) [dir](directory.html) [image](image.PNG) [pdf](report.pdf) [html](mock.html#review) [web](https://example.com) [mail](mailto:test@example.com) [unsafe](javascript:alert) [anchor](#review)",
             dir.path(),
@@ -654,8 +654,9 @@ mod tests {
             // Explicit focus of the first artifact exercises its own key route.
             cx.update(|window, cx| {
                 view.update(cx, |view, cx| {
-                    view.focus["review-test:https://example.com/mock%20file.html"].focus(window, cx)
-                })
+                    view.focus["review-test:https://example.com/mock%20file.html"]
+                        .focus(window, cx);
+                });
             });
             cx.simulate_keystrokes("enter");
             assert_eq!(

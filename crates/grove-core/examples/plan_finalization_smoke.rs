@@ -11,7 +11,7 @@ fn wait(
     connection: &Connection,
     predicate: impl Fn(&Snapshot) -> bool,
 ) -> Result<Snapshot, String> {
-    let deadline = Instant::now() + Duration::from_secs(180);
+    let deadline = Instant::now() + Duration::from_mins(3);
     let mut last = "no snapshots".to_owned();
     loop {
         let snapshot = connection
@@ -129,7 +129,7 @@ fn main() -> Result<(), String> {
     connection.handle.send(Action::UpdatePlanReview {
         plan_id: "finalization-smoke".into(),
         revision_id: "r1".into(),
-        review,
+        review: Box::new(review),
     })?;
     for _ in 0..2 {
         connection.handle.send(Action::SendPlanResponse {

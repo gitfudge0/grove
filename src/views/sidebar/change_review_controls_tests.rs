@@ -80,7 +80,7 @@ fn review_controls_only_offer_real_choices_and_keyboard_selection(cx: &mut gpui:
             sidebar: sidebar.clone(),
             local: true,
             pr: false,
-            bounds: Default::default(),
+            bounds: std::rc::Rc::default(),
             drive_frames: false,
         });
         handles = Some((sidebar, fixture.clone()));
@@ -98,7 +98,7 @@ fn review_controls_only_offer_real_choices_and_keyboard_selection(cx: &mut gpui:
     cx.simulate_click(trigger.center(), gpui::Modifiers::default());
     draw(cx);
     sidebar.read_with(cx, |s, _| {
-        assert!(s.checkout_panel.change_tools.menu.is_some())
+        assert!(s.checkout_panel.change_tools.menu.is_some());
     });
     cx.simulate_keystrokes("escape");
     draw(cx);
@@ -110,14 +110,14 @@ fn review_controls_only_offer_real_choices_and_keyboard_selection(cx: &mut gpui:
     cx.simulate_keystrokes("enter");
     draw(cx);
     sidebar.read_with(cx, |s, _| {
-        assert!(s.checkout_panel.change_tools.menu.is_some())
+        assert!(s.checkout_panel.change_tools.menu.is_some());
     });
     cx.simulate_keystrokes("escape");
     cx.update(|_, cx| {
         fixture.update(cx, |f, cx| {
             f.pr = true;
             cx.notify();
-        })
+        });
     });
     draw(cx);
     assert!(cx.debug_bounds("checkout-local-tools").is_some());
@@ -137,7 +137,7 @@ fn review_controls_only_offer_real_choices_and_keyboard_selection(cx: &mut gpui:
             window.focused(cx),
             sidebar.read(cx).checkout_panel.change_tools.focus[&true],
             sidebar.read(cx).checkout_panel.change_tools.focus[&false]
-        )
+        );
     });
     cx.update(|_, cx| {
         sidebar.update(cx, |s, cx| {
@@ -185,7 +185,7 @@ fn review_controls_only_offer_real_choices_and_keyboard_selection(cx: &mut gpui:
                 busy.status.is_some(),
                 "progress remains visible outside menus"
             );
-        })
+        });
     });
 }
 
@@ -201,7 +201,7 @@ fn review_controls_linux_native_capture() {
                 .contains(".grove-artifacts/describe-parity-review/controls/")
     );
     let output = config.parent().unwrap().to_path_buf();
-    std::fs::create_dir_all(&output).unwrap();
+    fs_err::create_dir_all(&output).unwrap();
     gpui_platform::application()
         .with_assets(crate::assets::Assets)
         .run(move |cx| {
@@ -231,7 +231,7 @@ fn review_controls_linux_native_capture() {
                             sidebar: sidebar.clone(),
                             local: true,
                             pr: false,
-                            bounds: Default::default(),
+                            bounds: std::rc::Rc::default(),
                             drive_frames: true,
                         });
                         handles = Some((sidebar, fixture.clone()));

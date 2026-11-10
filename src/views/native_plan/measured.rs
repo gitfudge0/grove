@@ -90,6 +90,8 @@ struct Dependencies {
     parent: Option<grove_core::rich_plan::PlanDocument>,
     approval_error: Option<String>,
 }
+type MeasuredText = (Entity<TextViewState>, Bounds<Pixels>, usize, bool, usize);
+
 struct Measurement {
     snapshot: Rc<Value>,
     dependencies: Rc<Dependencies>,
@@ -102,7 +104,7 @@ struct Measurement {
     #[cfg(test)]
     controls: Vec<(Control, Bounds<Pixels>)>,
     replay: Vec<ProjectionPart>,
-    text: Vec<(Entity<TextViewState>, Bounds<Pixels>, usize, bool, usize)>,
+    text: Vec<MeasuredText>,
 }
 enum ProjectionPart {
     Controls(Entity<HiddenControls>),
@@ -127,7 +129,7 @@ impl Render for HiddenControls {
 }
 fn projection_parts(
     controls: &[(Control, Bounds<Pixels>)],
-    text: &[(Entity<TextViewState>, Bounds<Pixels>, usize, bool, usize)],
+    text: &[MeasuredText],
     plan: &Entity<NativePlan>,
     cx: &mut App,
 ) -> Vec<ProjectionPart> {
@@ -218,7 +220,7 @@ impl Element for Observed {
         _: Option<&GlobalElementId>,
         _: Option<&InspectorElementId>,
         bounds: Bounds<Pixels>,
-        _: &mut (),
+        (): &mut (),
         window: &mut Window,
         cx: &mut App,
     ) {
@@ -256,8 +258,8 @@ impl Element for Observed {
         _: Option<&GlobalElementId>,
         _: Option<&InspectorElementId>,
         _: Bounds<Pixels>,
-        _: &mut (),
-        _: &mut (),
+        (): &mut (),
+        (): &mut (),
         window: &mut Window,
         cx: &mut App,
     ) {
@@ -330,7 +332,7 @@ impl Element for Proxy {
         _: Option<&GlobalElementId>,
         _: Option<&InspectorElementId>,
         _: Bounds<Pixels>,
-        _: &mut (),
+        (): &mut (),
         window: &mut Window,
         cx: &mut App,
     ) {
@@ -341,8 +343,8 @@ impl Element for Proxy {
         _: Option<&GlobalElementId>,
         _: Option<&InspectorElementId>,
         _: Bounds<Pixels>,
-        _: &mut (),
-        _: &mut (),
+        (): &mut (),
+        (): &mut (),
         window: &mut Window,
         cx: &mut App,
     ) {
@@ -410,7 +412,7 @@ impl LiveText {
                     bounds: self.bounds,
                 }),
                 |window| self.element.paint(window, cx),
-            )
+            );
         });
     }
 }
@@ -452,8 +454,7 @@ fn eager_control_registration() -> bool {
 fn force_eager() -> bool {
     #[cfg(test)]
     {
-        return TEST_EAGER.with(Cell::get)
-            || std::env::var("GROVE_PERF_EAGER_PLANS").as_deref() == Ok("1");
+        TEST_EAGER.with(Cell::get) || std::env::var("GROVE_PERF_EAGER_PLANS").as_deref() == Ok("1")
     }
     #[cfg(not(test))]
     {
@@ -499,7 +500,7 @@ impl Element for Plan {
         }
         let focused = window.focused(cx);
         if projection.last_focus != focused {
-            projection.reveal = focused.clone();
+            projection.reveal.clone_from(&focused);
             projection.last_focus = focused;
         }
         let eager = force_eager()
@@ -711,7 +712,7 @@ impl Element for Plan {
         _: Option<&InspectorElementId>,
         _: Bounds<Pixels>,
         layout: &mut Layout,
-        _: &mut (),
+        (): &mut (),
         window: &mut Window,
         cx: &mut App,
     ) {
@@ -840,7 +841,7 @@ mod tests {
                 view.scroll
                     .set_offset(gpui::point(gpui::px(0.), -height - gpui::px(100.)));
                 cx.notify();
-            })
+            });
         });
         draw(&history, cx);
         MATERIALIZED.with(|n| n.set(0));
@@ -872,7 +873,7 @@ mod tests {
             plan.read(cx).session.clone().update(cx, |session, cx| {
                 session.state.model = Some("metadata-only".into());
                 cx.notify();
-            })
+            });
         });
         draw(&history, cx);
         assert_eq!(
@@ -885,7 +886,7 @@ mod tests {
             history.update(cx, |view, cx| {
                 view.width = gpui::px(380.);
                 cx.notify();
-            })
+            });
         });
         for _ in 0..3 {
             draw(&history, cx);
@@ -900,13 +901,13 @@ mod tests {
                     .size
                     .width
                     <= gpui::px(380.)
-            )
+            );
         });
         cx.update(|_, cx| {
             history.update(cx, |view, cx| {
                 view.width = gpui::px(600.);
                 cx.notify();
-            })
+            });
         });
         for _ in 0..3 {
             draw(&history, cx);
@@ -915,12 +916,12 @@ mod tests {
         let text = plan.read_with(cx, |plan, _| {
             plan.projection.borrow().active_text[0].clone()
         });
-        cx.update(|_, cx| text.update(cx, |text, cx| text.select_all(cx)));
+        cx.update(|_, cx| text.update(cx, gpui_component::text::TextViewState::select_all));
         MATERIALIZED.with(|n| n.set(0));
         draw(&history, cx);
         assert!(MATERIALIZED.with(Cell::get) > 0);
         text.read_with(cx, |text, _| assert!(!text.selected_text().is_empty()));
-        cx.update(|_, cx| text.update(cx, |text, cx| text.clear_selection(cx)));
+        cx.update(|_, cx| text.update(cx, gpui_component::text::TextViewState::clear_selection));
         draw(&history, cx);
         // Cross from an external sentinel into the last projected plan control.
         let last = plan.read_with(cx, |plan, _| {
@@ -929,9 +930,7 @@ mod tests {
                 .as_ref()
                 .unwrap()
                 .controls
-                .iter()
-                .filter(|(control, _)| control.enabled)
-                .last()
+                .iter().rfind(|(control, _)| control.enabled)
                 .unwrap()
                 .0
                 .focus
@@ -950,7 +949,7 @@ mod tests {
             assert!(
                 last.is_focused(window),
                 "reverse Tab must reach the projected last control"
-            )
+            );
         });
         for _ in 0..3 {
             draw(&history, cx);
@@ -975,13 +974,13 @@ mod tests {
             assert!(
                 history.read(cx).after.is_focused(window),
                 "forward Tab must leave plan through external sentinel"
-            )
+            );
         });
         // Restore the exact hidden control handle through the projected dispatch tree.
         cx.update(|window, cx| {
             plan.update(cx, |plan, cx| {
-                plan.projection.borrow().handles["option:access:admin"].focus(window, cx)
-            })
+                plan.projection.borrow().handles["option:access:admin"].focus(window, cx);
+            });
         });
         draw(&history, cx);
         draw(&history, cx);
@@ -990,15 +989,15 @@ mod tests {
         draw(&history, cx);
         cx.update(|window, cx| {
             plan.read_with(cx, |plan, _| {
-                assert!(plan.projection.borrow().handles["option:access:member"].is_focused(window))
-            })
+                assert!(plan.projection.borrow().handles["option:access:member"].is_focused(window));
+            });
         });
         cx.simulate_keystrokes("shift-tab");
         draw(&history, cx);
         cx.update(|window, cx| {
             plan.read_with(cx, |plan, _| {
-                assert!(plan.projection.borrow().handles["option:access:admin"].is_focused(window))
-            })
+                assert!(plan.projection.borrow().handles["option:access:admin"].is_focused(window));
+            });
         });
         let button = cx
             .debug_bounds("native-plan-option-admin")
@@ -1011,14 +1010,14 @@ mod tests {
         cx.simulate_keystrokes("space");
         cx.run_until_parked();
         plan.read_with(cx, |plan, cx| {
-            assert_eq!(plan.snapshot(cx)["review"]["answers"]["access"], "admin")
+            assert_eq!(plan.snapshot(cx)["review"]["answers"]["access"], "admin");
         });
         // A local answer changes projection identity even without session acknowledgment.
-        let before = plan.read_with(cx, |plan, cx| plan.snapshot(cx));
+        let before = plan.read_with(cx, super::super::NativePlan::snapshot);
         cx.update(|_, cx| {
             plan.update(cx, |plan, cx| {
                 plan.choose("access", "member", cx);
-            })
+            });
         });
         draw(&history, cx);
         plan.read_with(cx, |plan, cx| {
@@ -1055,7 +1054,7 @@ mod tests {
                     });
                 store.revisions.insert(0, previous);
                 cx.notify();
-            })
+            });
         });
         cx.update(|window, cx| {
             window.blur();
@@ -1067,7 +1066,7 @@ mod tests {
         for _ in 0..3 {
             draw(&history, cx);
         }
-        let own = plan.read_with(cx, |plan, cx| plan.snapshot(cx));
+        let own = plan.read_with(cx, super::super::NativePlan::snapshot);
         MATERIALIZED.with(|n| n.set(0));
         cx.update(|_, cx| {
             session.update(cx, |session, cx| {
@@ -1076,7 +1075,7 @@ mod tests {
                     .decisions[0]
                     .prompt = "Changed parent prompt".into();
                 cx.notify();
-            })
+            });
         });
         draw(&history, cx);
         assert!(
@@ -1100,18 +1099,18 @@ mod tests {
     }
     #[gpui::test]
     fn codex_offscreen_plan_preserves_controls(cx: &mut gpui::TestAppContext) {
-        exercise(cx, Provider::Codex, false)
+        exercise(cx, Provider::Codex, false);
     }
     #[gpui::test]
     fn claude_offscreen_plan_preserves_controls(cx: &mut gpui::TestAppContext) {
-        exercise(cx, Provider::Claude, false)
+        exercise(cx, Provider::Claude, false);
     }
     #[gpui::test]
     fn codex_offscreen_plan_keeps_dynamic_diagram_live(cx: &mut gpui::TestAppContext) {
-        exercise(cx, Provider::Codex, true)
+        exercise(cx, Provider::Codex, true);
     }
     #[gpui::test]
     fn claude_offscreen_plan_keeps_dynamic_diagram_live(cx: &mut gpui::TestAppContext) {
-        exercise(cx, Provider::Claude, true)
+        exercise(cx, Provider::Claude, true);
     }
 }

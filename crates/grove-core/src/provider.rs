@@ -680,12 +680,12 @@ impl SavedSession {
 
     pub fn empty(key: String, provider: Provider, project: String, cwd: String) -> Self {
         Self {
-            session_review: Default::default(),
-            rich_plans: Default::default(),
-            side_chats: Default::default(),
+            session_review: crate::provider::SessionReview::default(),
+            rich_plans: crate::rich_plan::PlanStore::default(),
+            side_chats: std::collections::HashMap::default(),
             fork_origin: None,
             claude_resume: None,
-            claude_subagents: Default::default(),
+            claude_subagents: std::collections::HashMap::default(),
             edit_checkpoints: Vec::new(),
             pending_edit: None,
             rewind_drafts: Vec::new(),
@@ -701,7 +701,7 @@ impl SavedSession {
             title_generation: None,
             roots: Vec::new(),
             thread_id: None,
-            items: Default::default(),
+            items: TranscriptItems::default(),
             work_periods: Vec::new(),
             draft: String::new(),
             draft_images: Vec::new(),
@@ -713,6 +713,7 @@ impl SavedSession {
     }
 
     /// Start an independent conversation with the current provider preferences.
+    #[must_use]
     pub fn independent_conversation(&self, key: String) -> Self {
         let mut saved = self.fresh_conversation();
         saved.key = key;
@@ -1390,10 +1391,15 @@ impl Snapshot {
         if self.review_completion() != Some(work_period) {
             return Err("This review belongs to a previous result".into());
         }
-        self.saved.session_review.reviewed_through = self.saved.work_periods
-            [self.saved.session_review.pending.as_ref().unwrap().period]
-            .end_item
-            .unwrap();
+        let reviewed_through = self
+            .saved
+            .session_review
+            .pending
+            .as_ref()
+            .and_then(|receipt| self.saved.work_periods.get(receipt.period))
+            .and_then(|period| period.end_item)
+            .ok_or("This review belongs to a previous result")?;
+        self.saved.session_review.reviewed_through = reviewed_through;
         self.saved.session_review.summary.clear();
         self.saved.session_review.pending = None;
         Ok(())
@@ -1403,18 +1409,18 @@ impl Snapshot {
         let Some(period) = self.saved.work_periods.len().checked_sub(1) else {
             return;
         };
-        if self.saved.work_periods[period].end_item.is_none() {
+        let Some(end_item) = self.saved.work_periods[period].end_item else {
             return;
-        }
+        };
         if self.saved.session_review.last_completed_period == Some(period) {
             return;
         }
         let work = &self.saved.work_periods[period];
-        for item in &self.saved.items[work.start_item..work.end_item.unwrap()] {
+        for item in &self.saved.items[work.start_item..end_item] {
             if item["type"] == "agentMessage" && item["phase"] != "commentary" {
                 let text = item_text(item);
                 if let Some(brief) = crate::review_brief::extract(&text) {
-                    self.saved.session_review.summary = brief.to_owned();
+                    brief.clone_into(&mut self.saved.session_review.summary);
                 }
             }
         }
@@ -2126,7 +2132,7 @@ impl Snapshot {
             edit_supported: false,
             can_redirect: false,
             accepted_submission: None,
-            accepted_submissions: Default::default(),
+            accepted_submissions: HashSet::default(),
             rejected_submission: None,
             queued_prompts: Vec::new(),
             queue_edit: None,
@@ -3610,7 +3616,7 @@ pub enum Action {
     UpdatePlanReview {
         plan_id: String,
         revision_id: String,
-        review: crate::rich_plan::ReviewState,
+        review: Box<crate::rich_plan::ReviewState>,
     },
     SendPlanResponse {
         plan_id: String,

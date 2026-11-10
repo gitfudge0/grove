@@ -75,7 +75,7 @@ fn file_drop_plain_inputs_keep_selection_text_support_undo_and_reject_disabled(
             view.read(cx)
                 .input
                 .clone()
-                .update(cx, |input, cx| input.set_selected_range(0..7, cx))
+                .update(cx, |input, cx| input.set_selected_range(0..7, cx));
         });
         cx.simulate_keystrokes("left");
         draw(cx);
@@ -105,8 +105,8 @@ fn file_drop_plain_inputs_keep_selection_text_support_undo_and_reject_disabled(
         cx.update(|_, cx| {
             view.update(cx, |view, cx| {
                 view.disabled = true;
-                cx.notify()
-            })
+                cx.notify();
+            });
         });
         draw(cx);
         drop_at(cx, vec!["/tmp/rejected.txt".into()], position, false);

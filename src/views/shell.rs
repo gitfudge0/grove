@@ -190,10 +190,11 @@ impl Shell {
             );
         let sidebar_events =
             cx.subscribe_in(&sidebar, window, |this, _, event, window, cx| match event {
-                super::sidebar::SidebarEvent::NewSessionRequested => {
-                    this.open_new_session(window, cx)
+                super::sidebar::SidebarEvent::NewSession => {
+                    this.open_new_session(window, cx);
                 }
-                super::sidebar::SidebarEvent::NewMultiProjectSessionRequested => {
+                #[cfg(test)]
+                super::sidebar::SidebarEvent::NewMultiProjectSession => {
                     if !this.shortcut_blocked_in(window, cx) {
                         this.sidebar
                             .update(cx, super::sidebar::Sidebar::dismiss_project_context);
@@ -201,7 +202,7 @@ impl Shell {
                             .update(cx, |launcher, cx| launcher.open_multi_project(window, cx));
                     }
                 }
-                super::sidebar::SidebarEvent::SettingsRequested => {
+                super::sidebar::SidebarEvent::Settings => {
                     this.sidebar
                         .update(cx, super::sidebar::Sidebar::dismiss_project_context);
                     this.settings
@@ -1504,6 +1505,7 @@ impl Render for Shell {
         let project_hover_blocked = self.shortcut_blocked_in(window, cx);
         self.sidebar.update(cx, |sidebar, cx| {
             sidebar.set_project_hover_blocked(project_hover_blocked, cx);
+            sidebar.set_grid_blocked_by_shell(project_hover_blocked, cx);
         });
         if !self.highlights_startup_checked
             && !self.highlights_startup_scheduled
@@ -2041,7 +2043,7 @@ mod tests {
         });
         draw(cx);
         assert!(cx.update(|_, cx| shell.read(cx).sidebar.read(cx).is_zen()));
-        assert!(cx.debug_bounds("session-grid").is_none());
+        assert!(cx.debug_bounds("session-grid-layout").is_none());
         assert!(cx.debug_bounds("projects-destination").is_some());
         cx.update(|window, cx| window.dispatch_action(Box::new(k::ToggleZen), cx));
         draw(cx);
@@ -2072,7 +2074,7 @@ mod tests {
         draw(cx);
         assert!(cx.debug_bounds("app-header").is_some());
         assert!(cx.debug_bounds("projects-destination").is_some());
-        assert!(cx.debug_bounds("session-grid").is_none());
+        assert!(cx.debug_bounds("session-grid-layout").is_none());
         cx.update(|window, cx| window.dispatch_action(Box::new(k::ToggleZen), cx));
         draw(cx);
         assert!(cx.update(|_, cx| shell.read(cx).sidebar.read(cx).is_grid()));
@@ -2197,7 +2199,7 @@ mod tests {
                 .read(cx)
                 .settings
                 .clone()
-                .update(cx, |settings, cx| settings.close(window, cx))
+                .update(cx, |settings, cx| settings.close(window, cx));
         });
         draw(cx);
         cx.update(|window, cx| {
@@ -2306,8 +2308,18 @@ mod tests {
         cx.simulate_keystrokes("space");
         draw(cx);
         cx.update(|window, _| assert!(!window.is_fullscreen()));
-        let settings = cx.debug_bounds("header-settings").unwrap();
-        cx.simulate_click(settings.center(), gpui::Modifiers::default());
+        let settings = cx.debug_bounds("sidebar-settings").unwrap();
+        cx.simulate_mouse_down(
+            settings.center(),
+            MouseButton::Left,
+            gpui::Modifiers::default(),
+        );
+        let source = cx.update(|window, cx| window.focused(cx).expect("settings source focus"));
+        cx.simulate_mouse_up(
+            settings.center(),
+            MouseButton::Left,
+            gpui::Modifiers::default(),
+        );
         draw(cx);
         assert!(cx.debug_bounds("settings-panel").is_some());
         let collapsed = cx.update(|_, cx| {
@@ -2324,13 +2336,13 @@ mod tests {
                     .store
                     .sidebar_collapsed,
                 collapsed
-            )
+            );
         });
         cx.simulate_keystrokes("escape");
         draw(cx);
         cx.update(|window, cx| {
             assert!(!shell.read(cx).settings.read(cx).is_open());
-            assert!(shell.read(cx).header_focus["header-settings"].is_focused(window));
+            assert!(source.is_focused(window));
         });
     }
 
@@ -2359,8 +2371,8 @@ mod tests {
         draw(cx);
         assert!(cx.debug_bounds("sidebar-rail").is_none());
         assert!(cx.debug_bounds("global-navigation").is_none());
-        assert!(cx.debug_bounds("header-workspace").is_none());
-        assert!(cx.debug_bounds("header-settings").is_some());
+        assert!(cx.debug_bounds("app-header").is_some());
+        assert!(cx.debug_bounds("sidebar-settings").is_none());
         assert!(cx.debug_bounds("window-close").is_some());
         assert!(cx.debug_bounds("sidebar-divider").is_none());
         cx.update(|_, cx| {
@@ -2422,7 +2434,7 @@ mod tests {
             cx.simulate_click(toggle.center(), gpui::Modifiers::default());
             draw(cx);
             assert!(cx.debug_bounds("global-navigation").is_none());
-            assert!(cx.debug_bounds("header-workspace").is_none());
+            assert!(cx.debug_bounds("app-header").is_some());
             assert_eq!(
                 f32::from(cx.debug_bounds("sidebar-canvas").unwrap().left()),
                 0.
@@ -2432,7 +2444,6 @@ mod tests {
                 "window-minimize",
                 "window-fullscreen",
                 "sidebar-toggle",
-                "header-settings",
             ] {
                 assert!(cx.debug_bounds(id).is_some(), "{id}");
             }
@@ -2447,7 +2458,7 @@ mod tests {
                     .store
                     .sidebar_width,
                 Some(300.)
-            )
+            );
         });
     }
 
@@ -2502,15 +2513,16 @@ mod tests {
     }
 
     #[gpui::test]
-    fn home_content_starts_below_one_shared_window_header(cx: &mut gpui::TestAppContext) {
+    fn home_content_uses_full_height_beside_sidebar_window_header(cx: &mut gpui::TestAppContext) {
         cx.update(init);
         let (_, cx) = cx.add_window_view(Shell::new);
         draw(cx);
         let rail = cx.debug_bounds("global-navigation").unwrap();
         let canvas = cx.debug_bounds("sidebar-canvas").unwrap();
         let header = cx.debug_bounds("app-header").unwrap();
-        assert_eq!(rail.top(), header.bottom());
-        assert_eq!(canvas.top(), header.bottom());
+        assert_eq!(rail.top(), header.top());
+        assert_eq!(canvas.top(), header.top());
+        assert!(header.right() <= canvas.left());
         assert_eq!(canvas.left(), rail.right());
         let workspace = cx
             .debug_bounds("header-workspace")
@@ -2531,12 +2543,22 @@ mod tests {
             "window-minimize",
             "window-fullscreen",
             "sidebar-toggle",
-            "header-settings",
+            "sidebar-settings",
         ] {
             assert!(cx.debug_bounds(selector).is_some(), "{selector}");
         }
         assert!(cx.debug_bounds("context-workspace").is_none());
         assert!(cx.debug_bounds("global-nav-workspace").is_none());
+    }
+
+    fn reopen_sidebar_if_fitted(cx: &mut gpui::VisualTestContext) {
+        if cx.debug_bounds("global-navigation").is_none() {
+            let toggle = cx
+                .debug_bounds("sidebar-toggle")
+                .expect("sidebar reopen control");
+            cx.simulate_click(toggle.center(), gpui::Modifiers::default());
+            draw(cx);
+        }
     }
 
     fn assert_rail_alignment(cx: &mut gpui::VisualTestContext, expected: f32) {
@@ -2548,8 +2570,8 @@ mod tests {
         let header = cx.debug_bounds("app-header").expect("window header");
         assert!((f32::from(rail.size.width) - expected).abs() <= 1.0);
         assert_eq!(rail.left(), gpui::px(0.));
-        assert_eq!(rail.top(), header.bottom());
-        assert_eq!(canvas.top(), header.bottom());
+        assert_eq!(rail.top(), header.top());
+        assert_eq!(canvas.top(), header.top());
         assert_eq!(canvas.left(), rail.right());
         assert!((f32::from(divider.right() - rail.right())).abs() <= 1.0);
         assert!(divider.left() >= rail.left());
@@ -2644,6 +2666,7 @@ mod tests {
         let (_, cx) = cx.add_window_view(Shell::new);
         cx.simulate_resize(gpui::size(gpui::px(500.0), gpui::px(800.0)));
         draw(cx);
+        reopen_sidebar_if_fitted(cx);
         assert_rail_alignment(cx, 200.0);
         cx.update(|_, cx| {
             assert_eq!(
@@ -2660,6 +2683,7 @@ mod tests {
         cx.update(|_, cx| cx.global_mut::<crate::zoom::ZoomState>().zoom = 1.5);
         cx.simulate_resize(gpui::size(gpui::px(1500.0), gpui::px(800.0)));
         draw(cx);
+        reopen_sidebar_if_fitted(cx);
         assert_rail_alignment(cx, 750.0);
         let edge = cx.debug_bounds("sidebar-divider").unwrap().center();
         cx.simulate_mouse_down(edge, MouseButton::Left, gpui::Modifiers::default());
@@ -2694,16 +2718,16 @@ mod tests {
         cx.update(init_projects);
         let (shell, cx) = cx.add_window_view(Shell::new);
         draw(cx);
-        let grid = cx.debug_bounds("header-grid").unwrap();
-        let settings = cx.debug_bounds("header-settings").unwrap();
-        assert!(grid.right() < settings.left());
+        let grid = cx.debug_bounds("sidebar-grid").unwrap();
+        let settings = cx.debug_bounds("sidebar-settings").unwrap();
+        let rail = cx.debug_bounds("global-navigation").unwrap();
+        assert!(rail.contains(&grid.center()));
+        assert!(rail.contains(&settings.center()));
+        assert!(grid.bottom() < settings.top());
         cx.simulate_click(grid.center(), gpui::Modifiers::default());
         draw(cx);
         assert!(cx.update(|_, cx| shell.read(cx).sidebar.read(cx).is_grid()));
-        cx.update(|window, cx| {
-            let focus = shell.read(cx).header_focus["header-grid"].clone();
-            focus.focus(window, cx);
-        });
+        cx.update(|window, cx| assert!(window.focused(cx).is_some()));
         cx.simulate_keystrokes("enter");
         draw(cx);
         assert!(!cx.update(|_, cx| shell.read(cx).sidebar.read(cx).is_grid()));
@@ -2712,12 +2736,16 @@ mod tests {
         assert!(cx.update(|_, cx| shell.read(cx).settings.read(cx).is_open()));
         cx.simulate_click(grid.center(), gpui::Modifiers::default());
         draw(cx);
-        assert!(!cx.update(|_, cx| shell.read(cx).sidebar.read(cx).is_grid()));
+        assert!(!cx.update(|_, cx| shell.read(cx).sidebar.read(cx).is_grid()),
+            "Grid navigation changed while Settings was open: settings_open={}, shell_blocked={}, sidebar_navigation_available={}",
+            cx.update(|_, cx| shell.read(cx).settings.read(cx).is_open()),
+            cx.update(|_, cx| shell.read(cx).shortcut_blocked(cx)),
+            cx.update(|_, cx| shell.read(cx).sidebar.read(cx).navigation_available()));
         assert!(cx.update(|_, cx| shell.read(cx).settings.read(cx).is_open()));
     }
 
     #[gpui::test]
-    fn settings_stays_in_header_across_destination_changes(cx: &mut gpui::TestAppContext) {
+    fn settings_stays_in_sidebar_footer_across_destination_changes(cx: &mut gpui::TestAppContext) {
         cx.update(init_projects);
         let (_, cx) = cx.add_window_view(Shell::new);
         draw(cx);
@@ -2730,11 +2758,13 @@ mod tests {
             cx.simulate_click(target.center(), gpui::Modifiers::default());
             draw(cx);
             let header = cx.debug_bounds("app-header").unwrap();
-            let settings = cx.debug_bounds("header-settings").unwrap();
-            assert!(header.contains(&settings.center()));
+            let settings = cx.debug_bounds("sidebar-settings").unwrap();
+            let rail = cx.debug_bounds("global-navigation").unwrap();
+            assert!(rail.contains(&settings.center()));
+            assert!(settings.top() > header.bottom());
             assert_eq!(
                 cx.debug_bounds("sidebar-canvas").unwrap().top(),
-                header.bottom()
+                header.top()
             );
         }
     }
@@ -2769,6 +2799,8 @@ mod tests {
             cx.update(|_, cx| cx.set_global(crate::zoom::ZoomState::new(zoom)));
             for width in [1280., 500., 320.] {
                 cx.simulate_resize(gpui::size(gpui::px(width), gpui::px(600.)));
+                draw(cx);
+                reopen_sidebar_if_fitted(cx);
                 let mut previous = None;
                 for fullscreen in [false, true, false] {
                     cx.update(|window, _| {
@@ -2780,16 +2812,24 @@ mod tests {
                     let header = cx.debug_bounds("app-header").unwrap();
                     let rail = cx.debug_bounds("global-navigation").unwrap();
                     let canvas = cx.debug_bounds("sidebar-canvas").unwrap();
-                    let picker = cx.debug_bounds("header-workspace").unwrap();
-                    let settings = cx.debug_bounds("header-settings").unwrap();
-                    assert_eq!(rail.top(), header.bottom());
-                    assert_eq!(canvas.top(), header.bottom());
-                    assert!(rail.contains(&picker.center()));
-                    assert!(header.contains(&settings.center()));
-                    let grid = cx.debug_bounds("header-grid").unwrap();
-                    assert!(header.contains(&grid.center()));
-                    assert!(grid.right() <= settings.left());
-                    assert!(f32::from(header.right() - settings.right()) >= SPACE_3XL * zoom);
+                    let picker = cx.debug_bounds("header-workspace");
+                    let settings = cx.debug_bounds("sidebar-settings").unwrap();
+                    let grid = cx.debug_bounds("sidebar-grid").unwrap();
+                    assert_eq!(rail.top(), header.top());
+                    assert_eq!(canvas.top(), header.top());
+                    assert!(header.right() <= canvas.left());
+                    if width / zoom >= 400. {
+                        assert!(header.contains(&picker.expect("workspace picker").center()));
+                    } else {
+                        assert!(
+                            picker.is_none(),
+                            "compact header reserves its fixed controls"
+                        );
+                    }
+                    assert!(rail.contains(&settings.center()),
+                        "Settings is outside the sidebar at {width}px/{zoom}x: rail={rail:?}, settings={settings:?}");
+                    assert!(rail.contains(&grid.center()));
+                    assert!(grid.bottom() < settings.top());
                     for selector in [
                         "window-close",
                         "window-minimize",
@@ -2798,7 +2838,7 @@ mod tests {
                     ] {
                         assert!(cx.debug_bounds(selector).is_some(), "{selector}");
                     }
-                    let geometry = (header, rail, canvas, picker, settings);
+                    let geometry = (header, rail, canvas, picker, settings, grid);
                     if let Some(prior) = previous {
                         assert_eq!(
                             geometry, prior,
@@ -2820,15 +2860,22 @@ mod tests {
             for width in [1280., 500., 320.] {
                 cx.simulate_resize(gpui::size(gpui::px(width), gpui::px(600.)));
                 draw(cx);
+                reopen_sidebar_if_fitted(cx);
                 let rail = cx.debug_bounds("global-navigation").unwrap();
-                let control = cx.debug_bounds("header-workspace").unwrap();
-                assert!(rail.contains(&control.center()));
-                assert!(control.bottom() <= cx.debug_bounds("global-nav-home").unwrap().top());
+                let control = cx.debug_bounds("header-workspace");
+                if width / zoom >= 400. {
+                    let control = control.expect("workspace picker");
+                    assert!(rail.contains(&control.center()));
+                    assert!(control.bottom() <= cx.debug_bounds("global-nav-home").unwrap().top());
+                } else {
+                    assert!(control.is_none());
+                }
             }
         }
         cx.update(|_, cx| cx.set_global(crate::zoom::ZoomState::new(1.0)));
         cx.simulate_resize(gpui::size(gpui::px(500.), gpui::px(600.)));
         draw(cx);
+        reopen_sidebar_if_fitted(cx);
         let trigger = cx.debug_bounds("header-workspace").unwrap();
         cx.simulate_click(trigger.center(), gpui::Modifiers::default());
         draw(cx);
@@ -2876,8 +2923,8 @@ mod tests {
         cx.simulate_click(project.center(), gpui::Modifiers::default());
         draw(cx);
         let menu = cx
-            .debug_bounds("project-menu-0")
-            .expect("project menu")
+            .debug_bounds("projects-manage-0")
+            .expect("project management menu")
             .center();
         cx.simulate_mouse_down(menu, MouseButton::Left, gpui::Modifiers::default());
         cx.simulate_mouse_up(menu, MouseButton::Left, gpui::Modifiers::default());
@@ -2941,7 +2988,7 @@ mod tests {
         ));
         draw(cx);
         assert!(cx.debug_bounds("statusbar").is_none());
-        let canvas = cx.debug_bounds("global-navigation").unwrap();
+        let canvas = cx.debug_bounds("sidebar-canvas").unwrap();
         assert_eq!(f32::from(canvas.bottom()), crate::WINDOW_MIN_H);
         cx.update(|_, cx| {
             shell
@@ -2956,7 +3003,7 @@ mod tests {
         let toast = cx.debug_bounds("app-toast").expect("error toast");
         assert!(f32::from(toast.right()) <= crate::WINDOW_MIN_W);
         assert!(f32::from(toast.left()) >= 0.);
-        assert_eq!(cx.debug_bounds("global-navigation").unwrap(), canvas);
+        assert_eq!(cx.debug_bounds("sidebar-canvas").unwrap(), canvas);
         cx.executor()
             .advance_clock(crate::entities::toast::Toast::ttl(
                 crate::entities::toast::ToastKind::Error,
@@ -3271,7 +3318,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn command_palette_shortcut_works_after_closing_session_without_click(
+    fn new_session_shortcut_focuses_dashboard_after_closing_session_without_click(
         cx: &mut gpui::TestAppContext,
     ) {
         cx.update(init);
@@ -3323,7 +3370,14 @@ mod tests {
         });
         cx.simulate_keystrokes(&format!("{}p", k::platform_mod_prefix()));
         draw(cx);
-        assert!(cx.update(|_, cx| shell.read(cx).launcher.read(cx).is_open()));
+        assert!(cx.debug_bounds("dashboard-summary").is_some());
+        assert!(cx.debug_bounds("worktree-launcher-panel").is_none());
+        cx.simulate_input("Continue after closing");
+        draw(cx);
+        assert_eq!(
+            cx.update(|_, cx| shell.read(cx).sidebar.read(cx).dashboard_draft_for_test(cx)),
+            Some("Continue after closing".into())
+        );
     }
 
     #[gpui::test]
@@ -3811,7 +3865,7 @@ mod tests {
         cx.update(init);
         let (shell, cx) = cx.add_window_view(Shell::new);
         draw(cx);
-        let point = cx.debug_bounds("header-settings").unwrap().center();
+        let point = cx.debug_bounds("sidebar-settings").unwrap().center();
         cx.simulate_mouse_down(point, MouseButton::Left, gpui::Modifiers::default());
         cx.simulate_mouse_up(point, MouseButton::Left, gpui::Modifiers::default());
         draw(cx);

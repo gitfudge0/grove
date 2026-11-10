@@ -56,10 +56,10 @@ fn context_measurement(data: &Value) -> Option<(provider::ContextUsage, provider
         .filter_map(|row| {
             let label = row["name"].as_str()?.to_owned();
             let tokens = row["tokens"].as_u64()?;
-            let id = row["id"]
-                .as_str()
-                .map(str::to_owned)
-                .unwrap_or_else(|| label.to_ascii_lowercase().replace([' ', '-'], "_"));
+            let id = row["id"].as_str().map_or_else(
+                || label.to_ascii_lowercase().replace([' ', '-'], "_"),
+                str::to_owned,
+            );
             let kind = match row["kind"].as_str() {
                 Some("used") => ContextCategoryKind::Used,
                 Some("free") => ContextCategoryKind::Free,
@@ -2307,7 +2307,7 @@ impl Actor {
                 self.state
                     .saved
                     .rich_plans
-                    .update_review(&plan_id, &revision_id, review)?;
+                    .update_review(&plan_id, &revision_id, *review)?;
                 provider::persist(&self.state.saved)?;
             }
             Action::RetryPlanImport { message_id, source } => {
@@ -2440,14 +2440,14 @@ impl Actor {
                             text,
                             images: Vec::new(),
                         });
-                        self.action(Action::SteerQueued(id)).map(|_| ())
+                        self.action(Action::SteerQueued(id))
                     } else {
                         if mode == SubmissionMode::Send
                             && (self.state.status.busy() || self.state.turn_id.is_some())
                         {
                             return Err("The session started working. Your reply was not sent; queue it when ready.".into());
                         }
-                        self.action(Action::ProjectPrompt { id, text }).map(|_| ())
+                        self.action(Action::ProjectPrompt { id, text })
                     }
                 })();
                 if let Err(error) = result {
@@ -7733,7 +7733,8 @@ mod tests {
         assert!(actor.state.error.is_none());
         actor.action(Action::RefreshContext).unwrap();
         let _ = read(&mut reader);
-        actor.context_query_started = Some(Instant::now() - Duration::from_secs(16));
+        actor.context_query_started =
+            Some(Instant::now().checked_sub(Duration::from_secs(16)).unwrap());
         actor.poll_context_query();
         assert!(!actor.state.context_query_pending);
         assert!(actor
@@ -8078,7 +8079,7 @@ mod tests {
         let count = actor.control_id;
         actor.poll_mcp_status();
         assert_eq!(actor.control_id, count);
-        actor.mcp_polled_at = Some(Instant::now() - Duration::from_secs(16));
+        actor.mcp_polled_at = Some(Instant::now().checked_sub(Duration::from_secs(16)).unwrap());
         actor.poll_mcp_status();
         assert!(actor.pending.is_empty());
         assert!(!actor.mcp_status_supported);

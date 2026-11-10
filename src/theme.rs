@@ -352,7 +352,7 @@ fn contribution_heatmap(surface: Rgba, info: Rgba, foreground: Rgba) -> [Rgba; 5
         }
         let (mut lo, mut hi) = (0.0, 1.0);
         for _ in 0..24 {
-            let mid = (lo + hi) / 2.0;
+            let mid = f32::midpoint(lo, hi);
             if contrast(empty, mix(empty, endpoint, mid)) < target.min(max) {
                 lo = mid;
             } else {

@@ -49,7 +49,7 @@ fn describe_changes_live_native_session_pipeline() {
             && config
                 .to_string_lossy()
                 .contains(".grove-artifacts/description-lifecycle/")
-            && std::fs::read_dir(&config).unwrap().next().is_none(),
+            && fs_err::read_dir(&config).unwrap().next().is_none(),
         "refusing to use a nonempty or non-artifact Grove configuration"
     );
     assert_eq!(
@@ -70,14 +70,14 @@ fn describe_changes_live_native_session_pipeline() {
         &["config", "user.email", "qa@example.test"],
     )
     .unwrap();
-    std::fs::write(
+    fs_err::write(
         repository.path().join("handler.ts"),
         "export function shouldProcess(seen: boolean) { return true; }\n",
     )
     .unwrap();
     git(repository.path(), &["add", "."]).unwrap();
     git(repository.path(), &["commit", "-m", "Native fixture"]).unwrap();
-    std::fs::write(repository.path().join("handler.ts"), EDIT).unwrap();
+    fs_err::write(repository.path().join("handler.ts"), EDIT).unwrap();
     let initial_head = git(repository.path(), &["rev-parse", "HEAD"]).unwrap();
     let initial_index = git(repository.path(), &["ls-files", "--stage"]).unwrap();
     let initial_status = git(repository.path(), &["status", "--porcelain=v1"]).unwrap();
@@ -101,7 +101,7 @@ fn describe_changes_live_native_session_pipeline() {
             settings.projects.push(grove_core::storage::Project {
                 name: "Native description fixture".into(),
                 path: path.clone(),
-                scripts: Default::default(),
+                scripts: grove_core::storage::ProjectScripts::default(),
                 archived: false,
                 worktree_dir: None,
             });
@@ -211,7 +211,7 @@ fn describe_changes_live_native_session_pipeline() {
                         })
                     }).map_err(|error| error.to_string())??;
                     eprintln!("Native skill started a distinct Codex session and retained the source draft");
-                    let deadline = Instant::now() + Duration::from_secs(120);
+                    let deadline = Instant::now() + Duration::from_mins(2);
                     let description = loop {
                         if Instant::now() >= deadline {
                             return Err("Native description generation timed out".into());
@@ -262,7 +262,7 @@ fn describe_changes_live_native_session_pipeline() {
                         Ok::<_, String>(())
                     }).map_err(|error| error.to_string())??;
                     // Exercise real freshness from a changed fixture, without generating again.
-                    std::fs::write(std::path::Path::new(&path).join("handler.ts"), format!("{EDIT}// Changed after generation.\n")).map_err(|error| error.to_string())?;
+                    fs_err::write(std::path::Path::new(&path).join("handler.ts"), format!("{EDIT}// Changed after generation.\n")).map_err(|error| error.to_string())?;
                     cx.update_window(window.into(), |_, _, cx| sidebar.update(cx, |sidebar, cx| {
                         let entry = sidebar.descriptions.entries.get_mut(&target).unwrap();
                         entry.checked_at = None;
@@ -280,7 +280,7 @@ fn describe_changes_live_native_session_pipeline() {
                         cx.background_executor().timer(Duration::from_millis(100)).await;
                     }
                     ensure(reloaded.load(&binding)? == Some(description.as_ref().clone()), "Staleness overwrote the saved description")?;
-                    std::fs::write(std::path::Path::new(&path).join("handler.ts"), EDIT).map_err(|error| error.to_string())?;
+                    fs_err::write(std::path::Path::new(&path).join("handler.ts"), EDIT).map_err(|error| error.to_string())?;
                     cx.background_executor().timer(Duration::from_millis(200)).await;
                     if let Some(output) = config.parent() {
                         let captured = std::process::Command::new("import").args(["-window", TITLE]).arg(output.join("live-native-session-reader.png")).status();

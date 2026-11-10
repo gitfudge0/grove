@@ -568,8 +568,6 @@ impl TranscriptRenderCache {
             };
         }
         PreparedTranscript {
-            nearest_user,
-            next_nonuser,
             content,
             task_key,
             stream_keys,
@@ -578,6 +576,8 @@ impl TranscriptRenderCache {
             response_ends,
             response_prose,
             minimap_entries,
+            nearest_user,
+            next_nonuser,
         }
     }
 }
@@ -1408,7 +1408,7 @@ impl CodexView {
                     super::native_plan::NativePlan::new(session, html, plan_id, revision_id, cx)
                 });
                 view.update(cx, |plan, _| {
-                    plan.set_transcript_scroll(self.scroll.clone())
+                    plan.set_transcript_scroll(self.scroll.clone());
                 });
                 self.subscriptions.push(cx.observe(&view, |this, _, cx| {
                     this.smooth_follow = false;
@@ -1566,7 +1566,9 @@ impl CodexView {
             Ok(()) => {
                 if let Some(answer) = &mut self.plan_answer {
                     answer.saving = Some(value);
-                    answer.error_before_save = self.session.read(cx).state.error.clone();
+                    answer
+                        .error_before_save
+                        .clone_from(&self.session.read(cx).state.error);
                 }
                 self.sync_plan_answer(window, cx);
             }
@@ -1819,7 +1821,7 @@ impl CodexView {
                         this.refresh_files(cx);
                         cx.notify();
                     }
-                    _ => {}
+                    InputEvent::PressEnter { .. } => {}
                 }
             }),
         ];
@@ -2450,7 +2452,7 @@ impl CodexView {
             state.status != codex::Status::Disconnected && state.queue_uncertain.is_empty();
         let collapsed = self.queue_collapsed;
         let mut tray = composer_tray(window)
-            .when(attached_above, |tray| tray.rounded_none())
+            .when(attached_above, gpui::Styled::rounded_none)
             .id("codex-queued-prompts")
             .debug_selector(|| "codex-queued-prompts".into())
             .child(
@@ -2984,7 +2986,7 @@ impl CodexView {
         let expanded = summary.is_some() && !self.expanded.contains("session-review-disclosure");
         Some(
             composer_tray(window)
-                .when(attached_above, |tray| tray.rounded_none())
+                .when(attached_above, gpui::Styled::rounded_none)
                 // Keep intrinsic height; the containing rail removes its gap.
                 .mb_0()
                 .pb(rpx(SPACE_LG))
@@ -3051,7 +3053,7 @@ impl CodexView {
                                         && current.review_completion() == Some(work_period)
                                     {
                                         this.session.update(cx, |session, cx| {
-                                            session.send(Action::MarkReviewed { work_period }, cx)
+                                            session.send(Action::MarkReviewed { work_period }, cx);
                                         });
                                         this.input.focus_handle(cx).focus(window, cx);
                                     }
@@ -3242,7 +3244,7 @@ impl CodexView {
         }
         Some(
             composer_tray(window)
-                .when(attached_above, |tray| tray.rounded_none())
+                .when(attached_above, gpui::Styled::rounded_none)
                 // Negative tray overlap can erase the rail's intrinsic height.
                 .mb_0()
                 .pb(rpx(SPACE_LG))
@@ -3524,7 +3526,7 @@ impl CodexView {
             rows
         });
         composer_tray(window)
-            .when(attached_above, |tray| tray.rounded_none())
+            .when(attached_above, gpui::Styled::rounded_none)
             .id("codex-task-strip-panel")
             .debug_selector(|| "codex-task-strip-panel".into())
             // Balance the visible bottom attachment against the header's top inset.
@@ -3750,7 +3752,7 @@ impl CodexView {
         let tool_expanded = self.expanded.contains(&tool_key);
         let keyboard_key = tool_key.clone();
         let failed = tool_failed(tool);
-        let activity = tool_activity_summary(tool, tool_is_running(&state, detail_index));
+        let activity = tool_activity_summary(tool, tool_is_running(state, detail_index));
         let mut label_run = window.text_style().to_run(activity.len());
         label_run.font.family = crate::fonts::UI_FAMILY.into();
         let label_width = truncation_safe_label_width(
@@ -3786,7 +3788,7 @@ impl CodexView {
                 .when(tool_expanded, |style| style.text_color(c::FG()))
                 .aria_label(tool_activity_summary(
                     tool,
-                    tool_is_running(&state, detail_index),
+                    tool_is_running(state, detail_index),
                 ))
                 .child(
                     div()
@@ -5000,7 +5002,7 @@ impl CodexView {
                 cx.background_executor()
                     .timer(STOP_CONFIRMATION_TIMEOUT)
                     .await;
-                let _ = this.update(cx, |this, cx| this.clear_stop_confirmation(cx));
+                let _ = this.update(cx, CodexView::clear_stop_confirmation);
             }));
             cx.notify();
         }
@@ -6160,16 +6162,15 @@ impl Render for CodexView {
                         &state.saved.roots,
                     )
                     .unwrap_or_else(|| state.saved.project.clone());
-                    let worktree = self
-                        .checkout_context
-                        .as_ref()
-                        .map(|(name, _)| name.clone())
-                        .unwrap_or_else(|| {
+                    let worktree = self.checkout_context.as_ref().map_or_else(
+                        || {
                             std::path::Path::new(&state.saved.cwd)
                                 .file_name()
                                 .map(|name| name.to_string_lossy().into_owned())
                                 .unwrap_or_default()
-                        });
+                        },
+                        |(name, _)| name.clone(),
+                    );
                     let identity = [project, worktree]
                         .into_iter()
                         .filter(|value| !value.is_empty())
@@ -6347,7 +6348,7 @@ impl Render for CodexView {
                             .min_w_0()
                             .flex()
                             .justify_center()
-                            .px(rpx(SPACE_20))
+                            .px(rpx(content_inset))
                             .child(
                                 div()
                                     .w_full()
@@ -6890,7 +6891,7 @@ impl Render for CodexView {
                             .flex()
                             .flex_col()
                             .gap(rpx(SPACE_MD))
-                            .when(has_review, |rail| rail.gap_0())
+                            .when(has_review, gpui::Styled::gap_0)
 
                             .when_some(notice_above, gpui::ParentElement::child)
                             .when_some(agent_controls, gpui::ParentElement::child)
@@ -6937,8 +6938,8 @@ impl Render for CodexView {
                                     .flex_wrap()
                                     .items_center()
                                     .gap(rpx(SPACE_LG))
-                                    .when_some(model_control, |row, control| row.child(control))
-                                    .when_some(access_control, |row, control| row.child(control))
+                                    .when_some(model_control, gpui::ParentElement::child)
+                                    .when_some(access_control, gpui::ParentElement::child)
                                     .child(div().flex_1())
                                     .child(
                                         div().flex().items_center().gap(rpx(SPACE_LG)).flex_shrink_0().ml_auto()
@@ -7034,16 +7035,15 @@ impl Render for CodexView {
                             ,
                     ),
             );
-        let exiting = self.menu.is_none()
-            && self
-                .closing_popup
-                .as_ref()
-                .is_some_and(|popup| popup.scope == composer_scope(&state))
-            && !cx.reduce_motion();
-        if let Some(menu) = self
-            .menu
-            .or_else(|| exiting.then(|| self.closing_popup.as_ref().unwrap().menu))
-        {
+        let closing = self
+            .closing_popup
+            .as_ref()
+            .filter(|popup| {
+                self.menu.is_none() && popup.scope == composer_scope(&state) && !cx.reduce_motion()
+            })
+            .map(|popup| (popup.menu, popup.bounds));
+        let exiting = closing.is_some();
+        if let Some(menu) = self.menu.or_else(|| closing.map(|(menu, _)| menu)) {
             let popup = if menu == ComposerMenu::Settings {
                 Some(self.model_effort_card(&state, exiting, window, cx))
             } else if menu == ComposerMenu::Model {
@@ -7083,11 +7083,8 @@ impl Render for CodexView {
                     ComposerMenu::Access => 2,
                     _ => 0,
                 };
-                let bounds = if exiting {
-                    self.closing_popup.as_ref().unwrap().bounds
-                } else {
-                    self.option_bounds[index].get()
-                };
+                let bounds =
+                    closing.map_or_else(|| self.option_bounds[index].get(), |(_, bounds)| bounds);
                 let gap = rpx(SPACE_LG).to_pixels(window.rem_size());
                 // Anchor each picker to the stable outer edge of its toolbar group.
                 let trailing = menu == ComposerMenu::Add;
@@ -7123,10 +7120,10 @@ impl Render for CodexView {
                                         .when(exiting, |surface| {
                                             surface
                                                 .capture_any_mouse_down(|_, _, cx| {
-                                                    cx.stop_propagation()
+                                                    cx.stop_propagation();
                                                 })
                                                 .capture_any_mouse_up(|_, _, cx| {
-                                                    cx.stop_propagation()
+                                                    cx.stop_propagation();
                                                 })
                                                 .capture_key_down(|_, _, cx| cx.stop_propagation())
                                         })
@@ -7331,17 +7328,17 @@ impl CodexView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.images = state.saved.draft_images.clone();
+        self.images.clone_from(&state.saved.draft_images);
         self.previews = self
             .images
             .iter()
             .filter_map(|url| image_from_url(url).map(|image| (url.clone(), image)))
             .collect();
-        self.reference = state.saved.draft_reference.clone();
+        self.reference.clone_from(&state.saved.draft_reference);
         self.reference_expanded = false;
         self.picked_tokens.clear();
         self.input.update(cx, |input, cx| {
-            input.set_value(state.saved.draft.clone(), window, cx)
+            input.set_value(state.saved.draft.clone(), window, cx);
         });
         self.input.focus_handle(cx).focus(window, cx);
     }
@@ -7364,7 +7361,7 @@ impl CodexView {
             );
         };
         let registry = runtime.read(cx).registry.read(cx);
-        let roots = state.rewind_target(index).ok()?.files?.roots().to_vec();
+        let roots = state.rewind_target(index).ok()?.files?.roots().clone();
         for other in registry.all() {
             if registry
                 .codex(other.id)
@@ -7378,8 +7375,9 @@ impl CodexView {
                 let Ok(path) = std::path::Path::new(path).canonicalize() else {
                     continue;
                 };
-                let other_roots = grove_core::checkpoint::repository_roots(&[path.clone()])
-                    .unwrap_or_else(|_| vec![path]);
+                let other_roots =
+                    grove_core::checkpoint::repository_roots(std::slice::from_ref(&path))
+                        .unwrap_or_else(|_| vec![path]);
                 if roots.iter().any(|root| {
                     other_roots
                         .iter()
@@ -7434,7 +7432,9 @@ impl CodexView {
         } else {
             None
         };
-        let target = self.edit_confirmation.take().unwrap();
+        let Some(target) = self.edit_confirmation.take() else {
+            return;
+        };
         self.sync_composer_before_rewind(cx);
         self.edit_request_pending = true;
         self.rewind_attempt = Some(self.session.read(cx).state.rewind_attempts);
@@ -8078,7 +8078,7 @@ impl CodexView {
                             .when(cfg!(test), |row| {
                                 row.debug_selector({
                                     let id = row_id.clone();
-                                    move || id.clone().into()
+                                    move || id.clone()
                                 })
                             })
                             .flex_1()
@@ -9382,7 +9382,7 @@ impl CodexView {
                 .min_h(rpx(CONTROL_H))
                 .justify_start()
                 .gap(rpx(SPACE_SM))
-                .when(stacked_rows, |row| row.items_start())
+                .when(stacked_rows, gpui::Styled::items_start)
                 .px(rpx(SPACE_LG))
                 .py(rpx(SPACE_SM))
                 .tab_index(0)
@@ -9409,7 +9409,7 @@ impl CodexView {
                             div()
                                 .min_w_0()
                                 .max_w_full()
-                                .when(!file_rows, |name| name.flex_shrink_0())
+                                .when(!file_rows, gpui::Styled::flex_shrink_0)
                                 .whitespace_normal()
                                 .when(file_rows, |name| name.flex_1().truncate())
                                 .text_size(rpx(if stacked_rows { TEXT_BODY } else { TEXT_SMALL }))
@@ -9425,8 +9425,8 @@ impl CodexView {
                         .when_some(description, |row, description| {
                             row.child(
                                 div()
-                                    .when(!stacked_rows, |description| description.flex_1())
-                                    .when(stacked_rows, |description| description.w_full())
+                                    .when(!stacked_rows, gpui::Styled::flex_1)
+                                    .when(stacked_rows, gpui::Styled::w_full)
                                     .min_w_0()
                                     .truncate()
                                     .text_size(rpx(TEXT_SMALL))
@@ -9466,7 +9466,7 @@ impl CodexView {
             );
         }
         composer_tray(window)
-            .when(attached_above, |tray| tray.rounded_none())
+            .when(attached_above, gpui::Styled::rounded_none)
             .id("codex-composer-options")
             .debug_selector(|| "codex-composer-options".into())
             .child(
@@ -9554,9 +9554,9 @@ impl CodexView {
                     cx,
                 );
             });
-        } else if self.menu.is_some() {
+        } else if let Some(menu) = self.menu {
             self.retain_popup_exit(cx);
-            let menu = self.menu.take().unwrap();
+            self.menu = None;
             self.popup = None;
             let action = Action::Configure {
                 model: (menu == ComposerMenu::Model).then(|| value.to_owned()),
@@ -10449,6 +10449,7 @@ impl CodexView {
 
 /// During a turn only its latest activity is visible, including between calls.
 /// Completion restores the work disclosure's full history.
+#[cfg(test)]
 fn tool_visible(state: &codex::Snapshot, index: usize) -> bool {
     if !state.status.busy() {
         return true;
@@ -13627,7 +13628,7 @@ mod tests {
     fn review_summary_uses_current_completion_for_codex_and_claude() {
         use super::super::review_summary::ReviewSummary;
         let artifacts = tempfile::tempdir().unwrap();
-        std::fs::write(artifacts.path().join("mock.html"), "mock").unwrap();
+        fs_err::write(artifacts.path().join("mock.html"), "mock").unwrap();
         for provider in [codex::Provider::Codex, codex::Provider::Claude] {
             let mut state = snapshot();
             state.saved.provider = provider;
@@ -14900,9 +14901,9 @@ mod tests {
     }
     pub(super) fn snapshot() -> Snapshot {
         let mut state = Snapshot::new(SavedSession {
-            session_review: Default::default(),
+            session_review: grove_core::codex::SessionReview::default(),
             rich_plans: grove_core::rich_plan::PlanStore::default(),
-            side_chats: Default::default(),
+            side_chats: HashMap::default(),
             fork_origin: None,
             claude_resume: None,
             claude_subagents: std::collections::HashMap::default(),
@@ -15090,7 +15091,7 @@ mod tests {
                         !view.tasks_expanded,
                         "{provider:?}: removal does not reopen Tasks"
                     );
-                })
+                });
             });
         }
     }
@@ -15125,7 +15126,7 @@ mod tests {
                         cx.notify();
                     });
                     cx.notify();
-                })
+                });
             });
             draw(cx);
             for (width, height, rem) in [(1000., 900., 16.), (400., 600., 16.), (400., 600., 20.)] {
@@ -15162,7 +15163,7 @@ mod tests {
                         cx.notify();
                     });
                     cx.notify();
-                })
+                });
             });
             draw(cx);
             assert!(
@@ -15184,7 +15185,7 @@ mod tests {
                 "{provider:?}"
             );
             cx.update(|window, cx| {
-                assert!(view.read(cx).input.focus_handle(cx).is_focused(window))
+                assert!(view.read(cx).input.focus_handle(cx).is_focused(window));
             });
         }
     }
@@ -15275,7 +15276,7 @@ mod tests {
                             assert_eq!(view.input.read(cx).value().as_ref(), command);
                             assert!(view.submitted.is_none());
                             assert!(view.session.read(cx).state.error.is_none());
-                        })
+                        });
                     });
                     assert_eq!(
                         *events.borrow(),
@@ -15298,7 +15299,7 @@ mod tests {
                                 Some(grove_core::describe_skill::USAGE)
                             );
                             assert_eq!(view.input.read(cx).value().as_ref(), command);
-                        })
+                        });
                     });
                     assert!(events.borrow().is_empty());
                 }
@@ -15360,7 +15361,7 @@ mod tests {
                             assert_eq!(view.input.read(cx).value().as_ref(), command);
                             assert!(view.submitted.is_none());
                             assert!(view.session.read(cx).state.error.is_none());
-                        })
+                        });
                     });
                     assert_eq!(
                         *events.borrow(),
@@ -15383,7 +15384,7 @@ mod tests {
                                 Some(grove_core::review_skill::USAGE)
                             );
                             assert_eq!(view.input.read(cx).value().as_ref(), command);
-                        })
+                        });
                     });
                     assert!(events.borrow().is_empty());
                 }
@@ -15430,7 +15431,7 @@ mod tests {
                     );
                     view.pending_image_pastes = 1;
                     view.input.update(cx, |input, cx| {
-                        input.set_value("$describe-changes pr", window, cx)
+                        input.set_value("$describe-changes pr", window, cx);
                     });
                     assert!(view.run_command(window, cx));
                     assert_eq!(view.pending_image_pastes, 1);
@@ -15445,7 +15446,7 @@ mod tests {
                     view.pending_image_pastes = 0;
                     assert!(view.run_command(window, cx));
                     view.input.update(cx, |input, cx| {
-                        input.set_value("/describe-changes invalid", window, cx)
+                        input.set_value("/describe-changes invalid", window, cx);
                     });
                     assert!(view.run_command(window, cx));
                     assert_eq!(
@@ -15474,7 +15475,7 @@ mod tests {
                             .count(),
                         1
                     );
-                })
+                });
             });
         }
         assert_eq!(
@@ -15532,7 +15533,7 @@ mod tests {
                     view.pending_image_pastes = 0;
                     assert!(view.run_command(window, cx));
                     view.input.update(cx, |input, cx| {
-                        input.set_value("/review invalid", window, cx)
+                        input.set_value("/review invalid", window, cx);
                     });
                     assert!(view.run_command(window, cx));
                     assert_eq!(
@@ -15558,7 +15559,7 @@ mod tests {
                         choices.iter().filter(|(name, _)| name == "$review").count(),
                         1
                     );
-                })
+                });
             });
         }
         assert_eq!(
@@ -15634,7 +15635,7 @@ mod tests {
                         cx.notify();
                     });
                     cx.notify();
-                })
+                });
             });
             draw(cx);
             view.read_with(cx, |view, cx| {
@@ -15672,7 +15673,7 @@ mod tests {
                         cx.notify();
                     });
                     view.input.update(cx, |input, cx| {
-                        input.set_value("Keep my conversation draft", window, cx)
+                        input.set_value("Keep my conversation draft", window, cx);
                     });
                     view.images = vec!["retained-image".into()];
                     view.sync_native_plans(window, cx);
@@ -15691,7 +15692,7 @@ mod tests {
                     assert_eq!(view.input.read(cx).value().as_ref(), "");
                     assert!(view.images.is_empty());
                     view.input.update(cx, |input, cx| {
-                        input.set_value("Workspace owners and team leads", window, cx)
+                        input.set_value("Workspace owners and team leads", window, cx);
                     });
                     view.persist_plan_answer_draft(cx);
                     view.cancel_plan_answer(window, cx);
@@ -15721,7 +15722,7 @@ mod tests {
                     });
                     view.submit(window, cx);
                     assert!(view.plan_answer.as_ref().unwrap().saving.is_some());
-                })
+                });
             });
             draw(cx);
             cx.simulate_keystrokes("x");
@@ -15750,7 +15751,7 @@ mod tests {
                                     .state
                                     .saved
                                     .rich_plans
-                                    .update_review(&plan_id, &revision_id, review)
+                                    .update_review(&plan_id, &revision_id, *review)
                                     .unwrap();
                             }
                         }
@@ -15769,7 +15770,7 @@ mod tests {
                             .own_answers["access"],
                         "Workspace owners and team leads"
                     );
-                })
+                });
             });
             draw(cx);
             assert!(cx.debug_bounds("plan-answer-context").is_none());
@@ -15791,7 +15792,7 @@ mod tests {
                         cx.notify();
                     });
                     view.input.update(cx, |input, cx| {
-                        input.set_value("What about contractors?", window, cx)
+                        input.set_value("What about contractors?", window, cx);
                     });
                     view.sync_native_plans(window, cx);
                     view.begin_plan_composer(
@@ -15814,7 +15815,7 @@ mod tests {
                     assert!(quote.text.contains("Revision: r1"));
                     assert!(quote.text.contains("Section: Access"));
                     assert!(view.plan_answer.is_none());
-                })
+                });
             });
         }
     }
@@ -15828,7 +15829,7 @@ mod tests {
             "use isolated configuration"
         );
         let output = std::env::var("GROVE_PLAN_CAPTURE_DIR").expect("capture directory");
-        std::fs::create_dir_all(&output).unwrap();
+        fs_err::create_dir_all(&output).unwrap();
         gpui_platform::application().with_assets(crate::assets::Assets).run(move |cx| {
             gpui_component::init(cx);
             crate::fonts::register(cx).unwrap();
@@ -17184,7 +17185,7 @@ mod tests {
                     view.smooth_follow = false;
                     view.set_composer_collapsed(true, cx);
                     view.scroll.scroll_to_top_of_item(0);
-                })
+                });
             });
             draw(cx);
             let earlier = cx.debug_bounds("codex-history-earlier").unwrap();
@@ -17196,7 +17197,7 @@ mod tests {
             draw(cx);
             view.read_with(cx, |view, _| assert_eq!(view.turn_history.start, 48));
             cx.update(|window, cx| {
-                view.update(cx, |view, cx| view.history_latest_focus.focus(window, cx))
+                view.update(cx, |view, cx| view.history_latest_focus.focus(window, cx));
             });
             cx.simulate_keystrokes("space");
             draw(cx);
@@ -17227,14 +17228,14 @@ mod tests {
                         cx.notify();
                     });
                     cx.notify();
-                })
+                });
             });
             draw(cx);
             view.read_with(cx, |view, _| {
                 assert_eq!(
                     view.turn_history.start, 8,
                     "incoming turn preserves browsing"
-                )
+                );
             });
         }
     }
@@ -17255,9 +17256,11 @@ mod tests {
         let (view, cx, _, _) = fixture_with_navigation(cx, true);
         cx.update(|_, cx| cx.set_reduce_motion(true));
         for provider in [codex::Provider::Codex, codex::Provider::Claude] {
-            let text = format!("```rust\nlet answer = 42;\n```\n\n{}", (0..12).map(|i|
-                format!("## Decision {i}\n\n| Access | Expiry | Method | Acceptance | Audit | Scope |\n| --- | --- | --- | --- | --- | --- |\n| Member with a longer description | Seven days | Email and link | Immediate | Retained | Prototype only |\n\n")
-            ).collect::<String>());
+            let text = format!("```rust\nlet answer = 42;\n```\n\n{}", (0..12).fold(String::new(), |mut text, i| {
+                use std::fmt::Write as _;
+                let _ = write!(text, "## Decision {i}\n\n| Access | Expiry | Method | Acceptance | Audit | Scope |\n| --- | --- | --- | --- | --- | --- |\n| Member with a longer description | Seven days | Email and link | Immediate | Retained | Prototype only |\n\n");
+                text
+            }));
             cx.update(|_, cx| view.update(cx, |view, cx| {
                 view.session.update(cx, |session, cx| {
                     session.state.saved.provider = provider;
@@ -17279,7 +17282,7 @@ mod tests {
                     view.update(cx, |view, cx| {
                         view.scroll.scroll_to_bottom();
                         cx.notify();
-                    })
+                    });
                 });
                 draw(cx);
                 cx.update(|window, cx| {
@@ -17300,7 +17303,7 @@ mod tests {
                             .unwrap()
                             .1
                             .focus(window, cx);
-                    })
+                    });
                 });
                 draw(cx);
                 cx.simulate_keystrokes("enter");
@@ -17314,10 +17317,10 @@ mod tests {
                 cx.update(|_, cx| {
                     view.update(cx, |view, cx| {
                         for owner in view.selection_views.values() {
-                            owner.update(cx, |owner, cx| owner.select_all(cx));
+                            owner.update(cx, gpui_component::text::TextViewState::select_all);
                         }
                         cx.notify();
-                    })
+                    });
                 });
                 draw(cx);
                 view.read_with(cx, |view, cx| {
@@ -17338,7 +17341,7 @@ mod tests {
                         view.selection_views.clear();
                         view.message_slots.clear();
                         cx.notify();
-                    })
+                    });
                 });
             }
         }
@@ -17348,6 +17351,13 @@ mod tests {
     fn mixed_table_attachment_history_reuses_geometry_and_preserves_selection(
         cx: &mut gpui::TestAppContext,
     ) {
+        fn frame(cx: &mut gpui::VisualTestContext) {
+            // Measurement corrections are deferred to the next display frame.
+            cx.executor()
+                .advance_clock(std::time::Duration::from_millis(16));
+            cx.update(gpui::Window::simulate_next_frame);
+            draw(cx);
+        }
         let (view, cx, _, _) = fixture(cx);
         cx.update(|_, cx| cx.set_reduce_motion(true));
         for provider in [codex::Provider::Codex, codex::Provider::Claude] {
@@ -17371,20 +17381,22 @@ mod tests {
                 cx.update(|_, cx| gpui_component::Theme::global_mut(cx).font_size = gpui::px(rem));
                 for _ in 0..4 {
                     cx.update(|_, cx| view.update(cx, |_, cx| cx.notify()));
-                    draw(cx);
+                    frame(cx);
                 }
                 measured_slot::MATERIALIZED.with(|count| count.set(0));
                 cx.update(|_, cx| view.update(cx, |_, cx| cx.notify()));
-                draw(cx);
-                assert!(measured_slot::MATERIALIZED.with(Cell::get) < 15);
+                frame(cx);
+                let materialized = measured_slot::MATERIALIZED.with(Cell::get);
+                assert!(materialized < 15,
+                    "{provider:?} width={width} rem={rem}: settled frame materialized {materialized} rows");
                 let extent = view.read_with(cx, |view, _| view.scroll.max_offset());
                 cx.update(|_, cx| {
                     view.update(cx, |view, cx| {
                         view.scroll.scroll_to_bottom();
                         cx.notify();
-                    })
+                    });
                 });
-                draw(cx);
+                frame(cx);
                 view.read_with(cx, |view, cx| {
                     assert_eq!(view.scroll.max_offset(), extent);
                     assert_eq!(view.selection_views.len(), 40);
@@ -17398,12 +17410,12 @@ mod tests {
                 cx.update(|_, cx| {
                     view.update(cx, |view, cx| {
                         for owner in view.selection_views.values() {
-                            owner.update(cx, |owner, cx| owner.select_all(cx));
+                            owner.update(cx, gpui_component::text::TextViewState::select_all);
                         }
                         cx.notify();
-                    })
+                    });
                 });
-                draw(cx);
+                frame(cx);
                 view.read_with(cx, |view, cx| {
                     assert_eq!(view.scroll.max_offset(), extent);
                     assert!(view
@@ -17417,7 +17429,7 @@ mod tests {
                         view.selection_views.clear();
                         view.message_slots.clear();
                         cx.notify();
-                    })
+                    });
                 });
             }
         }
@@ -17830,7 +17842,7 @@ mod tests {
             cx.update(|window, cx| {
                 view.update(cx, |view, cx| {
                     view.jump_to_transcript_item(0, window, cx);
-                })
+                });
             });
             draw(cx);
             for (width, rem) in [(1000., 16.), (420., 16.), (420., 22.)] {
@@ -18679,7 +18691,7 @@ mod tests {
                     view.input.read(cx).value().as_ref(),
                     "Unrelated composer draft"
                 );
-            })
+            });
         });
         cx.simulate_keystrokes("escape");
         draw(cx);
@@ -18721,11 +18733,11 @@ mod tests {
                         session.state.edited_messages += 1;
                         cx.notify();
                     });
-                })
+                });
             });
             draw(cx);
             view.read_with(cx, |view, cx| {
-                assert_eq!(view.input.read(cx).value().as_ref(), "Restored request")
+                assert_eq!(view.input.read(cx).value().as_ref(), "Restored request");
             });
             assert!(!actions
                 .try_iter()
@@ -18741,7 +18753,7 @@ mod tests {
         cx.update(|window, cx| {
             view.update(cx, |view, cx| {
                 view.input.update(cx, |input, cx| {
-                    input.set_value("Restored prompt", window, cx)
+                    input.set_value("Restored prompt", window, cx);
                 });
                 view.session.update(cx, |session, cx| {
                     session
@@ -18756,7 +18768,7 @@ mod tests {
                         });
                     cx.notify();
                 });
-            })
+            });
         });
         draw(cx);
         for picker in [false, true] {
@@ -18765,7 +18777,7 @@ mod tests {
                     view.pending_image_pastes = usize::from(!picker);
                     view.pending_attachment_picker = picker;
                     cx.notify();
-                })
+                });
             });
             draw(cx);
             let restore = cx.debug_bounds("codex-restore-rewind-draft").unwrap();
@@ -18780,7 +18792,7 @@ mod tests {
                 view.pending_image_pastes = 0;
                 view.pending_attachment_picker = false;
                 cx.notify();
-            })
+            });
         });
         draw(cx);
         let restore = cx.debug_bounds("codex-restore-rewind-draft").unwrap();
@@ -18804,8 +18816,8 @@ mod tests {
                     session.state.rewind_attempts += 1;
                     session.state.edited_messages += 1;
                     cx.notify();
-                })
-            })
+                });
+            });
         });
         draw(cx);
         view.read_with(cx, |view, cx| {
@@ -18935,7 +18947,7 @@ mod tests {
                 view.session.update(cx, |session, cx| {
                     session.state.saved.provider = provider;
                     cx.notify();
-                })
+                });
             });
             draw(cx);
             assert!(cx.debug_bounds("codex-empty").is_none());
@@ -19822,52 +19834,53 @@ mod tests {
         cx: &mut gpui::TestAppContext,
     ) {
         let (_view, cx, _, updates) = fixture(cx);
-        let mut state = snapshot();
-        state.status = Status::Working;
-        state.saved.items.clear();
-        state.saved.thread_id = None;
-        assert_eq!(
-            live_activity(&state).as_deref(),
-            Some("Connecting to Codex…")
-        );
-        state.saved.items = vec![
+        for provider in [codex::Provider::Codex, codex::Provider::Claude] {
+            let mut state = snapshot();
+            state.saved.provider = provider;
+            state.status = Status::Working;
+            state.saved.items.clear();
+            state.saved.thread_id = None;
+            let connecting = format!("Connecting to {}…", provider.label());
+            assert_eq!(live_activity(&state).as_deref(), Some(connecting.as_str()));
+            state.saved.items = vec![
             json!({"id":"prompt","type":"userMessage","content":[{"text":"Check this"}]}),
             json!({"id":"reply","type":"agentMessage","phase":"commentary","text":"Checking this."}),
         ].into();
-        assert!(work_header_at(&state, 1).unwrap().2);
-        assert_eq!(live_activity(&state), None);
-        updates.send(state.clone()).unwrap();
-        cx.executor()
-            .advance_clock(std::time::Duration::from_millis(40));
-        draw(cx);
-        assert!(cx.debug_bounds("codex-live-activity").is_none());
-        state.compacting = true;
-        assert_eq!(
-            live_activity(&state).as_deref(),
-            Some("Compacting context…")
-        );
-        updates.send(state.clone()).unwrap();
-        cx.executor()
-            .advance_clock(std::time::Duration::from_millis(40));
-        for width in [1000.0, 400.0] {
-            cx.simulate_resize(gpui::size(gpui::px(width), gpui::px(800.0)));
+            assert!(work_header_at(&state, 1).unwrap().2);
+            assert_eq!(live_activity(&state), None);
+            updates.send(state.clone()).unwrap();
+            cx.executor()
+                .advance_clock(std::time::Duration::from_millis(40));
             draw(cx);
-            let status = cx.debug_bounds("codex-live-activity-text").unwrap();
-            let body = cx.debug_bounds("codex-message-body-1").unwrap();
-            assert_eq!(status.left(), body.left(), "status alignment at {width}");
+            assert!(cx.debug_bounds("codex-live-activity").is_none());
+            state.compacting = true;
+            assert_eq!(
+                live_activity(&state).as_deref(),
+                Some("Compacting context…")
+            );
+            updates.send(state.clone()).unwrap();
+            cx.executor()
+                .advance_clock(std::time::Duration::from_millis(40));
+            for width in [1000.0, 400.0] {
+                cx.simulate_resize(gpui::size(gpui::px(width), gpui::px(800.0)));
+                draw(cx);
+                let status = cx.debug_bounds("codex-live-activity-text").unwrap();
+                let body = cx.debug_bounds("codex-message-body-1").unwrap();
+                assert_eq!(status.left(), body.left(), "status alignment at {width}");
+            }
+            state.compacting = false;
+            state.approvals.push(json!({"id":"permission"}));
+            assert_eq!(
+                live_activity(&state).as_deref(),
+                Some("Waiting for your permission…")
+            );
+            state.approvals.clear();
+            state.elicitations.push(ElicitationRequest::parse_codex(json!("answer"), &json!({"message":"Name", "requestedSchema":{"type":"object","properties":{"name":{"type":"string"}},"required":["name"]}})).unwrap());
+            assert_eq!(
+                live_activity(&state).as_deref(),
+                Some("Waiting for your answers…")
+            );
         }
-        state.compacting = false;
-        state.approvals.push(json!({"id":"permission"}));
-        assert_eq!(
-            live_activity(&state).as_deref(),
-            Some("Waiting for your permission…")
-        );
-        state.approvals.clear();
-        state.elicitations.push(ElicitationRequest::parse_codex(json!("answer"), &json!({"message":"Name", "requestedSchema":{"type":"object","properties":{"name":{"type":"string"}},"required":["name"]}})).unwrap());
-        assert_eq!(
-            live_activity(&state).as_deref(),
-            Some("Waiting for your answers…")
-        );
     }
 
     #[gpui::test]
@@ -21018,7 +21031,7 @@ mod tests {
         assert!(std::env::var_os("GROVE_CONFIG_DIR").is_some());
         let output = std::path::PathBuf::from(std::env::var("GROVE_FOCUS_CAPTURE_DIR").unwrap());
         assert!(output.is_absolute());
-        std::fs::create_dir_all(&output).unwrap();
+        fs_err::create_dir_all(&output).unwrap();
         gpui_platform::application().with_assets(crate::assets::Assets).run(move |cx| {
             gpui_component::init(cx);
             crate::fonts::register(cx).unwrap();
@@ -21036,7 +21049,8 @@ mod tests {
             }, |window, cx| {
                 window.set_window_title("Grove composer focus QA");
                 let mut state = snapshot();
-                state.status = Status::Done;
+                state.compacting = std::env::var_os("GROVE_FOCUS_COMPACTING").is_some();
+                state.status = if state.compacting { Status::Working } else { Status::Done };
                 state.saved.items = vec![json!({"id":"answer","type":"agentMessage","text":"Ready for your next instruction."})].into();
                 let session = cx.new(|cx| CodexSession::from_connection(state, Connection { handle, updates: receive.into() }, cx));
                 let chat = cx.new(|cx| CodexView::new(session, window, cx));
@@ -21089,7 +21103,7 @@ mod tests {
         use gpui::AppContext as _;
         let output = std::path::PathBuf::from(std::env::var("GROVE_FAILURE_CAPTURE_DIR").unwrap());
         assert!(output.is_absolute());
-        std::fs::create_dir_all(&output).unwrap();
+        fs_err::create_dir_all(&output).unwrap();
         gpui_platform::application().with_assets(crate::assets::Assets).run(move |cx| {
             gpui_component::init(cx);
             crate::fonts::register(cx).unwrap();
@@ -21183,7 +21197,7 @@ mod tests {
             draw(cx);
             assert!(cx.debug_bounds("provider-notice-text-1-line-0").is_some());
             view.read_with(cx, |view, cx| {
-                assert_eq!(view.session.read(cx).state.saved.items.len(), 4)
+                assert_eq!(view.session.read(cx).state.saved.items.len(), 4);
             });
         }
     }
@@ -21203,6 +21217,7 @@ mod tests {
         cx: &mut gpui::TestAppContext,
     ) {
         let (view, cx, _, _) = fixture(cx);
+        cx.update(|_, cx| cx.set_reduce_motion(true));
         cx.simulate_resize(gpui::size(gpui::px(1000.0), gpui::px(800.0)));
         draw(cx);
         assert!(cx.debug_bounds("codex-task-strip").is_none());
@@ -21327,12 +21342,16 @@ mod tests {
         cx.simulate_mouse_move(row.center(), None, gpui::Modifiers::default());
         draw(cx);
         cx.simulate_click(row.center(), gpui::Modifiers::default());
-        draw(cx);
+        // The jump resolves against the next layout after composer collapse.
+        for _ in 0..3 {
+            cx.update(gpui::Window::simulate_next_frame);
+            draw(cx);
+        }
         let transcript = cx.debug_bounds("codex-messages").unwrap();
         let anchor = cx.debug_bounds("codex-message-anchor-3").unwrap();
         assert!(
             (anchor.top() - transcript.top()).abs() < gpui::px(1.0),
-            "jump aligns the first transcript content after the hidden task update"
+            "jump aligns the first transcript content after the hidden task update: anchor={anchor:?}, transcript={transcript:?}"
         );
         assert!(view.read_with(cx, |view, _| view.composer_collapsed));
         // Answering a clarification keeps the session checklist current.
@@ -21656,7 +21675,7 @@ mod tests {
                     view.input
                         .update(cx, |input, cx| input.set_value("keep my draft", window, cx));
                     view.input.focus_handle(cx).focus(window, cx);
-                })
+                });
             });
             draw(cx);
             actions.try_iter().for_each(drop);
@@ -21700,7 +21719,7 @@ mod tests {
                     session.state.status = Status::Interrupted;
                     session.state.turn_id = None;
                     cx.notify();
-                })
+                });
             });
             draw(cx);
             assert!(cx.debug_bounds("codex-stop-confirmation").is_none());
@@ -21722,7 +21741,7 @@ mod tests {
                         cx.notify();
                     });
                     view.input.focus_handle(cx).focus(window, cx);
-                })
+                });
             });
             draw(cx);
             cx.simulate_keystrokes("escape");
@@ -21745,7 +21764,7 @@ mod tests {
                 view.session.update(cx, |session, cx| {
                     session.state.turn_id = Some("replacement".into());
                     cx.notify();
-                })
+                });
             });
             draw(cx);
             assert!(view.read_with(cx, |view, _| view.stop_confirmation.is_none()));
@@ -21756,7 +21775,7 @@ mod tests {
                 !actions.try_iter().any(|a| matches!(a, Action::Interrupt)),
                 "{provider:?}"
             );
-            view.update(cx, |view, cx| view.clear_stop_confirmation(cx));
+            view.update(cx, super::CodexView::clear_stop_confirmation);
         }
     }
 
@@ -21777,7 +21796,7 @@ mod tests {
                         cx.notify();
                     });
                     view.input.focus_handle(cx).focus(window, cx);
-                })
+                });
             });
             draw(cx);
             cx.simulate_keystrokes("escape escape");
@@ -21790,7 +21809,7 @@ mod tests {
                         cx.notify();
                     });
                     view.open_menu(ComposerMenu::Add, window, cx);
-                })
+                });
             });
             draw(cx);
             cx.simulate_keystrokes("escape");
@@ -21906,37 +21925,40 @@ mod tests {
 
     #[gpui::test]
     fn shimmer_moves_bright_glyph_band_and_keeps_unicode_boundaries(cx: &mut gpui::TestAppContext) {
+        let _restore_theme = c::ActiveThemeGuard::capture();
         let (_, cx, _, _) = fixture(cx);
-        cx.update(|_, _| {
-            let label = "5 tool calls · Running…";
-            let early = super::super::components::shimmer_highlights(label, 0.25);
-            let later = super::super::components::shimmer_highlights(label, 0.75);
-            assert_eq!(early.len(), label.chars().count());
-            assert!(early
-                .iter()
-                .all(|(range, _)| label.is_char_boundary(range.start)
-                    && label.is_char_boundary(range.end)));
-            let brightest = |runs: &[(std::ops::Range<usize>, gpui::HighlightStyle)]| {
-                runs.iter()
-                    .enumerate()
-                    .max_by(|(_, first), (_, second)| {
-                        first
-                            .1
-                            .color
-                            .unwrap()
-                            .l
-                            .total_cmp(&second.1.color.unwrap().l)
-                    })
-                    .unwrap()
-                    .0
-            };
-            assert!(brightest(&early) < brightest(&later));
-            assert_ne!(
-                early[0].1.color,
-                early[early.len() / 2].1.color,
-                "shimmer varies glyph colors rather than pulsing the whole line"
-            );
-        });
+        for theme in ["grove-dark", "grove-light"] {
+            grove_core::theme::set_by_name(theme);
+            cx.update(|_, cx| c::sync_component_theme(cx));
+            cx.update(|_, _| {
+                let label = "5 tool calls · Running…";
+                let early = super::super::components::shimmer_highlights(label, 0.25);
+                let later = super::super::components::shimmer_highlights(label, 0.75);
+                assert_eq!(early.len(), label.chars().count());
+                assert!(early
+                    .iter()
+                    .all(|(range, _)| label.is_char_boundary(range.start)
+                        && label.is_char_boundary(range.end)));
+                // Emphasis moves toward FG; on light themes that is darker.
+                let direction = (c::FG().l - c::FG_DIM().l).signum();
+                let brightest = |runs: &[(std::ops::Range<usize>, gpui::HighlightStyle)]| {
+                    runs.iter()
+                        .enumerate()
+                        .max_by(|(_, first), (_, second)| {
+                            (first.1.color.unwrap().l * direction)
+                                .total_cmp(&(second.1.color.unwrap().l * direction))
+                        })
+                        .unwrap()
+                        .0
+                };
+                assert!(brightest(&early) < brightest(&later));
+                assert_ne!(
+                    early[0].1.color,
+                    early[early.len() / 2].1.color,
+                    "shimmer varies glyph colors rather than pulsing the whole line"
+                );
+            });
+        }
     }
 
     #[test]
@@ -22157,7 +22179,7 @@ mod tests {
                 view.input
                     .update(cx, |input, cx| input.set_value("follow up", window, cx));
                 view.input.focus_handle(cx).focus(window, cx);
-            })
+            });
         });
         cx.simulate_keystrokes("enter");
         draw(cx);
@@ -22184,7 +22206,7 @@ mod tests {
                     });
                     cx.notify();
                 });
-            })
+            });
         });
         for _ in 0..120 {
             cx.executor()
@@ -22218,7 +22240,7 @@ mod tests {
                     .update(cx, |input, cx| input.set_value("hello", window, cx));
                 view.submit(window, cx);
                 assert_eq!(view.scroll.offset().y, -view.scroll.max_offset().y);
-            })
+            });
         });
         assert!(actions
             .try_iter()
@@ -22229,7 +22251,7 @@ mod tests {
             draw(cx);
         }
         view.read_with(cx, |view, _| {
-            assert_eq!(view.scroll.offset().y, -view.scroll.max_offset().y)
+            assert_eq!(view.scroll.offset().y, -view.scroll.max_offset().y);
         });
     }
 
@@ -22368,15 +22390,6 @@ mod tests {
     #[test]
     fn model_label_native_layout_preserves_full_text_at_every_zoom() {
         use gpui::AppContext as _;
-        let mut cx = gpui::HeadlessAppContext::with_platform(
-            gpui_platform::current_platform(true).text_system(),
-            Arc::new(crate::assets::Assets),
-            gpui_platform::current_headless_renderer,
-        );
-        cx.update(|cx| {
-            gpui_component::init(cx);
-            crate::fonts::register(cx).unwrap();
-        });
         struct Probe {
             label: &'static str,
             zoom: f32,
@@ -22394,6 +22407,15 @@ mod tests {
                     .child(full_model_label(text))
             }
         }
+        let mut cx = gpui::HeadlessAppContext::with_platform(
+            gpui_platform::current_platform(true).text_system(),
+            Arc::new(crate::assets::Assets),
+            gpui_platform::current_headless_renderer,
+        );
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            crate::fonts::register(cx).unwrap();
+        });
         let mut probe = None;
         let window = cx
             .open_window(gpui::size(gpui::px(900.), gpui::px(600.)), |window, cx| {
@@ -22428,7 +22450,7 @@ mod tests {
                         probe.read(cx).layout.as_ref().unwrap().text(),
                         label,
                         "full shaped text at {zoom}x"
-                    )
+                    );
                 });
             }
         }
@@ -22461,7 +22483,7 @@ mod tests {
                     assert!(view.closing_popup.is_some());
                     view.open_menu(ComposerMenu::Add, window, cx);
                     assert!(view.closing_popup.is_none());
-                })
+                });
             });
             cx.executor()
                 .advance_clock(super::super::motion::PopupMotion::exit_duration() * 2);
@@ -22470,9 +22492,9 @@ mod tests {
                 assert!(
                     view.menu == Some(ComposerMenu::Add),
                     "old cleanup cannot close a reopened popup"
-                )
+                );
             });
-            cx.update(|_, cx| view.update(cx, |view, cx| view.close_menu(cx)));
+            cx.update(|_, cx| view.update(cx, super::CodexView::close_menu));
             draw(cx);
             cx.executor()
                 .advance_clock(super::super::motion::PopupMotion::exit_duration() * 2);
@@ -22533,7 +22555,7 @@ mod tests {
                     view.session
                         .update(cx, |session, _| session.state.saved.provider = provider);
                     view.input.update(cx, |input, cx| {
-                        input.set_value("Keep this draft ", window, cx)
+                        input.set_value("Keep this draft ", window, cx);
                     });
                     view.open_menu(ComposerMenu::Add, window, cx);
                     view.choose_option("__reference", window, cx);
@@ -22545,7 +22567,7 @@ mod tests {
                     view.open_menu(ComposerMenu::Settings, window, cx);
                     assert!(view.menu == Some(ComposerMenu::Settings));
                     view.close_menu(cx);
-                })
+                });
             });
             assert!(actions
                 .try_iter()
@@ -24023,6 +24045,7 @@ mod tests {
         cx: &mut gpui::TestAppContext,
     ) {
         let (view, cx, actions, _) = fixture(cx);
+        cx.update(|_, cx| cx.set_reduce_motion(true));
         for width in [1024.0, 600.0] {
             cx.simulate_resize(gpui::size(gpui::px(width), gpui::px(480.0)));
             for (request_id, selector, expected_choice) in [
@@ -24043,6 +24066,27 @@ mod tests {
                     });
                 });
                 draw(cx);
+                // Provider approval trays intentionally scroll within a bounded
+                // area; reveal each action before checking visibility and routing.
+                let controls = cx.debug_bounds("agent-controls").unwrap();
+                let target = cx.debug_bounds(selector).unwrap();
+                if target.top() < controls.top() || target.bottom() > controls.bottom() {
+                    let delta = if target.top() < controls.top() {
+                        100000.0
+                    } else {
+                        -100000.0
+                    };
+                    cx.simulate_event(gpui::ScrollWheelEvent {
+                        position: controls.center(),
+                        delta: gpui::ScrollDelta::Pixels(gpui::point(
+                            gpui::px(0.0),
+                            gpui::px(delta),
+                        )),
+                        modifiers: gpui::Modifiers::default(),
+                        touch_phase: gpui::TouchPhase::Moved,
+                    });
+                    draw(cx);
+                }
                 let epoch =
                     view.read_with(cx, |view, cx| view.session.read(cx).state.interaction_epoch);
                 let controls = cx.debug_bounds("agent-controls").unwrap();
@@ -24067,7 +24111,10 @@ mod tests {
                 assert!(controls.right() <= composer.right());
                 assert!(cx.debug_bounds("codex-live-activity").is_none());
                 assert!(button.right() <= controls.right());
-                assert!(button.bottom() <= controls.bottom());
+                assert!(
+                    button.bottom() <= controls.bottom(),
+                    "{width}px {request_id}: button={button:?}, controls={controls:?}"
+                );
                 assert!(button.bottom() <= gpui::px(480.0));
                 cx.simulate_click(button.center(), gpui::Modifiers::default());
                 draw(cx);
@@ -24819,7 +24866,7 @@ mod tests {
         for provider in [codex::Provider::Codex, codex::Provider::Claude] {
             let root = tempfile::tempdir().unwrap();
             let path = root.path().join("main.rs");
-            std::fs::write(&path, "fn main() {\n    println!(\"hello\");\n}\n").unwrap();
+            fs_err::write(&path, "fn main() {\n    println!(\"hello\");\n}\n").unwrap();
             let (view, cx, actions, updates) = fixture(cx);
             let mut response = snapshot();
             response.saved.provider = provider;
@@ -24834,9 +24881,9 @@ mod tests {
             cx.update(|window, cx| {
                 view.update(cx, |view, cx| {
                     view.input.update(cx, |input, cx| {
-                        input.set_value("Keep this file-viewing draft", window, cx)
-                    })
-                })
+                        input.set_value("Keep this file-viewing draft", window, cx);
+                    });
+                });
             });
             draw(cx);
             let link = cx
@@ -24871,7 +24918,7 @@ mod tests {
                 assert_eq!(
                     view.input.read(cx).value().as_ref(),
                     "Keep this file-viewing draft"
-                )
+                );
             });
             assert!(!actions.try_iter().any(|action| matches!(
                 action,
@@ -24939,18 +24986,18 @@ mod tests {
         for provider in [codex::Provider::Codex, codex::Provider::Claude] {
             let checkout = tempfile::tempdir().unwrap();
             let outside = tempfile::tempdir().unwrap();
-            std::fs::write(
+            fs_err::write(
                 checkout.path().join("launch.html"),
                 "<!doctype html>\n<title>Launch</title>\n",
             )
             .unwrap();
-            std::fs::write(
+            fs_err::write(
                 checkout.path().join("review.grove-plan.json"),
                 "{\n  \"schema_version\": 1\n}\n",
             )
             .unwrap();
             let external = outside.path().join("output notes.md");
-            std::fs::write(
+            fs_err::write(
                 &external,
                 "# Outside output\n\nSelected explicitly from the transcript.\n",
             )
@@ -25307,9 +25354,9 @@ mod tests {
                         view.session
                             .update(cx, |session, _| session.state.saved.provider = provider);
                         view.input.update(cx, |input, cx| {
-                            input.set_value("Keep this draft", window, cx)
+                            input.set_value("Keep this draft", window, cx);
                         });
-                    })
+                    });
                 });
                 draw(cx);
                 let bounds = cx.debug_bounds("codex-composer-input").unwrap();
@@ -26472,7 +26519,7 @@ mod tests {
                     view.input
                         .update(cx, |input, cx| input.set_value("queued reply", window, cx));
                     view.submit_mode(SubmissionMode::Queue, window, cx);
-                })
+                });
             });
             let id = view.read_with(cx, |view, _| view.submitted_ack).unwrap();
             let mut accepted = snapshot();

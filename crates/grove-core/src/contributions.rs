@@ -29,9 +29,12 @@ impl Activity {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct Counts {
-    total_commit_contributions: u64,
-    total_pull_request_contributions: u64,
-    total_repositories_with_contributed_commits: u64,
+    #[serde(rename = "totalCommitContributions")]
+    commits: u64,
+    #[serde(rename = "totalPullRequestContributions")]
+    pull_requests: u64,
+    #[serde(rename = "totalRepositoriesWithContributedCommits")]
+    repositories: u64,
 }
 
 pub fn window(today: NaiveDate) -> Vec<NaiveDate> {
@@ -49,7 +52,7 @@ const QUERY_DAYS: usize = 40;
 fn boundary<T: TimeZone>(date: NaiveDate, timezone: &T) -> Result<String, String> {
     // Resolve each date separately so DST changes do not shift subsequent days.
     timezone
-        .from_local_datetime(&date.and_hms_opt(0, 0, 0).unwrap())
+        .from_local_datetime(&date.and_time(chrono::NaiveTime::MIN))
         .earliest()
         .map(|time| time.fixed_offset().to_rfc3339())
         .ok_or_else(|| "Local midnight is unavailable for an activity date".into())
@@ -59,16 +62,26 @@ fn query<T: TimeZone>(dates: &[NaiveDate], offset: usize, timezone: &T) -> Resul
     let mut q = String::from("query { viewer { login ");
     if let (Some(start), Some(end)) = (dates.first().filter(|_| offset == 0), dates.last()) {
         let start = boundary(*start, timezone)?;
-        let end = boundary(end.succ_opt().unwrap(), timezone)?;
-        let end = (chrono::DateTime::parse_from_rfc3339(&end).unwrap()
+        let end = boundary(
+            end.succ_opt()
+                .ok_or("Activity date exceeds the supported calendar")?,
+            timezone,
+        )?;
+        let end = (chrono::DateTime::parse_from_rfc3339(&end)
+            .map_err(|error| format!("Could not parse activity boundary: {error}"))?
             - chrono::Duration::seconds(1))
         .to_rfc3339();
         let _ = write!(q, "summary: contributionsCollection(from: \"{start}\", to: \"{end}\") {{ totalCommitContributions totalPullRequestContributions totalRepositoriesWithContributedCommits }} ");
     }
     for (i, date) in dates.iter().enumerate().skip(offset).take(QUERY_DAYS) {
         let start = boundary(*date, timezone)?;
-        let end = boundary(date.succ_opt().unwrap(), timezone)?;
-        let end = (chrono::DateTime::parse_from_rfc3339(&end).unwrap()
+        let end = boundary(
+            date.succ_opt()
+                .ok_or("Activity date exceeds the supported calendar")?,
+            timezone,
+        )?;
+        let end = (chrono::DateTime::parse_from_rfc3339(&end)
+            .map_err(|error| format!("Could not parse activity boundary: {error}"))?
             - chrono::Duration::seconds(1))
         .to_rfc3339();
         let _ = write!(q, "d{i}: contributionsCollection(from: \"{start}\", to: \"{end}\") {{ totalCommitContributions }} ");
@@ -104,15 +117,15 @@ pub fn parse(text: &str, dates: &[NaiveDate]) -> Result<Activity, String> {
             commits,
         });
     }
-    if days.iter().map(|d| d.commits).sum::<u64>() != summary.total_commit_contributions {
+    if days.iter().map(|d| d.commits).sum::<u64>() != summary.commits {
         return Err("GitHub activity changed during loading. Retry to refresh.".into());
     }
     Ok(Activity {
         login,
         days,
-        commits: summary.total_commit_contributions,
-        pull_requests: summary.total_pull_request_contributions,
-        repositories: summary.total_repositories_with_contributed_commits,
+        commits: summary.commits,
+        pull_requests: summary.pull_requests,
+        repositories: summary.repositories,
         longest_streak,
     })
 }
@@ -218,6 +231,11 @@ mod tests {
         let q = query(&[date], 0, &east).unwrap();
         assert!(q.contains("2026-11-09T23:59:59+05:30"));
     }
+    #[test]
+    fn query_rejects_calendar_overflow_without_panicking() {
+        assert!(query(&[NaiveDate::MAX], 0, &Utc).is_err());
+    }
+
     #[test]
     fn summaries_use_commit_days_and_separate_pr_totals() {
         let (text, dates) = fixture();

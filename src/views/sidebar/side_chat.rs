@@ -52,555 +52,9 @@ struct MessageView {
     _subscriptions: Vec<gpui::Subscription>,
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "macos"))]
 #[path = "side_chat_native_tests.rs"]
 mod native_tests;
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[gpui::test]
-    fn conversation_and_pending_status_have_room_above_composer(cx: &mut gpui::TestAppContext) {
-        let fixture = tempfile::tempdir().unwrap();
-        let path = fixture.path().to_string_lossy().into_owned();
-        assert!(std::process::Command::new("git")
-            .arg("-C")
-            .arg(&path)
-            .args(["init", "-b", "main"])
-            .output()
-            .unwrap()
-            .status
-            .success());
-        cx.update(|cx| {
-            gpui_component::init(cx);
-            cx.set_reduce_motion(true);
-            cx.set_global(SettingsState::new(grove_core::storage::Store {
-                projects: vec![grove_core::storage::Project {
-                    name: "Side chat".into(),
-                    path: path.clone(),
-                    scripts: Default::default(),
-                    archived: false,
-                    worktree_dir: None,
-                }],
-                ..Default::default()
-            }));
-            cx.set_global(crate::zoom::CurrentPtyDims::default());
-            cx.set_global(crate::zoom::ZoomState::new(1.0));
-        });
-        let (updates, receive) = std::sync::mpsc::channel();
-        let (sidebar, cx) = cx.add_window_view(|window, cx| {
-            let runtime = cx.new(crate::runtime::Runtime::new);
-            let registry = runtime.read(cx).registry.clone();
-            let id = registry.update(cx, |registry, _| {
-                registry.insert_meta("Side chat".into(), path.clone(), Agent::Codex)
-            });
-            runtime.read(cx).tree.clone().update(cx, |tree, _| {
-                tree.set_active_worktrees(
-                    0,
-                    vec![grove_core::git::Worktree {
-                        path: path.clone(),
-                        branch: "main".into(),
-                        mtime: None,
-                        is_main: true,
-                    }],
-                );
-            });
-            let saved = grove_core::codex::SavedSession {
-                session_review: Default::default(),
-                        rich_plans: Default::default(),
-                side_chats: Default::default(),
-                fork_origin: None,
-            claude_resume: None,
-                claude_subagents: Default::default(),
-                edit_checkpoints: Vec::new(),
-                pending_edit: None,
-            rewind_drafts: Vec::new(),
-                provider: grove_core::codex::Provider::Codex,
-                composer: Default::default(),
-                context: None,
-            context_details: None,
-                key: "side-chat-layout".into(),
-                project: "Side chat".into(),
-                cwd: path.clone(),
-                label: "Codex".into(),
-                title: None,
-                title_generation: None,
-                roots: Vec::new(),
-                thread_id: Some("side-chat-layout-thread".into()),
-                items: vec![serde_json::json!({"id":"main-history", "type":"agentMessage", "text":"Main transcript content."})].into(),
-                work_periods: Vec::new(),
-                draft: String::new(),
-                draft_images: Vec::new(),
-                draft_reference: None,
-                config_args: Vec::new(),
-                native_config_version: 1,
-                activity_reporting: false,
-            };
-            let (handle, _actions) = grove_core::codex::Handle::channel();
-            let session = cx.new(|cx| {
-                crate::entities::codex_session::CodexSession::from_connection(
-                    grove_core::codex::Snapshot::new(saved),
-                    grove_core::codex::Connection {
-                        handle: handle.clone(),
-                        updates: receive.into(),
-                    },
-                    cx,
-                )
-            });
-            registry.update(cx, |registry, _| registry.attach_codex(id, session, handle));
-            let mut sidebar = Sidebar::new(runtime, window, cx);
-            sidebar.selection = Some(Selection::Session(id));
-            sidebar.initial_selection_pending = false;
-            sidebar.checkout_panel.hidden = false;
-            sidebar.checkout_panel.side_chat_owner = sidebar.selection.clone();
-            sidebar
-        });
-        cx.simulate_resize(gpui::size(gpui::px(1280.), gpui::px(800.)));
-        cx.run_until_parked();
-        cx.update(|window, cx| {
-            window.simulate_next_frame(cx);
-            let _ = window.draw(cx);
-        });
-        cx.run_until_parked();
-        cx.update(|window, cx| {
-            window.simulate_next_frame(cx);
-            let _ = window.draw(cx);
-        });
-        // Reopening the wide panel must keep its full height from the first
-        // animated frame; otherwise the composer can be clipped during entry.
-        let full_height = cx.debug_bounds("side-chat-panel").unwrap().size.height;
-        cx.update(|window, cx| {
-            cx.set_reduce_motion(false);
-            sidebar.update(cx, |sidebar, cx| {
-                sidebar.toggle_side_chat(window, cx);
-                sidebar.toggle_side_chat(window, cx);
-            });
-            window.simulate_next_frame(cx);
-            let _ = window.draw(cx);
-        });
-        let opening_height = cx.debug_bounds("side-chat-panel").unwrap().size.height;
-        assert_eq!(
-            opening_height, full_height,
-            "panel height changed on the opening frame"
-        );
-        cx.update(|_, cx| cx.set_reduce_motion(true));
-        cx.update(|window, cx| {
-            sidebar.update(cx, |sidebar, cx| {
-                let key = sidebar
-                    .checkout_panel
-                    .side_chats
-                    .keys()
-                    .next()
-                    .unwrap()
-                    .clone();
-                let input = sidebar.checkout_panel.side_chats[&key].input.clone();
-                let chat = sidebar.checkout_panel.side_chats.get_mut(&key).unwrap();
-                chat.messages.push((
-                    "assistant".into(),
-                    "[link](https://example.com) **Bold**\n\n```rust\nlet x = 1;\n```".into(),
-                ));
-                chat.messages
-                    .push(("user".into(), "Earlier question".into()));
-                input.update(cx, |input, cx| {
-                    input.set_value("Can you explain this?", window, cx);
-                    input.focus(window, cx);
-                });
-                // Simulate a stale selection without redrawing. Enter must report
-                // the rejection and retain the draft, without starting a provider.
-                sidebar.selection = None;
-                input.update(cx, |_, cx| {
-                    cx.emit(gpui_component::input::InputEvent::PressEnter {
-                        secondary: false,
-                        shift: false,
-                    })
-                });
-            })
-        });
-        cx.update(|window, cx| {
-            sidebar.update(cx, |sidebar, cx| {
-                let key = sidebar
-                    .checkout_panel
-                    .side_chats
-                    .keys()
-                    .next()
-                    .unwrap()
-                    .clone();
-                let chat = sidebar
-                    .checkout_panel
-                    .side_chats
-                    .values_mut()
-                    .next()
-                    .unwrap();
-                assert!(chat
-                    .error
-                    .as_deref()
-                    .unwrap_or_default()
-                    .contains("changed"));
-                assert_eq!(
-                    chat.input.read(cx).value().to_string(),
-                    "Can you explain this?"
-                );
-                assert!(
-                    !chat.retryable,
-                    "an unsent draft must never retry an older question"
-                );
-                sidebar.selection = Some(Selection::Session(key.0));
-                sidebar.retry_side_chat(key.clone(), window, cx);
-                assert!(!sidebar.checkout_panel.side_chats[&key].busy);
-                assert_eq!(
-                    sidebar.checkout_panel.side_chats[&key]
-                        .messages
-                        .last()
-                        .unwrap()
-                        .1,
-                    "Earlier question"
-                );
-                sidebar.send_side_chat(key.clone(), window, cx);
-                let chat = &sidebar.checkout_panel.side_chats[&key];
-                assert!(chat.busy);
-                assert_eq!(chat.messages.last().unwrap().1, "Can you explain this?");
-                // Stop before the background executor can launch a provider.
-                chat.cancel
-                    .as_ref()
-                    .unwrap()
-                    .store(true, std::sync::atomic::Ordering::Relaxed);
-            })
-        });
-        cx.update(|window, cx| {
-            window.simulate_next_frame(cx);
-            let _ = window.draw(cx);
-        });
-        cx.update(|_, cx| {
-            sidebar.update(cx, |sidebar, cx| {
-                let chat = sidebar.checkout_panel.side_chats.values().next().unwrap();
-                assert_eq!(
-                    chat.message_views[0].view.read(cx).source().as_ref(),
-                    "[link](https://example.com) **Bold**\n\n```rust\nlet x = 1;\n```"
-                );
-            });
-        });
-        assert!(
-            cx.debug_bounds("side-chat-message-0").is_some(),
-            "assistant Markdown is mounted in the transcript"
-        );
-        // The lower context strip is the outer border of the two-layer composer.
-        let main_composer = cx
-            .debug_bounds("codex-composer-context")
-            .unwrap_or_else(|| cx.debug_bounds("codex-composer").unwrap());
-        let card = cx.debug_bounds("side-chat-card").unwrap();
-        assert!(
-            (main_composer.bottom() - card.bottom()).abs() <= gpui::px(1.),
-            "side chat must align with the main composer: {main_composer:?} {card:?}"
-        );
-        let composer = cx.debug_bounds("side-chat-composer").unwrap();
-        let input = cx.debug_bounds("side-chat-input").unwrap();
-        let footer = cx.debug_bounds("side-chat-composer-footer").unwrap();
-        assert!(
-            input.top() >= composer.top() && input.bottom() <= footer.top(),
-            "input must fit above composer footer: {input:?} {footer:?}"
-        );
-        assert!(
-            footer.bottom() < composer.bottom(),
-            "footer must fit within composer: {footer:?} {composer:?}"
-        );
-        let bubble = cx.debug_bounds("side-chat-bubble-1").unwrap();
-        let user_copy = cx.debug_bounds("side-chat-copy-1").unwrap();
-        assert!(
-            user_copy.top() >= bubble.bottom(),
-            "Copy belongs outside the user bubble: {user_copy:?} {bubble:?}"
-        );
-        let history = cx.debug_bounds("side-chat-history").unwrap();
-        let responding = cx.debug_bounds("side-chat-responding").unwrap();
-        assert!(
-            history.size.height > gpui::px(100.),
-            "history was squeezed by the composer: {history:?}"
-        );
-        assert!(
-            responding.top() >= history.top() && responding.bottom() <= history.bottom(),
-            "pending feedback must be visible: {responding:?} vs {history:?}"
-        );
-        cx.update(|_, cx| {
-            sidebar.update(cx, |sidebar, _| {
-                if let Some(cancel) = sidebar
-                    .checkout_panel
-                    .side_chats
-                    .values()
-                    .next()
-                    .and_then(|chat| chat.cancel.as_ref())
-                {
-                    cancel.store(true, std::sync::atomic::Ordering::Relaxed);
-                }
-            })
-        });
-        cx.run_until_parked();
-        cx.update(|window, cx| {
-            window.simulate_next_frame(cx);
-            let _ = window.draw(cx);
-        });
-        assert!(
-            cx.debug_bounds("side-chat-copy-code").is_some(),
-            "Markdown code blocks expose the shared copy action"
-        );
-        let body = cx.debug_bounds("side-chat-body-0").unwrap();
-        cx.simulate_click(
-            body.origin + gpui::point(gpui::px(8.), gpui::px(8.)),
-            gpui::Modifiers::default(),
-        );
-        assert_eq!(cx.opened_url().as_deref(), Some("https://example.com"));
-        let code_copy = cx.debug_bounds("side-chat-copy-code").unwrap();
-        cx.simulate_click(code_copy.center(), gpui::Modifiers::default());
-        assert_eq!(
-            cx.update(|_, cx| cx.read_from_clipboard().and_then(|clip| clip.text()))
-                .as_deref(),
-            Some("let x = 1;")
-        );
-        let message_copy = cx.debug_bounds("side-chat-copy-0").unwrap();
-        cx.simulate_click(message_copy.center(), gpui::Modifiers::default());
-        assert_eq!(
-            cx.update(|_, cx| cx.read_from_clipboard().and_then(|clip| clip.text()))
-                .as_deref(),
-            Some("[link](https://example.com) **Bold**\n\n```rust\nlet x = 1;\n```")
-        );
-        cx.update(|_, cx| {
-            sidebar.update(cx, |sidebar, _| {
-                assert!(sidebar
-                    .checkout_panel
-                    .side_chats
-                    .values()
-                    .next()
-                    .unwrap()
-                    .copied_messages
-                    .contains_key(&0));
-            })
-        });
-        // Measure the actual main and side surfaces together for both providers
-        // and changed rem zoom, rather than comparing isolated panel snapshots.
-        for provider in [
-            grove_core::codex::Provider::Codex,
-            grove_core::codex::Provider::Claude,
-        ] {
-            for (width, height, rem) in
-                [(1280., 800., 16.), (1100., 760., 16.), (1600., 1000., 20.)]
-            {
-                cx.simulate_resize(gpui::size(gpui::px(width), gpui::px(height)));
-                cx.update(|window, cx| {
-                    window.set_rem_size(gpui::px(rem));
-                    sidebar.update(cx, |sidebar, cx| {
-                        let id = sidebar.checkout_panel.side_chats.keys().next().unwrap().0;
-                        let session = sidebar
-                            .runtime
-                            .read(cx)
-                            .registry
-                            .read(cx)
-                            .codex(id)
-                            .unwrap()
-                            .clone();
-                        session.update(cx, |session, cx| {
-                            session.state.saved.provider = provider;
-                            cx.notify();
-                        });
-                    });
-                });
-                for _ in 0..3 {
-                    cx.run_until_parked();
-                    cx.update(|window, cx| {
-                        window.simulate_next_frame(cx);
-                        let _ = window.draw(cx);
-                    });
-                }
-                let main = cx
-                    .debug_bounds("codex-composer-context")
-                    .unwrap_or_else(|| cx.debug_bounds("codex-composer").unwrap());
-                let side = cx.debug_bounds("side-chat-card").unwrap();
-                assert!(
-                    (main.bottom() - side.bottom()).abs() <= gpui::px(1.),
-                    "{provider:?} at {width}/{rem}: {main:?} vs {side:?}"
-                );
-            }
-        }
-        cx.simulate_resize(gpui::size(gpui::px(1280.), gpui::px(800.)));
-        cx.update(|window, _| window.set_rem_size(gpui::px(16.)));
-        // Both provider fixtures share the short-pane budget, including zoom.
-        // No live provider process is started by this geometry regression.
-        for provider in [
-            grove_core::codex::Provider::Codex,
-            grove_core::codex::Provider::Claude,
-        ] {
-            for (width, height, rem) in [(600., 400., 16.), (320., 200., 16.), (500., 300., 20.)] {
-                cx.simulate_resize(gpui::size(gpui::px(width), gpui::px(height)));
-                cx.update(|window, cx| {
-                    window.set_rem_size(gpui::px(rem));
-                    cx.set_reduce_motion(true);
-                    sidebar.update(cx, |sidebar, cx| {
-                        let id = sidebar.checkout_panel.side_chats.keys().next().unwrap().0;
-                        let session = sidebar
-                            .runtime
-                            .read(cx)
-                            .registry
-                            .read(cx)
-                            .codex(id)
-                            .unwrap()
-                            .clone();
-                        session.update(cx, |session, cx| {
-                            session.state.saved.provider = provider;
-                            session.state.status = grove_core::codex::Status::Idle;
-                            cx.notify();
-                        });
-                        sidebar.checkout_panel.hidden = false;
-                        sidebar.checkout_panel.side_chat_owner = sidebar.selection.clone();
-                        cx.notify();
-                    });
-                });
-                for _ in 0..3 {
-                    cx.run_until_parked();
-                    cx.update(|window, cx| {
-                        window.simulate_next_frame(cx);
-                        let _ = window.draw(cx);
-                    });
-                }
-                let panel = cx.debug_bounds("side-chat-panel").unwrap();
-                let rail = cx.debug_bounds("codex-composer-rail").unwrap();
-                assert!(
-                    panel.size.height <= gpui::px(height * 0.4 + 1.),
-                    "{provider:?}: short pane exceeded its budget: {panel:?}"
-                );
-                assert!(
-                    rail.bottom() <= gpui::px(height + 1.),
-                    "{provider:?}: composer scroll area left the window: {rail:?}"
-                );
-                let send = cx.debug_bounds("codex-send").unwrap();
-                sidebar.read_with(cx, |sidebar, cx| {
-                    let scroll = &sidebar
-                        .codex_views
-                        .values()
-                        .next()
-                        .unwrap()
-                        .read(cx)
-                        .composer_rail_scroll;
-                    let offset = scroll.offset();
-                    scroll.set_offset(gpui::point(
-                        offset.x,
-                        offset.y + rail.bottom() - send.bottom(),
-                    ));
-                });
-                cx.update(|window, cx| {
-                    window.simulate_next_frame(cx);
-                    let _ = window.draw(cx);
-                });
-                let send = cx.debug_bounds("codex-send").unwrap();
-                assert!(
-                    send.bottom() <= rail.bottom() && send.top() >= rail.top(),
-                    "{provider:?}: main send control must remain reachable: {send:?} vs {rail:?}"
-                );
-                sidebar.read_with(cx, |sidebar, _| {
-                    let scroll = &sidebar.checkout_panel.side_chat_panel_scroll;
-                    assert!(
-                        scroll.max_offset().y > gpui::px(0.),
-                        "short side chat must allow reaching its composer"
-                    );
-                    scroll.set_offset(gpui::point(gpui::px(0.), -scroll.max_offset().y));
-                });
-                cx.update(|window, cx| {
-                    window.simulate_next_frame(cx);
-                    let _ = window.draw(cx);
-                });
-                let footer = cx.debug_bounds("side-chat-composer-footer").unwrap();
-                assert!(footer.bottom() <= panel.bottom() + gpui::px(1.), "{provider:?}: side composer footer must be reachable by scrolling: {footer:?} vs {panel:?}");
-                cx.update(|window, cx| {
-                    cx.set_reduce_motion(false);
-                    sidebar.update(cx, |sidebar, cx| {
-                        sidebar.toggle_side_chat(window, cx);
-                        sidebar.hold_panel_motion_at_start();
-                    });
-                    window.simulate_next_frame(cx);
-                    let _ = window.draw(cx);
-                });
-                let exiting = cx.debug_bounds("narrow-session-panel-exit").unwrap();
-                assert!(
-                    exiting.size.height == panel.size.height,
-                    "{provider:?}: closing changed the outgoing height: {panel:?} -> {exiting:?}"
-                );
-            }
-        }
-        cx.update(|window, cx| {
-            window.set_rem_size(gpui::px(16.));
-            cx.set_reduce_motion(true);
-        });
-        // An ambiguous multi-checkout session must not overflow a narrow window.
-        let second_path = fixture.path().join("second").to_string_lossy().into_owned();
-        cx.update(|_, cx| {
-            sidebar.update(cx, |sidebar, cx| {
-                let runtime = sidebar.runtime.read(cx);
-                let registry = runtime.registry.clone();
-                let tree = runtime.tree.clone();
-                let id = registry.update(cx, |registry, _| {
-                    registry.insert_meta_with_context(
-                        "Side chat".into(),
-                        path.clone(),
-                        Agent::Codex,
-                        vec![grove_core::session_meta::ContextRoot {
-                            project: "Side chat".into(),
-                            wt_path: second_path.clone(),
-                        }],
-                        None,
-                    )
-                });
-                tree.update(cx, |tree, _| {
-                    tree.set_active_worktrees(
-                        0,
-                        vec![
-                            grove_core::git::Worktree {
-                                path: path.clone(),
-                                branch: "main".into(),
-                                mtime: None,
-                                is_main: true,
-                            },
-                            grove_core::git::Worktree {
-                                path: second_path.clone(),
-                                branch: "other".into(),
-                                mtime: None,
-                                is_main: false,
-                            },
-                        ],
-                    )
-                });
-                sidebar.selection = Some(Selection::Session(id));
-                sidebar.checkout_panel.side_chat_owner = sidebar.selection.clone();
-                sidebar.checkout_panel.chosen_root = None;
-                cx.notify();
-            })
-        });
-        cx.simulate_resize(gpui::size(gpui::px(320.), gpui::px(800.)));
-        cx.run_until_parked();
-        cx.update(|window, cx| {
-            window.simulate_next_frame(cx);
-            let _ = window.draw(cx);
-        });
-        let required = cx.debug_bounds("side-chat-checkout-required").unwrap();
-        assert!(
-            required.size.width <= gpui::px(320.),
-            "checkout selection must fit narrow windows: {required:?}"
-        );
-        for (width, height, rem) in [(320., 200., 16.), (500., 300., 20.)] {
-            cx.simulate_resize(gpui::size(gpui::px(width), gpui::px(height)));
-            cx.update(|window, _| window.set_rem_size(gpui::px(rem)));
-            for _ in 0..3 {
-                cx.run_until_parked();
-                cx.update(|window, cx| {
-                    window.simulate_next_frame(cx);
-                    let _ = window.draw(cx);
-                });
-            }
-            let required = cx.debug_bounds("side-chat-checkout-required").unwrap();
-            assert!(
-                required.size.height <= gpui::px(height * 0.4 + 1.),
-                "checkout recovery must share the short-pane budget: {required:?}"
-            );
-        }
-        drop(updates);
-    }
-}
 
 impl Sidebar {
     fn copy_side_message(
@@ -651,7 +105,7 @@ impl Sidebar {
                         draft,
                     },
                     cx,
-                )
+                );
             });
         }
     }
@@ -687,7 +141,7 @@ impl Sidebar {
                         chat: saved,
                     },
                     cx,
-                )
+                );
             });
         }
     }
@@ -953,7 +407,7 @@ impl Sidebar {
                 .when(wide, |panel| panel.w(rpx(SIDE_CHAT_WIDTH)))
                 .relative()
                 .flex_shrink_0()
-                .when(wide, |panel| panel.h_full())
+                .when(wide, gpui::Styled::h_full)
                 .when(!wide, |panel| {
                     panel
                         .w_full()
@@ -1092,7 +546,7 @@ impl Sidebar {
                     follow_latest: true,
                     pending_scroll: None,
                     motion_frame: None,
-                    motion_frame_pending: Default::default(),
+                    motion_frame_pending: std::rc::Rc::default(),
                 },
             );
         }
@@ -1109,7 +563,7 @@ impl Sidebar {
             let decorations = super::super::codex_view::composer_markdown_decorations(&source);
             let replacements = super::super::codex_view::composer_markdown_replacements(&source);
             chat.input.update(cx, |input, cx| {
-                input.set_text_replacements(replacements, cx)
+                input.set_text_replacements(replacements, cx);
             });
             chat.markdown_source = Some((source, generation, decorations));
         }
@@ -1253,7 +707,7 @@ impl Sidebar {
                 }
             }))
             .on_click(cx.listener(move |this, _, _, cx| {
-                this.copy_side_message(copy_key.clone(), index, copy_text.clone(), cx)
+                this.copy_side_message(copy_key.clone(), index, copy_text.clone(), cx);
             }));
             let mut row = div()
                 .id(("side-chat-message", index))
@@ -1385,7 +839,7 @@ impl Sidebar {
                         )
                         .disabled(!supported)
                         .on_click(cx.listener(move |this, _, window, cx| {
-                            this.retry_side_chat(retry_key.clone(), window, cx)
+                            this.retry_side_chat(retry_key.clone(), window, cx);
                         })),
                 );
             }
@@ -1488,5 +942,551 @@ impl Sidebar {
         } else {
             self.narrow_panel_entrance(panel, cx)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[gpui::test]
+    fn conversation_and_pending_status_have_room_above_composer(cx: &mut gpui::TestAppContext) {
+        let fixture = tempfile::tempdir().unwrap();
+        let path = fixture.path().to_string_lossy().into_owned();
+        assert!(std::process::Command::new("git")
+            .arg("-C")
+            .arg(&path)
+            .args(["init", "-b", "main"])
+            .output()
+            .unwrap()
+            .status
+            .success());
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            cx.set_reduce_motion(true);
+            cx.set_global(SettingsState::new(grove_core::storage::Store {
+                projects: vec![grove_core::storage::Project {
+                    name: "Side chat".into(),
+                    path: path.clone(),
+                    scripts: grove_core::storage::ProjectScripts::default(),
+                    archived: false,
+                    worktree_dir: None,
+                }],
+                ..Default::default()
+            }));
+            cx.set_global(crate::zoom::CurrentPtyDims::default());
+            cx.set_global(crate::zoom::ZoomState::new(1.0));
+        });
+        let (updates, receive) = std::sync::mpsc::channel();
+        let (sidebar, cx) = cx.add_window_view(|window, cx| {
+            let runtime = cx.new(crate::runtime::Runtime::new);
+            let registry = runtime.read(cx).registry.clone();
+            let id = registry.update(cx, |registry, _| {
+                registry.insert_meta("Side chat".into(), path.clone(), Agent::Codex)
+            });
+            runtime.read(cx).tree.clone().update(cx, |tree, _| {
+                tree.set_active_worktrees(
+                    0,
+                    vec![grove_core::git::Worktree {
+                        path: path.clone(),
+                        branch: "main".into(),
+                        mtime: None,
+                        is_main: true,
+                    }],
+                );
+            });
+            let saved = grove_core::codex::SavedSession {
+                session_review: grove_core::codex::SessionReview::default(),
+                        rich_plans: grove_core::rich_plan::PlanStore::default(),
+                side_chats: std::collections::HashMap::default(),
+                fork_origin: None,
+            claude_resume: None,
+                claude_subagents: std::collections::HashMap::default(),
+                edit_checkpoints: Vec::new(),
+                pending_edit: None,
+            rewind_drafts: Vec::new(),
+                provider: grove_core::codex::Provider::Codex,
+                composer: grove_core::codex::ComposerSettings::default(),
+                context: None,
+            context_details: None,
+                key: "side-chat-layout".into(),
+                project: "Side chat".into(),
+                cwd: path.clone(),
+                label: "Codex".into(),
+                title: None,
+                title_generation: None,
+                roots: Vec::new(),
+                thread_id: Some("side-chat-layout-thread".into()),
+                items: vec![serde_json::json!({"id":"main-history", "type":"agentMessage", "text":"Main transcript content."})].into(),
+                work_periods: Vec::new(),
+                draft: String::new(),
+                draft_images: Vec::new(),
+                draft_reference: None,
+                config_args: Vec::new(),
+                native_config_version: 1,
+                activity_reporting: false,
+            };
+            let (handle, _actions) = grove_core::codex::Handle::channel();
+            let session = cx.new(|cx| {
+                crate::entities::codex_session::CodexSession::from_connection(
+                    grove_core::codex::Snapshot::new(saved),
+                    grove_core::codex::Connection {
+                        handle: handle.clone(),
+                        updates: receive.into(),
+                    },
+                    cx,
+                )
+            });
+            registry.update(cx, |registry, _| registry.attach_codex(id, session, handle));
+            let mut sidebar = Sidebar::new(runtime, window, cx);
+            sidebar.selection = Some(Selection::Session(id));
+            sidebar.initial_selection_pending = false;
+            sidebar.checkout_panel.hidden = false;
+            sidebar.checkout_panel.side_chat_owner = sidebar.selection.clone();
+            sidebar
+        });
+        cx.simulate_resize(gpui::size(gpui::px(1280.), gpui::px(800.)));
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            window.simulate_next_frame(cx);
+            let _ = window.draw(cx);
+        });
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            window.simulate_next_frame(cx);
+            let _ = window.draw(cx);
+        });
+        // Reopening the wide panel must keep its full height from the first
+        // animated frame; otherwise the composer can be clipped during entry.
+        let full_height = cx.debug_bounds("side-chat-panel").unwrap().size.height;
+        cx.update(|window, cx| {
+            cx.set_reduce_motion(false);
+            sidebar.update(cx, |sidebar, cx| {
+                sidebar.toggle_side_chat(window, cx);
+                sidebar.toggle_side_chat(window, cx);
+            });
+            window.simulate_next_frame(cx);
+            let _ = window.draw(cx);
+        });
+        let opening_height = cx.debug_bounds("side-chat-panel").unwrap().size.height;
+        assert_eq!(
+            opening_height, full_height,
+            "panel height changed on the opening frame"
+        );
+        cx.update(|_, cx| cx.set_reduce_motion(true));
+        cx.update(|window, cx| {
+            sidebar.update(cx, |sidebar, cx| {
+                let key = sidebar
+                    .checkout_panel
+                    .side_chats
+                    .keys()
+                    .next()
+                    .unwrap()
+                    .clone();
+                let input = sidebar.checkout_panel.side_chats[&key].input.clone();
+                let chat = sidebar.checkout_panel.side_chats.get_mut(&key).unwrap();
+                chat.messages.push((
+                    "assistant".into(),
+                    "[link](https://example.com) **Bold**\n\n```rust\nlet x = 1;\n```".into(),
+                ));
+                chat.messages
+                    .push(("user".into(), "Earlier question".into()));
+                input.update(cx, |input, cx| {
+                    input.set_value("Can you explain this?", window, cx);
+                    input.focus(window, cx);
+                });
+                // Simulate a stale selection without redrawing. Enter must report
+                // the rejection and retain the draft, without starting a provider.
+                sidebar.selection = None;
+                input.update(cx, |_, cx| {
+                    cx.emit(gpui_component::input::InputEvent::PressEnter {
+                        secondary: false,
+                        shift: false,
+                    });
+                });
+            });
+        });
+        cx.update(|window, cx| {
+            sidebar.update(cx, |sidebar, cx| {
+                let key = sidebar
+                    .checkout_panel
+                    .side_chats
+                    .keys()
+                    .next()
+                    .unwrap()
+                    .clone();
+                let chat = sidebar
+                    .checkout_panel
+                    .side_chats
+                    .values_mut()
+                    .next()
+                    .unwrap();
+                assert!(chat
+                    .error
+                    .as_deref()
+                    .unwrap_or_default()
+                    .contains("changed"));
+                assert_eq!(
+                    chat.input.read(cx).value().to_string(),
+                    "Can you explain this?"
+                );
+                assert!(
+                    !chat.retryable,
+                    "an unsent draft must never retry an older question"
+                );
+                sidebar.selection = Some(Selection::Session(key.0));
+                sidebar.retry_side_chat(key.clone(), window, cx);
+                assert!(!sidebar.checkout_panel.side_chats[&key].busy);
+                assert_eq!(
+                    sidebar.checkout_panel.side_chats[&key]
+                        .messages
+                        .last()
+                        .unwrap()
+                        .1,
+                    "Earlier question"
+                );
+                sidebar.send_side_chat(key.clone(), window, cx);
+                let chat = &sidebar.checkout_panel.side_chats[&key];
+                assert!(chat.busy);
+                assert_eq!(chat.messages.last().unwrap().1, "Can you explain this?");
+                // Stop before the background executor can launch a provider.
+                chat.cancel
+                    .as_ref()
+                    .unwrap()
+                    .store(true, std::sync::atomic::Ordering::Relaxed);
+            });
+        });
+        cx.update(|window, cx| {
+            window.simulate_next_frame(cx);
+            let _ = window.draw(cx);
+        });
+        cx.update(|_, cx| {
+            sidebar.update(cx, |sidebar, cx| {
+                let chat = sidebar.checkout_panel.side_chats.values().next().unwrap();
+                assert_eq!(
+                    chat.message_views[0].view.read(cx).source().as_ref(),
+                    "[link](https://example.com) **Bold**\n\n```rust\nlet x = 1;\n```"
+                );
+            });
+        });
+        assert!(
+            cx.debug_bounds("side-chat-message-0").is_some(),
+            "assistant Markdown is mounted in the transcript"
+        );
+        // The lower context strip is the outer border of the two-layer composer.
+        let main_composer = cx
+            .debug_bounds("codex-composer-context")
+            .unwrap_or_else(|| cx.debug_bounds("codex-composer").unwrap());
+        let card = cx.debug_bounds("side-chat-card").unwrap();
+        assert!(
+            (main_composer.bottom() - card.bottom()).abs() <= gpui::px(1.),
+            "side chat must align with the main composer: {main_composer:?} {card:?}"
+        );
+        let composer = cx.debug_bounds("side-chat-composer").unwrap();
+        let input = cx.debug_bounds("side-chat-input").unwrap();
+        let footer = cx.debug_bounds("side-chat-composer-footer").unwrap();
+        assert!(
+            input.top() >= composer.top() && input.bottom() <= footer.top(),
+            "input must fit above composer footer: {input:?} {footer:?}"
+        );
+        assert!(
+            footer.bottom() < composer.bottom(),
+            "footer must fit within composer: {footer:?} {composer:?}"
+        );
+        let bubble = cx.debug_bounds("side-chat-bubble-1").unwrap();
+        let user_copy = cx.debug_bounds("side-chat-copy-1").unwrap();
+        assert!(
+            user_copy.top() >= bubble.bottom(),
+            "Copy belongs outside the user bubble: {user_copy:?} {bubble:?}"
+        );
+        let history = cx.debug_bounds("side-chat-history").unwrap();
+        let responding = cx.debug_bounds("side-chat-responding").unwrap();
+        assert!(
+            history.size.height > gpui::px(100.),
+            "history was squeezed by the composer: {history:?}"
+        );
+        assert!(
+            responding.top() >= history.top() && responding.bottom() <= history.bottom(),
+            "pending feedback must be visible: {responding:?} vs {history:?}"
+        );
+        cx.update(|_, cx| {
+            sidebar.update(cx, |sidebar, _| {
+                if let Some(cancel) = sidebar
+                    .checkout_panel
+                    .side_chats
+                    .values()
+                    .next()
+                    .and_then(|chat| chat.cancel.as_ref())
+                {
+                    cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+                }
+            });
+        });
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            window.simulate_next_frame(cx);
+            let _ = window.draw(cx);
+        });
+        assert!(
+            cx.debug_bounds("side-chat-copy-code").is_some(),
+            "Markdown code blocks expose the shared copy action"
+        );
+        let body = cx.debug_bounds("side-chat-body-0").unwrap();
+        cx.simulate_click(
+            body.origin + gpui::point(gpui::px(8.), gpui::px(8.)),
+            gpui::Modifiers::default(),
+        );
+        assert_eq!(cx.opened_url().as_deref(), Some("https://example.com"));
+        let code_copy = cx.debug_bounds("side-chat-copy-code").unwrap();
+        cx.simulate_click(code_copy.center(), gpui::Modifiers::default());
+        assert_eq!(
+            cx.update(|_, cx| cx.read_from_clipboard().and_then(|clip| clip.text()))
+                .as_deref(),
+            Some("let x = 1;")
+        );
+        let message_copy = cx.debug_bounds("side-chat-copy-0").unwrap();
+        cx.simulate_click(message_copy.center(), gpui::Modifiers::default());
+        assert_eq!(
+            cx.update(|_, cx| cx.read_from_clipboard().and_then(|clip| clip.text()))
+                .as_deref(),
+            Some("[link](https://example.com) **Bold**\n\n```rust\nlet x = 1;\n```")
+        );
+        cx.update(|_, cx| {
+            sidebar.update(cx, |sidebar, _| {
+                assert!(sidebar
+                    .checkout_panel
+                    .side_chats
+                    .values()
+                    .next()
+                    .unwrap()
+                    .copied_messages
+                    .contains_key(&0));
+            });
+        });
+        // Measure the actual main and side surfaces together for both providers
+        // and changed rem zoom, rather than comparing isolated panel snapshots.
+        for provider in [
+            grove_core::codex::Provider::Codex,
+            grove_core::codex::Provider::Claude,
+        ] {
+            for (width, height, rem) in
+                [(1280., 800., 16.), (1100., 760., 16.), (1600., 1000., 20.)]
+            {
+                cx.simulate_resize(gpui::size(gpui::px(width), gpui::px(height)));
+                cx.update(|window, cx| {
+                    window.set_rem_size(gpui::px(rem));
+                    sidebar.update(cx, |sidebar, cx| {
+                        let id = sidebar.checkout_panel.side_chats.keys().next().unwrap().0;
+                        let session = sidebar
+                            .runtime
+                            .read(cx)
+                            .registry
+                            .read(cx)
+                            .codex(id)
+                            .unwrap()
+                            .clone();
+                        session.update(cx, |session, cx| {
+                            session.state.saved.provider = provider;
+                            cx.notify();
+                        });
+                    });
+                });
+                for _ in 0..3 {
+                    cx.run_until_parked();
+                    cx.update(|window, cx| {
+                        window.simulate_next_frame(cx);
+                        let _ = window.draw(cx);
+                    });
+                }
+                let main = cx
+                    .debug_bounds("codex-composer-context")
+                    .unwrap_or_else(|| cx.debug_bounds("codex-composer").unwrap());
+                let side = cx.debug_bounds("side-chat-card").unwrap();
+                assert!(
+                    (main.bottom() - side.bottom()).abs() <= gpui::px(1.),
+                    "{provider:?} at {width}/{rem}: {main:?} vs {side:?}"
+                );
+            }
+        }
+        cx.simulate_resize(gpui::size(gpui::px(1280.), gpui::px(800.)));
+        cx.update(|window, _| window.set_rem_size(gpui::px(16.)));
+        // Both provider fixtures share the short-pane budget, including zoom.
+        // No live provider process is started by this geometry regression.
+        for provider in [
+            grove_core::codex::Provider::Codex,
+            grove_core::codex::Provider::Claude,
+        ] {
+            for (width, height, rem) in [(600., 400., 16.), (320., 200., 16.), (500., 300., 20.)] {
+                cx.simulate_resize(gpui::size(gpui::px(width), gpui::px(height)));
+                cx.update(|window, cx| {
+                    window.set_rem_size(gpui::px(rem));
+                    cx.set_reduce_motion(true);
+                    sidebar.update(cx, |sidebar, cx| {
+                        let id = sidebar.checkout_panel.side_chats.keys().next().unwrap().0;
+                        let session = sidebar
+                            .runtime
+                            .read(cx)
+                            .registry
+                            .read(cx)
+                            .codex(id)
+                            .unwrap()
+                            .clone();
+                        session.update(cx, |session, cx| {
+                            session.state.saved.provider = provider;
+                            session.state.status = grove_core::codex::Status::Idle;
+                            cx.notify();
+                        });
+                        sidebar.checkout_panel.hidden = false;
+                        sidebar.checkout_panel.side_chat_owner = sidebar.selection.clone();
+                        cx.notify();
+                    });
+                });
+                for _ in 0..3 {
+                    cx.run_until_parked();
+                    cx.update(|window, cx| {
+                        window.simulate_next_frame(cx);
+                        let _ = window.draw(cx);
+                    });
+                }
+                let panel = cx.debug_bounds("side-chat-panel").unwrap();
+                let rail = cx.debug_bounds("codex-composer-rail").unwrap();
+                assert!(
+                    panel.size.height <= gpui::px(height * 0.4 + 1.),
+                    "{provider:?}: short pane exceeded its budget: {panel:?}"
+                );
+                assert!(
+                    rail.bottom() <= gpui::px(height + 1.),
+                    "{provider:?}: composer scroll area left the window: {rail:?}"
+                );
+                let send = cx.debug_bounds("codex-send").unwrap();
+                sidebar.read_with(cx, |sidebar, cx| {
+                    let scroll = &sidebar
+                        .codex_views
+                        .values()
+                        .next()
+                        .unwrap()
+                        .read(cx)
+                        .composer_rail_scroll;
+                    let offset = scroll.offset();
+                    scroll.set_offset(gpui::point(
+                        offset.x,
+                        offset.y + rail.bottom() - send.bottom(),
+                    ));
+                });
+                cx.update(|window, cx| {
+                    window.simulate_next_frame(cx);
+                    let _ = window.draw(cx);
+                });
+                let send = cx.debug_bounds("codex-send").unwrap();
+                assert!(
+                    send.bottom() <= rail.bottom() && send.top() >= rail.top(),
+                    "{provider:?}: main send control must remain reachable: {send:?} vs {rail:?}"
+                );
+                sidebar.read_with(cx, |sidebar, _| {
+                    let scroll = &sidebar.checkout_panel.side_chat_panel_scroll;
+                    assert!(
+                        scroll.max_offset().y > gpui::px(0.),
+                        "short side chat must allow reaching its composer"
+                    );
+                    scroll.set_offset(gpui::point(gpui::px(0.), -scroll.max_offset().y));
+                });
+                cx.update(|window, cx| {
+                    window.simulate_next_frame(cx);
+                    let _ = window.draw(cx);
+                });
+                let footer = cx.debug_bounds("side-chat-composer-footer").unwrap();
+                assert!(footer.bottom() <= panel.bottom() + gpui::px(1.), "{provider:?}: side composer footer must be reachable by scrolling: {footer:?} vs {panel:?}");
+                cx.update(|window, cx| {
+                    cx.set_reduce_motion(false);
+                    sidebar.update(cx, |sidebar, cx| {
+                        sidebar.toggle_side_chat(window, cx);
+                        sidebar.hold_panel_motion_at_start();
+                    });
+                    window.simulate_next_frame(cx);
+                    let _ = window.draw(cx);
+                });
+                let exiting = cx.debug_bounds("narrow-session-panel-exit").unwrap();
+                assert!(
+                    exiting.size.height == panel.size.height,
+                    "{provider:?}: closing changed the outgoing height: {panel:?} -> {exiting:?}"
+                );
+            }
+        }
+        cx.update(|window, cx| {
+            window.set_rem_size(gpui::px(16.));
+            cx.set_reduce_motion(true);
+        });
+        // An ambiguous multi-checkout session must not overflow a narrow window.
+        let second_path = fixture.path().join("second").to_string_lossy().into_owned();
+        cx.update(|_, cx| {
+            sidebar.update(cx, |sidebar, cx| {
+                let runtime = sidebar.runtime.read(cx);
+                let registry = runtime.registry.clone();
+                let tree = runtime.tree.clone();
+                let id = registry.update(cx, |registry, _| {
+                    registry.insert_meta_with_context(
+                        "Side chat".into(),
+                        path.clone(),
+                        Agent::Codex,
+                        vec![grove_core::session_meta::ContextRoot {
+                            project: "Side chat".into(),
+                            wt_path: second_path.clone(),
+                        }],
+                        None,
+                    )
+                });
+                tree.update(cx, |tree, _| {
+                    tree.set_active_worktrees(
+                        0,
+                        vec![
+                            grove_core::git::Worktree {
+                                path: path.clone(),
+                                branch: "main".into(),
+                                mtime: None,
+                                is_main: true,
+                            },
+                            grove_core::git::Worktree {
+                                path: second_path.clone(),
+                                branch: "other".into(),
+                                mtime: None,
+                                is_main: false,
+                            },
+                        ],
+                    );
+                });
+                sidebar.selection = Some(Selection::Session(id));
+                sidebar.checkout_panel.side_chat_owner = sidebar.selection.clone();
+                sidebar.checkout_panel.chosen_root = None;
+                cx.notify();
+            });
+        });
+        cx.simulate_resize(gpui::size(gpui::px(320.), gpui::px(800.)));
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            window.simulate_next_frame(cx);
+            let _ = window.draw(cx);
+        });
+        let required = cx.debug_bounds("side-chat-checkout-required").unwrap();
+        assert!(
+            required.size.width <= gpui::px(320.),
+            "checkout selection must fit narrow windows: {required:?}"
+        );
+        for (width, height, rem) in [(320., 200., 16.), (500., 300., 20.)] {
+            cx.simulate_resize(gpui::size(gpui::px(width), gpui::px(height)));
+            cx.update(|window, _| window.set_rem_size(gpui::px(rem)));
+            for _ in 0..3 {
+                cx.run_until_parked();
+                cx.update(|window, cx| {
+                    window.simulate_next_frame(cx);
+                    let _ = window.draw(cx);
+                });
+            }
+            let required = cx.debug_bounds("side-chat-checkout-required").unwrap();
+            assert!(
+                required.size.height <= gpui::px(height * 0.4 + 1.),
+                "checkout recovery must share the short-pane budget: {required:?}"
+            );
+        }
+        drop(updates);
     }
 }

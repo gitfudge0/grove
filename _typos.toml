@@ -1,5 +1,9 @@
 # Exceptions for the `typos` spell checker (run in CI and in the pre-commit hook).
 [default.extend-words]
+# GPUI screen-capture crate and its upstream API identifiers.
+scap = "scap"
+# Electronic Health Record acronym in the Mermaid healthcare fixture.
+EHR = "EHR"
 # PNG reconstruction filter, named for Alan Paeth.
 paeth = "paeth"
 # "mis" is only ever seen here as the prefix in hyphenated compounds
