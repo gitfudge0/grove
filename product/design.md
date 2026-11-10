@@ -570,3 +570,11 @@ New occupancy clears old attribution rather than mixing snapshots. Manual
 Refresh remains available while idle; errors leave the conversation usable.
 
 New session navigation, the New session shortcut, switcher action and New session landing preference open the main Dashboard composer directly, preserving its draft. Empty Codex and Claude conversations omit the alternate “What would you like to build?” introduction and starter cards.
+
+A focused composer writing area casts a broad, diffuse blue ambient glow behind
+its surface, matching option B of the approved focus mock. The neutral seam,
+flat writing fill and geometry remain unchanged. The glow is immediate on focus
+and blur (including reduced motion), disappears when the input is disabled or
+collapsed, and does not appear merely from pointer hover or toolbar focus. Main
+Dashboard/session composers and compact activity replies share this treatment
+for Codex and Claude; intensity follows the active light/dark theme.

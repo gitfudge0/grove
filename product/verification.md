@@ -1,5 +1,20 @@
 # Verification and known gaps
 
+## Ambient composer focus glow
+
+Option B uses a shared, theme-owned blue ambient shadow behind the writing
+surface. Linux native fixture captures exercised both Codex and Claude focus
+and toolbar-focus blur, dark/light themes, and 16/20px rem with reduced motion.
+The desktop constrained the QA viewport to about 570px despite resize requests;
+native wide-window appearance remains untested. The existing GPUI edge-alignment
+fixture passed both providers at 1200/600/400px and 16/20px rem. Input submission,
+compact-reply keyboard/draft/acknowledgment, and 33 UI conformance tests passed.
+
+Live Codex and Claude provider boundaries, native compact-reply appearance,
+Dashboard placement, hover/disabled/loading combinations, nondefault themes,
+and macOS/Windows rendering remain untested. This change does not modify
+provider transport or install/restart the user app.
+
 ## Responsive sidebar fitting and transcript insets
 
 Navigation and Checkout now yield space using rem-aware width budgets; explicit

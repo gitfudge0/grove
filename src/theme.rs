@@ -453,6 +453,15 @@ pub fn OPENAI_BRAND() -> Hsla {
 pub fn BLUE() -> Hsla {
     chrome(ChromeRole::Info)
 }
+/// Broad blue writing-focus light from the approved ambient reference.
+/// Native blurred shadows need more opacity than the mock's radial fill.
+pub fn COMPOSER_FOCUS_GLOW() -> Hsla {
+    alpha(
+        gpui::rgb(if is_dark() { 0x2852e7 } else { 0x416ef5 }).into(),
+        if is_dark() { 0.60 } else { 0.30 },
+    )
+}
+
 pub fn CYAN() -> Hsla {
     BLUE()
 }

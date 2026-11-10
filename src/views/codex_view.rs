@@ -1790,7 +1790,9 @@ impl CodexView {
                     InputEvent::Focus => {
                         crate::platform::inline_html::NativeDocument::focus_host(window);
                         this.set_composer_collapsed(false, cx);
+                        cx.notify();
                     }
+                    InputEvent::Blur => cx.notify(),
                     InputEvent::Change => {
                         this.clear_stop_confirmation(cx);
                         if this.plan_answer.is_some() {
@@ -6100,6 +6102,24 @@ impl Render for CodexView {
             })
             .child(messages)
             .children(selection_overlay);
+        let composer_disabled = self.submitted.is_some()
+            || self
+                .plan_answer
+                .as_ref()
+                .is_some_and(|answer| answer.saving.is_some())
+            || self.edit_request_pending
+            || self.edit_confirmation.is_some()
+            || state.saved.pending_edit.is_some()
+            || self
+                .queue_editor
+                .as_ref()
+                .is_some_and(|editor| !editor.loaded || editor.saving);
+        let glow_bounds =
+            std::rc::Rc::new(std::cell::Cell::new(gpui::Bounds::<gpui::Pixels>::default()));
+        let measured_glow_bounds = glow_bounds.clone();
+        let writing_focused = self.input.focus_handle(cx).is_focused(window)
+            && !self.composer_collapsed
+            && !composer_disabled;
         let mut surface = div()
             .id("codex-conversation")
             .track_focus(&self.conversation_focus)
@@ -6112,6 +6132,10 @@ impl Render for CodexView {
             .font_family(crate::fonts::UI_FAMILY)
             .text_size(rpx(TEXT_BODY))
             .text_color(c::FG())
+            .child(super::components::composer_focus_glow(
+                glow_bounds,
+                writing_focused,
+            ))
             .when(!focused_launch, |surface| {
                 surface
                     // Anchor navigation to the pane, independent of the transcript's
@@ -6756,19 +6780,7 @@ impl Render for CodexView {
                                             crate::views::components::file_drop_overlay(),
                                         )
                                     })
-                                    .disabled(
-                                        self.submitted.is_some()
-                                            || self
-                                                .plan_answer
-                                                .as_ref()
-                                                .is_some_and(|answer| answer.saving.is_some())
-                                            || self.edit_request_pending
-                                            || self.edit_confirmation.is_some()
-                                            || state.saved.pending_edit.is_some()
-                                            || self.queue_editor.as_ref().is_some_and(|editor| {
-                                                !editor.loaded || editor.saving
-                                            }),
-                                    )
+                                    .disabled(composer_disabled)
                                     .aria_label(self.plan_answer.as_ref().map_or_else(
                                         || format!("Message {provider}"),
                                         |answer| format!("Your answer: {}", answer.prompt),
@@ -6912,6 +6924,8 @@ impl Render for CodexView {
                             .children(self.render_reference_preview(composer_attached, window, cx))
                             .child(
                         super::components::composer_surface()
+                            .relative()
+                            .child(gpui::canvas(move |bounds, _, _| measured_glow_bounds.set(bounds), |_, (), _, _| {}).absolute().size_full())
                             .id("codex-composer")
                             .debug_selector(|| "codex-composer".into())
                             .max_w(rpx(CHAT_MAX_W))
@@ -20995,6 +21009,77 @@ mod tests {
                 draw(cx);
             }
         }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[ignore = "opens an isolated native X11 composer focus fixture"]
+    fn composer_ambient_focus_native_capture() {
+        assert!(std::env::var_os("GROVE_CONFIG_DIR").is_some());
+        let output = std::path::PathBuf::from(std::env::var("GROVE_FOCUS_CAPTURE_DIR").unwrap());
+        assert!(output.is_absolute());
+        std::fs::create_dir_all(&output).unwrap();
+        gpui_platform::application().with_assets(crate::assets::Assets).run(move |cx| {
+            gpui_component::init(cx);
+            crate::fonts::register(cx).unwrap();
+            cx.set_global(crate::settings::SettingsState::new(grove_core::storage::Store::default()));
+            cx.set_global(crate::zoom::CurrentPtyDims::default());
+            cx.set_reduce_motion(true);
+            c::sync_component_theme(cx);
+            let (handle, actions) = Handle::channel();
+            let (updates, receive) = mpsc::channel();
+            let mut retained = None;
+            let window = cx.open_window(gpui::WindowOptions {
+                window_bounds: Some(gpui::WindowBounds::Windowed(gpui::Bounds::new(
+                    gpui::point(gpui::px(30.), gpui::px(30.)), gpui::size(gpui::px(900.), gpui::px(700.))))),
+                ..Default::default()
+            }, |window, cx| {
+                window.set_window_title("Grove composer focus QA");
+                let mut state = snapshot();
+                state.status = Status::Done;
+                state.saved.items = vec![json!({"id":"answer","type":"agentMessage","text":"Ready for your next instruction."})].into();
+                let session = cx.new(|cx| CodexSession::from_connection(state, Connection { handle, updates: receive.into() }, cx));
+                let chat = cx.new(|cx| CodexView::new(session, window, cx));
+                retained = Some(chat.clone());
+                cx.new(|cx| gpui_component::Root::new(chat, window, cx).bordered(false))
+            }).unwrap();
+            let chat = retained.unwrap();
+            cx.activate(true);
+            cx.spawn(async move |cx| {
+                let _transport = (actions, updates);
+                for provider in [codex::Provider::Codex, codex::Provider::Claude] {
+                    for (theme, width, rem) in [("grove-dark",900.,16.),("grove-light",900.,16.),("grove-dark",540.,20.)] {
+                        cx.update(|cx| { grove_core::theme::set_by_name(theme); c::sync_component_theme(cx); gpui_component::Theme::global_mut(cx).font_size = gpui::px(rem); });
+                        for focused in [true, false] {
+                            cx.update_window(window.into(), |_, window, cx| {
+                                window.resize(gpui::size(gpui::px(width),gpui::px(700.)));
+                                window.set_rem_size(gpui::px(rem));
+                                chat.update(cx, |view, cx| {
+                                    view.session.update(cx, |session, cx| { session.state.saved.provider = provider; cx.notify(); });
+                                    view.input.update(cx, |input, cx| input.set_value("Refine the composer focus treatment.",window,cx));
+                                    if focused { view.input.focus_handle(cx).focus(window,cx); }
+                                    else { view.option_focus[0].focus(window,cx); }
+                                    assert_eq!(view.input.focus_handle(cx).is_focused(window), focused);
+                                    cx.notify();
+                                });
+                                window.refresh();
+                            }).unwrap();
+                            cx.background_executor().timer(std::time::Duration::from_millis(350)).await;
+                            cx.update_window(window.into(), |_, window, _| {
+                                eprintln!("focus capture {provider:?} {theme}: viewport={:?}, rem={:?}", window.viewport_size(), window.rem_size());
+                            }).unwrap();
+                            let path = output.join(format!("{provider:?}-{theme}-{width}-{rem}-{focused}.png"));
+                            assert!(std::process::Command::new("import").args(["-window", "Grove composer focus QA"]).arg(path).status().unwrap().success());
+                        }
+                    }
+                }
+                cx.update_window(window.into(), |_, window, _| {window.blur();window.refresh();}).unwrap();
+                cx.background_executor().timer(std::time::Duration::from_millis(100)).await;
+                cx.update_window(window.into(), |_, window, _| window.remove_window()).unwrap();
+                drop(chat);
+                cx.update(|cx| cx.quit());
+            }).detach();
+        });
     }
 
     #[cfg(target_os = "linux")]

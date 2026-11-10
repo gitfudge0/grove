@@ -74,7 +74,7 @@ impl Sidebar {
                         secondary,
                         shift: false,
                     } => this.submit_activity_reply(key, *secondary, window, cx),
-                    InputEvent::Change => cx.notify(),
+                    InputEvent::Change | InputEvent::Focus | InputEvent::Blur => cx.notify(),
                     _ => {}
                 },
             );
@@ -416,6 +416,18 @@ impl Sidebar {
             });
         let input = reply.input.clone();
         let input_focus = input.focus_handle(cx);
+        let writing_focused = reply.pending.is_none() && active && input_focus.is_focused(window);
+        let glow_bounds =
+            std::rc::Rc::new(std::cell::Cell::new(gpui::Bounds::<gpui::Pixels>::default()));
+        let measured_glow_bounds = glow_bounds.clone();
+        frame = div()
+            .relative()
+            .w_full()
+            .child(super::super::components::composer_focus_glow(
+                glow_bounds,
+                writing_focused,
+            ))
+            .child(frame);
         let trigger_focus = self.dashboard_timelines.reply_focus[&key].clone();
         reply.focus = trigger_focus;
         let close_focus = reply.close_focus.clone();
@@ -583,6 +595,15 @@ impl Sidebar {
                     .child(super::super::components::attached_validation(
                         ("activity-reply-error", key.1.raw()),
                         super::super::components::composer_surface()
+                            .relative()
+                            .child(
+                                gpui::canvas(
+                                    move |bounds, _, _| measured_glow_bounds.set(bounds),
+                                    |_, (), _, _| {},
+                                )
+                                .absolute()
+                                .size_full(),
+                            )
                             .debug_selector(|| "activity-reply-well".into())
                             .py(rpx(SPACE_LG))
                             .child(
