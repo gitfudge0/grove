@@ -430,6 +430,7 @@ impl Sidebar {
                 writing_focused,
                 reply.pending.is_none() && active,
                 ("composer-focus-pulse", input.entity_id()),
+                window,
                 cx,
             ))
             .child(frame);

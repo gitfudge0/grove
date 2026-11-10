@@ -580,9 +580,11 @@ compact, diffuse blue ambient glow close to its surface. Other themes have no
 composer glow and schedule no pulse animation. While focused, its intensity
 gently brightens and dims over a ten-second cycle without changing the glow footprint or moving content. The
 neutral seam, flat writing fill and geometry remain unchanged. On blur, the glow
-stays visible at a tighter spread and steady low intensity with no animation
-frames. Focus immediately restores the normal spread and pulse; Reduce motion
-keeps a steady glow. Disabled or collapsed inputs hide it. Pointer hover and
+stays visible at steady low intensity while its spread eases inward over the
+shared slow interval. Focus eases back to the normal spread and restores the
+pulse. Reversing focus mid-transition continues from the current spread; frames
+stop once the unfocused spread settles. Reduce motion changes spread immediately
+and keeps a steady glow. Disabled or collapsed inputs hide it. Pointer hover and
 toolbar focus never start the pulse. Main
 Dashboard/session composers and compact activity replies share this treatment
 for Codex and Claude; intensity follows the active light/dark theme.

@@ -6289,6 +6289,7 @@ impl Render for CodexView {
                 writing_focused,
                 !self.composer_collapsed && !composer_disabled,
                 ("composer-focus-pulse", self.input.entity_id()),
+                window,
                 cx,
             ))
             .when(!focused_launch, |surface| {

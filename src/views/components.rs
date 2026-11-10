@@ -530,6 +530,113 @@ pub fn composer_surface() -> Div {
         .bg(c::BG_RAIL())
 }
 
+/// Retarget from the currently painted spread, so rapid focus reversals do not snap.
+struct ComposerSpread {
+    focused: bool,
+    from: f32,
+    started: std::time::Instant,
+}
+impl ComposerSpread {
+    fn target(focused: bool) -> f32 {
+        if focused {
+            COMPOSER_GLOW_SPREAD
+        } else {
+            COMPOSER_GLOW_REST_SPREAD
+        }
+    }
+    fn new(focused: bool, now: std::time::Instant) -> Self {
+        Self {
+            focused,
+            from: Self::target(focused),
+            started: now,
+        }
+    }
+    fn sample(&self, now: std::time::Instant) -> (f32, bool) {
+        let target = Self::target(self.focused);
+        let elapsed = now.saturating_duration_since(self.started);
+        let duration = std::time::Duration::from_millis(MOTION_SLOW_MS);
+        if elapsed >= duration || (self.from - target).abs() < f32::EPSILON {
+            return (target, false);
+        }
+        if elapsed.is_zero() {
+            return (self.from, true);
+        }
+        let progress = motion::ease_standard(elapsed.as_secs_f32() / duration.as_secs_f32());
+        (self.from + (target - self.from) * progress, true)
+    }
+    fn update(
+        &mut self,
+        focused: bool,
+        reduce_motion: bool,
+        now: std::time::Instant,
+    ) -> (f32, bool) {
+        if reduce_motion || self.focused != focused {
+            self.from = if reduce_motion {
+                Self::target(focused)
+            } else {
+                self.sample(now).0
+            };
+            self.focused = focused;
+            self.started = now;
+        }
+        self.sample(now)
+    }
+}
+
+#[cfg(test)]
+mod composer_spread_tests {
+    use super::*;
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn spread_reverses_from_current_value_and_stops_at_rest() {
+        let start = Instant::now();
+        let duration = Duration::from_millis(MOTION_SLOW_MS);
+        let mut state = ComposerSpread::new(false, start);
+        assert_eq!(state.sample(start), (COMPOSER_GLOW_REST_SPREAD, false));
+        assert_eq!(
+            state.update(true, false, start),
+            (COMPOSER_GLOW_REST_SPREAD, true)
+        );
+        let reversal = start + duration / 4;
+        let midway = state.sample(reversal).0;
+        assert!(midway > COMPOSER_GLOW_REST_SPREAD && midway < COMPOSER_GLOW_SPREAD);
+        assert!((state.update(false, false, reversal).0 - midway).abs() < 0.0001);
+        let retreat = state.sample(reversal + duration / 4).0;
+        assert!(retreat < midway && retreat > COMPOSER_GLOW_REST_SPREAD);
+        assert_eq!(
+            state.sample(reversal + duration),
+            (COMPOSER_GLOW_REST_SPREAD, false)
+        );
+        // Ordinary redraws must not restart the transition clock.
+        state.update(true, false, reversal + duration);
+        state.update(true, false, reversal + duration + duration / 2);
+        assert_eq!(
+            state.sample(reversal + duration * 2),
+            (COMPOSER_GLOW_SPREAD, false)
+        );
+    }
+
+    #[test]
+    fn reduced_motion_interrupts_spread_without_more_frames() {
+        let start = Instant::now();
+        let mut state = ComposerSpread::new(false, start);
+        state.update(true, false, start);
+        assert_eq!(
+            state.update(true, true, start + Duration::from_millis(50)),
+            (COMPOSER_GLOW_SPREAD, false)
+        );
+        assert_eq!(
+            state.update(false, true, start + Duration::from_millis(60)),
+            (COMPOSER_GLOW_REST_SPREAD, false)
+        );
+        assert_eq!(
+            state.update(false, false, start + Duration::from_millis(70)),
+            (COMPOSER_GLOW_REST_SPREAD, false)
+        );
+    }
+}
+
 /// Paint the focus light behind a measured writing surface, outside any
 /// scrolling/animation clip owned by the surface's immediate container.
 pub fn composer_focus_glow(
@@ -537,10 +644,19 @@ pub fn composer_focus_glow(
     focused: bool,
     enabled: bool,
     id: impl Into<gpui::ElementId>,
-    cx: &App,
+    window: &mut gpui::Window,
+    cx: &mut App,
 ) -> gpui::AnyElement {
     if !enabled || !c::composer_focus_glow_enabled() {
         return div().into_any_element();
+    }
+    let id = id.into();
+    let now = std::time::Instant::now();
+    let reduced = cx.reduce_motion();
+    let state = window.use_keyed_state(id.clone(), cx, |_, _| ComposerSpread::new(focused, now));
+    let (spread, moving) = state.update(cx, |state, _| state.update(focused, reduced, now));
+    if moving {
+        window.request_animation_frame();
     }
     let light = gpui::canvas(
         |_, _, _| {},
@@ -550,7 +666,7 @@ pub fn composer_focus_glow(
                 window.paint_drop_shadows(
                     bounds,
                     gpui::Corners::all(rpx(RADIUS_PANEL).to_pixels(window.rem_size())),
-                    &[composer_focus_shadow(window, focused)],
+                    &[composer_focus_shadow(window, spread)],
                 );
             }
         },
@@ -580,7 +696,7 @@ pub fn composer_focus_glow(
 
 /// Shared compact light, also painted at the conversation level to avoid the
 /// composer's scrolling rail clipping the ambient falloff.
-fn composer_focus_shadow(window: &gpui::Window, focused: bool) -> gpui::BoxShadow {
+fn composer_focus_shadow(window: &gpui::Window, spread: f32) -> gpui::BoxShadow {
     gpui::BoxShadow {
         color: c::COMPOSER_FOCUS_GLOW(),
         offset: gpui::point(
@@ -588,12 +704,7 @@ fn composer_focus_shadow(window: &gpui::Window, focused: bool) -> gpui::BoxShado
             rpx(COMPOSER_GLOW_OFFSET_Y).to_pixels(window.rem_size()),
         ),
         blur_radius: rpx(COMPOSER_GLOW_BLUR).to_pixels(window.rem_size()),
-        spread_radius: rpx(if focused {
-            COMPOSER_GLOW_SPREAD
-        } else {
-            COMPOSER_GLOW_REST_SPREAD
-        })
-        .to_pixels(window.rem_size()),
+        spread_radius: rpx(spread).to_pixels(window.rem_size()),
         inset: false,
     }
 }

@@ -2,6 +2,16 @@
 
 ## Ambient composer focus glow
 
+Spread transitions now use the shared slow interval (220 ms) and easing in both
+directions, retargeting from the current value on interruption. Two focused
+state tests passed for intermediate values, reversal continuity, unchanged-target
+redraws, exact settled endpoints and reduced-motion interruption. The Linux
+Codex/Claude synthetic-transport native capture exercised focus/blur and inspected
+settled endpoints; frame-by-frame native transition appearance, live provider
+transport and macOS/Windows motion remain untested. Composer layout, compact
+reply draft/keyboard behavior and all 33 conformance checks passed.
+
+
 Follow-up: tightened the shadow footprint and added a ten-second opacity pulse
 while focused. Blur retains a tighter, steady low-intensity glow; disabled and
 collapsed inputs hide it. The effect is restricted to the exact Grove Dark and Grove Light themes (including exclusion

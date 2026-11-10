@@ -1,11 +1,11 @@
 {
   "schema_version": 1,
   "design_system": "grove",
-  "contract_hash": "c4510ff233cd68112f271682235ae22ccc6de2b58bff3da4a75d99e1a708a483",
+  "contract_hash": "e70d96728896df10500508442384d96b3b56e28b2a6b689a212f8e20b7342363",
   "owners": {
     "build.rs": "817461b07a7d2e32f2c18329cbbf2314cb70ca97ff7a44a7c7cafd9b00deca00",
     "native-engine": "3138b358d52eaed8fc06434da71d3e114913c0a6f5b84dc887d5b24530202752",
-    "product/design.md": "237b53f8dbc8235332b5ff6a76eaf510ba0455274c239a28f59480babd70d31b",
+    "product/design.md": "0a17362b6edecdec2d0b5de5ffc04fd99cc7183f76df18d6d1df11a504226c63",
     "reference/compose": "04cd53d2ec55676cf3a356b4d353a6aa7cbd9bd4ba741b872098c6aff7bd07e6",
     "reference/contract": "be75d072404fec0184e3eecb813313a9059eb8b814a765e4ece33d0fe4286703",
     "reference/generate": "de581c807f193a786f63ad89dfc569b537791c8cbf7a8891bc2ac39869aba6fd",
@@ -23,7 +23,7 @@
     "src/fonts.rs": "99b2b6638e715a5c70eb9912cf98d6cfc3cb7f955c56de787008394ed9deab49",
     "src/icons.rs": "65cb3f037880c137ec038bfaf46cca640e3ffe6f786a2f317c8b829a3ca57ad7",
     "src/theme.rs": "f755700b2cc45bcedb73112d9e3dd2cfb0f13f08f7e1be2affc2a1617264f76e",
-    "src/views/components.rs": "6983fba7734a46ce14c12142adba373e1e7f1d38a904592665f6fe30b9f76c74",
+    "src/views/components.rs": "0d3abb31d032c578a39da39dedfd622a1df3136480ccba3cfbd50597ceaca110",
     "src/views/tokens.rs": "bc26925034cca832078abd5525c788133d5be05fead1dee70bd28d7c580d9951",
     "vendor/button": "1d5c4d36bc2737e7a6e34f30e862fa57878ac3b2507465099d1a17aed2e78749",
     "vendor/button_icon": "c06691783cc32da565c3caf88cd895840225e44b952403c16e92427509df3758",
