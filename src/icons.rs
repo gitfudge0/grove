@@ -250,7 +250,6 @@ fn svg_for(name: &str) -> String {
         "sidebar-expand" => {
             r#"<rect x="2" y="2.5" width="12" height="11" rx="1"/><path d="M6 2.5v11M9 6l2 2-2 2"/>"#
         }
-        "workspaces" => r#"<path d="M2 5V3.5h3.5L7 5h5v2M4 7.5h3l1.2 1H14V13H4z"/>"#,
         "add-project" => r#"<path d="M2 4.5h4l1.2 1.5H14v7H2zM10 7.5v4M8 9.5h4"/>"#,
         "add-terminal" => {
             r#"<rect x="1.5" y="3" width="13" height="10" rx="1.5"/><path d="M4 6.5l2 2-2 2M10 7v4M8 9h4"/>"#

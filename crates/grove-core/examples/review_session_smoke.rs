@@ -68,7 +68,7 @@ fn generate_in_conversation(
     prompt: String,
     snapshot: change_description::Snapshot,
 ) -> Result<change_review::Review, String> {
-    let deadline = Instant::now() + Duration::from_secs(120);
+    let deadline = Instant::now() + Duration::from_mins(2);
     let mut sent = false;
     loop {
         let remaining = deadline.saturating_duration_since(Instant::now());
@@ -147,6 +147,7 @@ fn generate_in_conversation(
 }
 
 fn main() -> Result<(), String> {
+    const CUSTOM_HEADING: &str = "## Grove custom rendering smoke";
     let provider = match std::env::args().nth(1).as_deref() {
         Some("codex") => Provider::Codex,
         Some("claude") => Provider::Claude,
@@ -154,7 +155,6 @@ fn main() -> Result<(), String> {
     };
     let config = isolated_config()?;
     let custom = std::env::var_os("GROVE_REVIEW_SMOKE_CUSTOM").is_some();
-    const CUSTOM_HEADING: &str = "## Grove custom rendering smoke";
     if custom {
         let mut settings = grove_core::storage::Store::default();
         settings.prompt_overrides.insert(

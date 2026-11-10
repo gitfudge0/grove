@@ -12,7 +12,7 @@ use gpui_component::text::{
     markdown_ast, MarkdownExtensions, MarkdownNode, MarkdownParseContext, TextView,
 };
 mod measured;
-#[cfg(test)]
+#[cfg(all(test, target_os = "linux"))]
 pub(super) fn take_materialization_count() -> usize {
     measured::MATERIALIZED.with(|n| n.replace(0))
 }
@@ -370,7 +370,7 @@ fn ready_view(
             controls: std::array::from_fn(|_| cx.focus_handle()),
             fullscreen: false,
             return_focus: None,
-            measurement: Default::default(),
+            measurement: std::rc::Rc::default(),
         }
     });
     viewer.update(cx, |viewer, _| {
@@ -443,7 +443,7 @@ impl DiagramViewer {
                 controls: std::array::from_fn(|_| cx.focus_handle()),
                 fullscreen: true,
                 return_focus: Some(return_focus),
-                measurement: Default::default(),
+                measurement: std::rc::Rc::default(),
             });
             let focus = expanded.read(cx).focus.clone();
             focus.focus(window, cx);
@@ -811,7 +811,7 @@ mod tests {
         fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
             self.held.clear();
             let mut body = div().flex().flex_col();
-            for index in 0..MAX_CACHE_ENTRIES + 1 {
+            for index in 0..=MAX_CACHE_ENTRIES {
                 let source = format!("flowchart LR\nfixture_{index}-->end_{}", self.changed);
                 let diagram = Diagram {
                     source: source.clone(),
@@ -939,7 +939,7 @@ mod tests {
     #[test]
     fn mounted_previews_survive_cache_eviction_and_refresh_changed_inputs() {
         let image = Arc::new(Image::from_bytes(ImageFormat::Png, vec![]));
-        let mut previews: Vec<_> = (0..MAX_CACHE_ENTRIES + 1)
+        let mut previews: Vec<_> = (0..=MAX_CACHE_ENTRIES)
             .map(|index| {
                 let mut preview = RetainedPreview::default();
                 preview.resolve(&format!("diagram-{index}"), 7, 10, || {

@@ -155,6 +155,11 @@ jobs:
       # nextest gives per-test process isolation and the retry/flaky policy in
       # .config/nextest.toml (profile `ci`).
       - name: Run tests
+        # Unoptimized GPUI render trees exceed libtest's default 2 MiB stack.
+        # Use the same bounded stack as isolated native QA; retain all test,
+        # timeout and flaky-failure policies.
+        env:
+          RUST_MIN_STACK: 16777216
         run: cargo nextest run --workspace --locked --profile ci
 
       # nextest cannot run doctests, so they need a separate `cargo test` pass.

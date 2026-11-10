@@ -14,7 +14,7 @@ fn wait(
     connection: &Connection,
     predicate: impl Fn(&Snapshot) -> bool,
 ) -> Result<Snapshot, String> {
-    let deadline = Instant::now() + Duration::from_secs(180);
+    let deadline = Instant::now() + Duration::from_mins(3);
     let mut last = "no provider snapshot".to_owned();
     loop {
         let remaining = deadline.saturating_duration_since(Instant::now());

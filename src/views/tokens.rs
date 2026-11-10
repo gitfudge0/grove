@@ -55,6 +55,11 @@ pub const RADIUS_CONTROL: f32 = 4.0;
 pub const RADIUS_GROUP: f32 = 6.0;
 pub const RADIUS_PANEL: f32 = 12.0;
 pub const RADIUS_FULL: f32 = 999.0;
+
+/// Broad, ambient light behind a focused composer (option B).
+pub const COMPOSER_GLOW_BLUR: f32 = 160.0;
+pub const COMPOSER_GLOW_SPREAD: f32 = 24.0;
+pub const COMPOSER_GLOW_OFFSET_Y: f32 = 20.0;
 /// The theme-swatch corner, below [`RADIUS_CONTROL`] — a 10px chip at that radius reads as a circle.
 pub const SWATCH_RADIUS: f32 = 2.0;
 

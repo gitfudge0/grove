@@ -143,8 +143,7 @@ impl Sidebar {
                             .read(cx)
                             .meta(id)
                             .filter(|meta| !meta.project.is_empty())
-                            .map(|meta| meta.project.clone())
-                            .unwrap_or_else(|| "No project".into())
+                            .map_or_else(|| "No project".into(), |meta| meta.project.clone())
                     } else {
                         "No project".into()
                     };

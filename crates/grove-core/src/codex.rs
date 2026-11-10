@@ -1342,7 +1342,7 @@ impl Actor {
                 self.state
                     .saved
                     .rich_plans
-                    .update_review(&plan_id, &revision_id, review)?;
+                    .update_review(&plan_id, &revision_id, *review)?;
                 persist(&self.state.saved)?;
             }
             Action::RetryPlanImport { message_id, source } => {
@@ -3584,7 +3584,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         persist_in_dir(&session, dir.path()).unwrap();
         let path = dir.path().join(format!("{}.json", session.key));
-        let decoded: SavedSession = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+        let decoded: SavedSession = serde_json::from_slice(&fs_err::read(path).unwrap()).unwrap();
         assert_eq!(decoded.side_chats["/checkout/a"].draft, "unsent");
         assert_eq!(decoded.side_chats["/checkout/a"].messages.len(), 2);
         assert_eq!(decoded.side_chats["/checkout/b"].draft, "other");
@@ -3637,7 +3637,7 @@ mod tests {
             session_review: SessionReview::default(),
             claude_subagents: HashMap::default(),
             rich_plans: crate::rich_plan::PlanStore::default(),
-            side_chats: Default::default(),
+            side_chats: std::collections::HashMap::default(),
             fork_origin: None,
             claude_resume: None,
             edit_checkpoints: Vec::new(),
@@ -6845,7 +6845,7 @@ mod tests {
         assert_eq!(
             items
                 .iter()
-                .filter(|item| crate::tasks::is_checklist(*item))
+                .filter(|item| crate::tasks::is_checklist(item))
                 .count(),
             3
         );

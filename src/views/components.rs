@@ -163,7 +163,7 @@ pub fn file_drop_overlay() -> Div {
         .text_size(rpx(TEXT_SMALL))
         .invisible()
         .cursor_default()
-        .group_drag_over::<gpui::ExternalPaths>("input-file-drop", |style| style.visible())
+        .group_drag_over::<gpui::ExternalPaths>("input-file-drop", gpui::Styled::visible)
         .child(crate::icons::icon("paperclip", ICON_SM, c::FG_DIM()))
         .child(
             div()
@@ -528,6 +528,44 @@ pub fn composer_surface() -> Div {
         .border_1()
         .border_color(c::BORDER_SOFT())
         .bg(c::BG_RAIL())
+}
+
+/// Paint the focus light behind a measured writing surface, outside any
+/// scrolling/animation clip owned by the surface's immediate container.
+pub fn composer_focus_glow(
+    bounds: std::rc::Rc<std::cell::Cell<gpui::Bounds<gpui::Pixels>>>,
+    focused: bool,
+) -> impl gpui::IntoElement {
+    gpui::canvas(
+        |_, _, _| {},
+        move |_, (), window, _| {
+            let bounds = bounds.get();
+            if focused && bounds.size.width > gpui::px(0.) {
+                window.paint_drop_shadows(
+                    bounds,
+                    gpui::Corners::all(rpx(RADIUS_PANEL).to_pixels(window.rem_size())),
+                    &[composer_focus_shadow(window)],
+                );
+            }
+        },
+    )
+    .absolute()
+    .size_full()
+}
+
+/// Shared broad light, also painted at the conversation level to avoid the
+/// composer's scrolling rail clipping the ambient falloff.
+pub fn composer_focus_shadow(window: &gpui::Window) -> gpui::BoxShadow {
+    gpui::BoxShadow {
+        color: c::COMPOSER_FOCUS_GLOW(),
+        offset: gpui::point(
+            gpui::px(0.),
+            rpx(COMPOSER_GLOW_OFFSET_Y).to_pixels(window.rem_size()),
+        ),
+        blur_radius: rpx(COMPOSER_GLOW_BLUR).to_pixels(window.rem_size()),
+        spread_radius: rpx(COMPOSER_GLOW_SPREAD).to_pixels(window.rem_size()),
+        inset: false,
+    }
 }
 
 /// Existing checkout script register geometry, shared without changing its owner.

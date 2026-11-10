@@ -12,9 +12,9 @@ use std::{
 fn draft(provider: Provider, cwd: &str) -> SavedSession {
     SavedSession {
         claude_subagents: HashMap::default(),
-        session_review: Default::default(),
+        session_review: grove_core::provider::SessionReview::default(),
         rich_plans: grove_core::rich_plan::PlanStore::default(),
-        side_chats: Default::default(),
+        side_chats: std::collections::HashMap::default(),
         fork_origin: None,
         claude_resume: None,
         edit_checkpoints: Vec::new(),

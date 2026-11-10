@@ -207,6 +207,9 @@ fn serve(
     auth: &str,
     tasks: &Mutex<Context>,
 ) -> std::io::Result<()> {
+    // BSD accepts inherit the listener's nonblocking mode, unlike Linux.
+    // The parser uses bounded blocking reads with one absolute request deadline.
+    stream.set_nonblocking(false)?;
     stream.set_read_timeout(Some(REQUEST_TIMEOUT))?;
     stream.set_write_timeout(Some(REQUEST_TIMEOUT))?;
     let deadline = Instant::now() + REQUEST_TIMEOUT;
@@ -495,6 +498,40 @@ mod tests {
         response
     }
     #[test]
+    fn accepted_nonblocking_socket_waits_for_the_bounded_request() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let mut client = TcpStream::connect(address).unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_secs(4)))
+            .unwrap();
+        let (mut accepted, _) = listener.accept().unwrap();
+        // Reproduce BSD accept semantics on every platform, including Linux.
+        accepted.set_nonblocking(true).unwrap();
+        let (ready, waiting) = std::sync::mpsc::sync_channel(0);
+        let server = std::thread::spawn(move || {
+            ready.send(()).unwrap();
+            serve(
+                &mut accepted,
+                address,
+                "Bearer fixture",
+                &Mutex::new(Context::default()),
+            )
+        });
+        waiting.recv().unwrap();
+        // There are deliberately no readable bytes when serve begins. A socket
+        // left nonblocking fails immediately instead of waiting for this client.
+        std::thread::sleep(Duration::from_millis(40));
+        let body = r#"{"jsonrpc":"2.0","id":1,"method":"initialize"}"#;
+        write!(client, "POST /mcp HTTP/1.1\r\nHost: {address}\r\nAuthorization: Bearer fixture\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}", body.len()).unwrap();
+        let mut response = String::new();
+        client.read_to_string(&mut response).unwrap();
+        server.join().unwrap().unwrap();
+        assert!(response.starts_with("HTTP/1.1 200 OK"), "{response}");
+        assert!(response.contains("grove_activity"));
+    }
+
+    #[test]
     fn pending_action_finishes_after_activation_without_crossing_recreated_tasks() {
         use crate::codex::TranscriptItem;
         let server = Server::start().unwrap();
@@ -607,9 +644,9 @@ mod tests {
         ]});
         let set_context = |turn: &str| {
             server.set_context(
-                crate::tasks::current(&[checklist.clone()]),
+                crate::tasks::current(std::slice::from_ref(&checklist)),
                 Some(turn.into()),
-            )
+            );
         };
         let report = |task: &str, status: &str| {
             json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"report_activity","arguments":{"id":"action","task_id":task,"status":status,"label":"Checked behavior"}}}).to_string()

@@ -33,14 +33,14 @@ fn isolated_config() -> Result<PathBuf, String> {
     if !path.is_absolute() || !path.is_dir() {
         return Err("GROVE_CONFIG_DIR must be an existing absolute temporary directory".into());
     }
-    if std::fs::read_dir(&path)
+    if fs_err::read_dir(&path)
         .map_err(|error| error.to_string())?
         .next()
         .is_some()
     {
         return Err("Refusing to use nonempty Grove configuration for a live smoke".into());
     }
-    std::fs::canonicalize(path).map_err(|error| error.to_string())
+    fs_err::canonicalize(path).map_err(|error| error.to_string())
 }
 
 struct OwnedSession(Option<Handle>);
@@ -67,7 +67,7 @@ fn generate_in_conversation(
     prompt: String,
     snapshot: change_description::Snapshot,
 ) -> Result<change_description::Description, String> {
-    let deadline = Instant::now() + Duration::from_secs(120);
+    let deadline = Instant::now() + Duration::from_mins(2);
     let mut sent = false;
     loop {
         let remaining = deadline.saturating_duration_since(Instant::now());
@@ -144,6 +144,7 @@ fn generate_in_conversation(
 }
 
 fn main() -> Result<(), String> {
+    const CUSTOM_HEADING: &str = "## Grove custom rendering smoke";
     let provider = match std::env::args().nth(1).as_deref() {
         Some("codex") => Provider::Codex,
         Some("claude") => Provider::Claude,
@@ -151,7 +152,6 @@ fn main() -> Result<(), String> {
     };
     let config = isolated_config()?;
     let custom = std::env::var_os("GROVE_DESCRIPTION_SMOKE_CUSTOM").is_some();
-    const CUSTOM_HEADING: &str = "## Grove custom rendering smoke";
     if custom {
         let mut settings = grove_core::storage::Store::default();
         settings.prompt_overrides.insert(
@@ -165,14 +165,14 @@ fn main() -> Result<(), String> {
     git(path, &["init", "-b", "main"])?;
     git(path, &["config", "user.name", "Grove Session Smoke"])?;
     git(path, &["config", "user.email", "grove-smoke@example.test"])?;
-    std::fs::write(
+    fs_err::write(
         path.join("handler.ts"),
         "export function shouldProcess(seen: boolean) { return true; }\n",
     )
     .map_err(|error| error.to_string())?;
     git(path, &["add", "."])?;
     git(path, &["commit", "-m", "Fixture"])?;
-    std::fs::write(
+    fs_err::write(
         path.join("handler.ts"),
         "export function shouldProcess(seen: boolean) { return !seen; }\n",
     )

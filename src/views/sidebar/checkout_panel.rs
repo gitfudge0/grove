@@ -18,7 +18,7 @@ pub(super) const WIDE_VIEWPORT: f32 = MODAL_W_XL + MODAL_W_SM;
 pub(super) const CHECKOUT_SIDE_VIEWPORT: f32 = MODAL_W_XL;
 const NARROW_HEIGHT_FRACTION: f32 = 0.25;
 const STATUS_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
-const REMOTE_REFRESH_INTERVAL: Duration = Duration::from_secs(60);
+const REMOTE_REFRESH_INTERVAL: Duration = Duration::from_mins(1);
 /// Minimum count-column width; wider values expand the shared columns together.
 const STAT_COL_W: f32 = 48.;
 const AGENT_STATUS_W: f32 = ICON_MD;
@@ -1375,7 +1375,7 @@ impl Sidebar {
                             )
                             .on_click(cx.listener(
                                 move |this, _, _, cx| {
-                                    this.checkout_resolve_pr(target.clone(), request.clone(), cx)
+                                    this.checkout_resolve_pr(target.clone(), request.clone(), cx);
                                 },
                             )),
                         );
@@ -1566,7 +1566,11 @@ impl Sidebar {
                                 )
                                 .on_click(cx.listener(
                                     move |this, _, _, cx| {
-                                        this.checkout_pr_prompt(target.clone(), request.clone(), cx)
+                                        this.checkout_pr_prompt(
+                                            target.clone(),
+                                            request.clone(),
+                                            cx,
+                                        );
                                     },
                                 )),
                             );
@@ -1603,7 +1607,7 @@ impl Sidebar {
                                     .is_some(),
                         )
                         .on_click(cx.listener(move |this, _, _, cx| {
-                            this.checkout_compose_pr(target.clone(), cx)
+                            this.checkout_compose_pr(target.clone(), cx);
                         })),
                     );
                 }
@@ -1619,7 +1623,7 @@ impl Sidebar {
                         .checkout_panel
                         .pr_state
                         .as_ref()
-                        .is_some_and(|v| v.is_ok())
+                        .is_some_and(std::result::Result::is_ok)
                     {
                         "PR offline · last known status"
                     } else {
@@ -2046,7 +2050,7 @@ impl Sidebar {
                                     CommitEvent::Progress(CommitPhase::Committing) => {
                                         this.checkout_panel.feedback.progress(&path, "local", feedback_token, "Committing…"); None
                                     }
-                                    _ => None,
+                                    CommitEvent::Progress(_) => None,
                                 };
                                 succeeded |= this.checkout_panel.commit_event(&path, job, event);
                                 if let Some(receipt) = receipt {
@@ -2190,7 +2194,7 @@ impl Sidebar {
         let selector = id.clone();
         div()
             .id(id.clone())
-            .debug_selector(move || selector.clone().into())
+            .debug_selector(move || selector.clone())
             .role(gpui::Role::Status)
             .pl(rpx(SPACE_2XL))
             .pr(rpx(SPACE_2XL))
@@ -2372,7 +2376,7 @@ impl Sidebar {
                         );
                     }
                 }
-                _ => {}
+                CheckoutRecovery::Main(..) => {}
             }
             let target = path.clone();
             let guarded = match &recovery {
@@ -2395,7 +2399,7 @@ impl Sidebar {
                     .with_focus_handle(self.confirm_focus.clone())
                     .disabled(busy || guarded)
                     .on_click(cx.listener(move |this, _, _, cx| {
-                        this.checkout_execute_recovery(target.clone(), recovery.clone(), cx)
+                        this.checkout_execute_recovery(target.clone(), recovery.clone(), cx);
                     })),
             );
         }
@@ -3138,18 +3142,7 @@ impl Sidebar {
                     git_section = git_section.child(checkout_git_heading());
                     let state = self.checkout_panel.state.clone().and_then(Result::ok);
                     let branch_label = state.as_ref().map_or_else(
-                        || {
-                            if self
-                                .checkout_panel
-                                .state
-                                .as_ref()
-                                .is_some_and(Result::is_err)
-                            {
-                                "Branch unavailable".to_owned()
-                            } else {
-                                "Branch unavailable".to_owned()
-                            }
-                        },
+                        || "Branch unavailable".to_owned(),
                         |state| {
                             state.branch.clone().unwrap_or_else(|| {
                                 state.head.as_deref().map_or_else(
@@ -3218,7 +3211,7 @@ impl Sidebar {
                                             event.position(),
                                             window,
                                             cx,
-                                        )
+                                        );
                                     },
                                 )),
                             ),
@@ -3652,7 +3645,7 @@ impl Sidebar {
                             )
                             .on_click(cx.listener(
                                 move |this, _, _, cx| {
-                                    this.checkout_run(target.clone(), GitAction::Pull, cx)
+                                    this.checkout_run(target.clone(), GitAction::Pull, cx);
                                 },
                             )),
                             self.checkout_panel.feedback.get(&path, "pull"),
@@ -4049,8 +4042,7 @@ impl Sidebar {
             .store
             .projects
             .get(idx)
-            .map(|project| project.path.clone())
-            .unwrap_or_else(|| path.clone());
+            .map_or_else(|| path.clone(), |project| project.path.clone());
         let targets = self.checkout_targets(cx);
         let popup = PopupMenu::build(window, cx, move |mut popup, window, _| {
             popup = crate::views::components::dropdown_menu(popup, window);
@@ -4249,7 +4241,7 @@ fn checkout_gate(id: String, reason: &'static str, cx: &App) -> gpui::Stateful<g
     let selector = id.clone();
     div()
         .id(id.clone())
-        .debug_selector(move || selector.clone().into())
+        .debug_selector(move || selector.clone())
         .pl(rpx(CHECKOUT_LABEL_INSET))
         .pr(rpx(SPACE_2XL))
         .py(rpx(SPACE_SM))
@@ -4765,8 +4757,10 @@ mod tests {
 
     #[test]
     fn invalidated_cached_status_is_polled_again() {
-        let mut panel = CheckoutPanel::default();
-        panel.state = Some(Err("Last observation unavailable".into()));
+        let mut panel = CheckoutPanel {
+            state: Some(Err("Last observation unavailable".into())),
+            ..CheckoutPanel::default()
+        };
         assert!(panel.local_refresh_due());
         panel.checked_at = Some(Instant::now());
         assert!(!panel.local_refresh_due());
@@ -4782,9 +4776,11 @@ mod tests {
 
     #[test]
     fn background_samples_cannot_overwrite_a_completed_mutation() {
-        let mut panel = CheckoutPanel::default();
-        panel.path = Some("/checkout".into());
-        panel.generation = 4;
+        let mut panel = CheckoutPanel {
+            path: Some("/checkout".into()),
+            generation: 4,
+            ..CheckoutPanel::default()
+        };
         assert!(panel.accepts_sample("/checkout", 4, 0));
         panel.operation.revision += 1;
         panel.operation.busy = true;
@@ -4836,9 +4832,9 @@ mod tests {
             let (handle, actions) = grove_core::codex::Handle::channel();
             let (_updates, receive) = std::sync::mpsc::channel();
             let saved = grove_core::codex::SavedSession {
-                session_review: Default::default(),
+                session_review: grove_core::codex::SessionReview::default(),
                 rich_plans: grove_core::rich_plan::PlanStore::default(),
-                side_chats: Default::default(),
+                side_chats: std::collections::HashMap::default(),
                 fork_origin: None,
                 claude_resume: None,
                 claude_subagents: std::collections::HashMap::default(),
@@ -4932,9 +4928,9 @@ mod tests {
             let (handle, actions) = grove_core::codex::Handle::channel();
             let (_updates, receive) = std::sync::mpsc::channel();
             let saved = grove_core::codex::SavedSession {
-                session_review: Default::default(),
+                session_review: grove_core::codex::SessionReview::default(),
                 rich_plans: grove_core::rich_plan::PlanStore::default(),
-                side_chats: Default::default(),
+                side_chats: std::collections::HashMap::default(),
                 fork_origin: None,
                 claude_resume: None,
                 claude_subagents: std::collections::HashMap::default(),
@@ -5890,9 +5886,9 @@ mod tests {
                 let (handle, _actions) = grove_core::codex::Handle::channel();
                 let (_updates, receive) = std::sync::mpsc::channel();
             let saved = grove_core::codex::SavedSession {
-                session_review: Default::default(),
+                session_review: grove_core::codex::SessionReview::default(),
                 rich_plans: grove_core::rich_plan::PlanStore::default(),
-                side_chats: Default::default(),
+                side_chats: std::collections::HashMap::default(),
                 fork_origin: None,
             claude_resume: None,
                 claude_subagents: std::collections::HashMap::default(),
@@ -6062,9 +6058,9 @@ mod tests {
             grove_core::codex::Provider::Claude,
         ] {
             let saved = grove_core::codex::SavedSession {
-                session_review: Default::default(),
+                session_review: grove_core::codex::SessionReview::default(),
                 rich_plans: grove_core::rich_plan::PlanStore::default(),
-                side_chats: Default::default(),
+                side_chats: std::collections::HashMap::default(),
                 fork_origin: None,
                 claude_resume: None,
                 claude_subagents: std::collections::HashMap::default(),
@@ -6386,9 +6382,9 @@ mod tests {
             let (handle, _actions) = grove_core::codex::Handle::channel();
             let (_updates, receive) = std::sync::mpsc::channel();
             let saved = grove_core::codex::SavedSession {
-                session_review: Default::default(),
+                session_review: grove_core::codex::SessionReview::default(),
                 rich_plans: grove_core::rich_plan::PlanStore::default(),
-                side_chats: Default::default(),
+                side_chats: std::collections::HashMap::default(),
                 fork_origin: None,
                 claude_resume: None,
                 claude_subagents: std::collections::HashMap::default(),
@@ -6502,8 +6498,14 @@ mod tests {
             // Exercise both provider fixtures at normal and narrow viewport sizes and UI zoom.
             for (width, scale) in [(1280., 1.), (500., 1.), (500., 1.1)] {
                 cx.simulate_resize(gpui::size(gpui::px(width), gpui::px(800.)));
-                cx.update(|window, _| {
+                cx.update(|window, cx| {
                     window.set_rem_size(gpui::px(crate::zoom::REM_BASE * scale));
+                    sidebar.update(cx, |sidebar, _| {
+                        // This fixture inspects an explicitly reopened panel,
+                        // including widths where automatic fitting hides it.
+                        sidebar.checkout_panel.width_override =
+                            Some(Sidebar::logical_window_width(window));
+                    });
                 });
                 cx.run_until_parked();
                 cx.update(|window, cx| {
@@ -6775,8 +6777,10 @@ mod tests {
                     .previous)
             );
             cx.simulate_resize(gpui::size(gpui::px(500.), gpui::px(800.)));
-            cx.update(|_, cx| {
+            cx.update(|window, cx| {
                 sidebar.update(cx, |sidebar, cx| {
+                    sidebar.checkout_panel.width_override =
+                        Some(Sidebar::logical_window_width(window));
                     sidebar.checkout_panel.expanded = false;
                     cx.notify();
                 });
@@ -6789,6 +6793,12 @@ mod tests {
                 .read(cx)
                 .agents_in_checkout));
             cx.simulate_resize(gpui::size(gpui::px(1280.), gpui::px(800.)));
+            cx.update(|window, cx| {
+                sidebar.update(cx, |sidebar, _| {
+                    sidebar.checkout_panel.width_override =
+                        Some(Sidebar::logical_window_width(window));
+                });
+            });
             cx.run_until_parked();
             cx.update(|window, cx| {
                 let _ = window.draw(cx);
@@ -7421,6 +7431,12 @@ mod tests {
         assert!(cx.debug_bounds("checkout-path").is_none());
         assert!(cx.debug_bounds("checkout-branch").is_none());
         cx.simulate_resize(gpui::size(gpui::px(500.), gpui::px(600.)));
+        cx.update(|window, cx| {
+            sidebar.update(cx, |sidebar, cx| {
+                sidebar.checkout_panel.hidden = true;
+                sidebar.toggle_session_panel(window, cx);
+            });
+        });
         cx.run_until_parked();
         cx.update(|window, cx| {
             let _ = window.draw(cx);
@@ -7464,10 +7480,14 @@ mod tests {
                 assert!(cx.debug_bounds("checkout-panel").is_none());
                 assert!(cx.debug_bounds("checkout-summary").is_none());
             }
-            cx.update(|_, cx| {
+            cx.update(|window, cx| {
                 sidebar.update(cx, |sidebar, cx| {
                     sidebar.selection = Some(Selection::Worktree(0, fixture_path.clone()));
                     sidebar.checkout_panel.expanded = true;
+                    // Restoring the selected checkout deliberately reopens the
+                    // panel after each viewport change in this geometry fixture.
+                    sidebar.checkout_panel.hidden = true;
+                    sidebar.toggle_session_panel(window, cx);
                     assert_eq!(
                         sidebar.checkout_targets(cx),
                         vec![(0, fixture_path.clone())]
@@ -7596,7 +7616,7 @@ mod push_native_qa {
                         for frame in ["early", "later"] {
                             cx.background_executor().timer(Duration::from_millis(120)).await;
                             let output = format!("{}/.grove-artifacts/side-panel-implementation/native-{theme}-{rem}-{reduced}-{frame}.png", env!("CARGO_MANIFEST_DIR"));
-                            std::fs::create_dir_all(std::path::Path::new(&output).parent().unwrap()).unwrap();
+                            fs_err::create_dir_all(std::path::Path::new(&output).parent().unwrap()).unwrap();
                             assert!(std::process::Command::new("import").args(["-window", "Grove push animation QA", &output]).status().unwrap().success());
                         }
                         cx.background_executor().timer(Duration::from_millis(450)).await;
@@ -7604,7 +7624,7 @@ mod push_native_qa {
                             "{}/.grove-artifacts/push-motion/native-{theme}-{rem}-{reduced}.png",
                             env!("CARGO_MANIFEST_DIR")
                         );
-                        std::fs::create_dir_all(std::path::Path::new(&output).parent().unwrap())
+                        fs_err::create_dir_all(std::path::Path::new(&output).parent().unwrap())
                             .unwrap();
                         assert!(std::process::Command::new("import")
                             .args(["-window", "Grove push animation QA", &output])

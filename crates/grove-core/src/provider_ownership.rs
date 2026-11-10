@@ -1,10 +1,9 @@
 //! Process-lifetime ownership of native threads within a Grove configuration.
 //! CLI-owned threads outside Grove still rely on the native provider's refusal.
 use crate::provider::{Provider, SavedSession};
-use std::{
-    fs::{File, OpenOptions},
-    path::PathBuf,
-};
+use fs_err::{File, OpenOptions};
+use std::fmt::Write as _;
+use std::path::PathBuf;
 
 /// A pending fork writes a new target; an established fork resumes its current ID.
 pub(crate) fn native_write_target(saved: &SavedSession) -> Option<&str> {
@@ -51,18 +50,25 @@ impl ThreadOwnership {
         if self.held.iter().any(|(held, _)| held == id) {
             return Ok(());
         }
-        std::fs::create_dir_all(&self.directory).map_err(|e| e.to_string())?;
+        fs_err::create_dir_all(&self.directory).map_err(|e| e.to_string())?;
         // Native identifiers never become paths; namespaces keep providers independent.
         let digest = ring::digest::digest(
             &ring::digest::SHA256,
             format!("{}:{id}", self.provider.label()).as_bytes(),
         );
-        let name: String = digest.as_ref().iter().map(|b| format!("{b:02x}")).collect();
+        let name: String =
+            digest
+                .as_ref()
+                .iter()
+                .fold(String::with_capacity(64), |mut output, byte| {
+                    let _ = write!(output, "{byte:02x}");
+                    output
+                });
         let mut options = OpenOptions::new();
         options.read(true).write(true).create(true).truncate(false);
         #[cfg(unix)]
         {
-            use std::os::unix::fs::OpenOptionsExt;
+            use fs_err::os::unix::fs::OpenOptionsExt;
             options.mode(0o600);
         }
         let file = options
@@ -184,6 +190,6 @@ mod tests {
         };
         codex.claim("same-id").unwrap();
         claude.claim("same-id").unwrap();
-        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 2);
+        assert_eq!(fs_err::read_dir(dir.path()).unwrap().count(), 2);
     }
 }

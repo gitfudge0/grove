@@ -4,7 +4,7 @@ use crate::views::components::{form_action, project_field_well, tooltip};
 use gpui_component::Disableable;
 use grove_core::contributions::{self, Activity};
 
-const REFRESH_INTERVAL: Duration = Duration::from_secs(300);
+const REFRESH_INTERVAL: Duration = Duration::from_mins(5);
 const CELL_SIZE: f32 = 9.;
 const LEGEND_SIZE: f32 = 8.;
 const REFRESH_ACTION_W: f32 = 28.;
@@ -294,6 +294,14 @@ mod tests {
         });
         for width in [1280., 760.] {
             cx.simulate_resize(gpui::size(gpui::px(width), gpui::px(1000.)));
+            cx.update(|window, cx| {
+                sidebar.update(cx, |sidebar, cx| {
+                    // Inspect the explicitly reopened panel; automatic fitting
+                    // at this width is covered by the panel visibility tests.
+                    sidebar.checkout_panel.hidden = true;
+                    sidebar.toggle_session_panel(window, cx);
+                });
+            });
             cx.run_until_parked();
             cx.update(|window, cx| {
                 let _ = window.draw(cx);

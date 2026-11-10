@@ -416,7 +416,7 @@ mod tests {
     #[test]
     fn scope_counts_new_running_tasks_and_addition_only_revisions() {
         let first = json!({"type":"plan","plan":[{"id":"a","step":"Keep","status":"pending"}]});
-        assert_eq!(scope(&[first.clone()]).added, 0);
+        assert_eq!(scope(std::slice::from_ref(&first)).added, 0);
         let added = json!({"type":"plan","plan":[
             {"id":"a","step":"Keep","status":"completed"},
             {"id":"b","step":"New active task","status":"inProgress"},
@@ -435,7 +435,10 @@ mod tests {
     fn pending_to_active_keeps_identity_but_removal_recreation_does_not() {
         let pending = json!({"id":"pending","type":"plan","plan":[{"id":"step-0","step":"Verify","status":"pending"}]});
         let active = json!({"id":"active","type":"plan","plan":[{"id":"step-0","step":"Verify","status":"inProgress"}]});
-        let before = current(&[pending.clone()]).unwrap().tasks.remove(0);
+        let before = current(std::slice::from_ref(&pending))
+            .unwrap()
+            .tasks
+            .remove(0);
         let after = current(&[pending.clone(), active.clone()])
             .unwrap()
             .tasks
@@ -489,7 +492,7 @@ mod tests {
     #[test]
     fn activity_ownership_rejects_ambiguous_and_legacy_snapshots() {
         let progress = json!({"type":"agentMessage","text":"Working"});
-        assert!(activity_owner(&[progress.clone()], 0).is_none());
+        assert!(activity_owner(std::slice::from_ref(&progress), 0).is_none());
         let parallel = json!({"type":"plan","plan":[{"id":"1","step":"A","status":"inProgress"},{"id":"2","step":"B","status":"inProgress"}]});
         assert!(activity_owner(&[parallel, progress.clone()], 1).is_none());
         let mut legacy = json!({"id":"grove-plan-turn-1","type":"plan","plan":[{"step":"A","status":"inProgress"}]});

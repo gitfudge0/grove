@@ -535,7 +535,7 @@ mod tests {
             sidebar.update(cx, |sidebar, _| {
                 let transition = sidebar.session_motion.transitions.get_mut(&second).unwrap();
                 assert!(transition.exiting.is_none());
-                transition.started = Instant::now() - DURATION / 2;
+                transition.started = Instant::now().checked_sub(DURATION / 2).unwrap();
             });
             probe.update(cx, |_, cx| cx.notify());
             let _ = window.draw(cx);
@@ -550,7 +550,7 @@ mod tests {
                     .transitions
                     .get_mut(&second)
                     .unwrap()
-                    .started = Instant::now() - DURATION
+                    .started = Instant::now().checked_sub(DURATION).unwrap();
             });
             probe.update(cx, |_, cx| cx.notify());
             let _ = window.draw(cx);
@@ -581,7 +581,7 @@ mod tests {
                     .values_mut()
                     .chain(sidebar.session_motion.departures.values_mut())
                 {
-                    state.started = Instant::now() - DURATION / 2;
+                    state.started = Instant::now().checked_sub(DURATION / 2).unwrap();
                 }
             });
             probe.update(cx, |probe, cx| {
@@ -608,7 +608,7 @@ mod tests {
                     .values_mut()
                     .chain(sidebar.session_motion.departures.values_mut())
                 {
-                    state.started = Instant::now() - DURATION;
+                    state.started = Instant::now().checked_sub(DURATION).unwrap();
                 }
             });
             let _ = window.draw(cx);
@@ -642,7 +642,7 @@ mod tests {
                     .transitions
                     .get_mut(&second)
                     .unwrap()
-                    .started = Instant::now() - DURATION / 2
+                    .started = Instant::now().checked_sub(DURATION / 2).unwrap();
             });
             probe.update(cx, |_, cx| cx.notify());
             let _ = window.draw(cx);
@@ -692,7 +692,7 @@ mod tests {
                 projects: vec![grove_core::storage::Project {
                     name: "Example".into(),
                     path: "/grove-single-sidebar-example".into(),
-                    scripts: Default::default(),
+                    scripts: grove_core::storage::ProjectScripts::default(),
                     archived: false,
                     worktree_dir: None,
                 }],
@@ -748,7 +748,7 @@ mod tests {
                     .transitions
                     .get_mut(&id)
                     .unwrap()
-                    .started = Instant::now() - DURATION;
+                    .started = Instant::now().checked_sub(DURATION).unwrap();
                 cx.notify();
             });
             let _ = window.draw(cx);
@@ -756,7 +756,7 @@ mod tests {
         assert!(cx.debug_bounds("session-2").is_some());
         cx.update(|window, cx| {
             sidebar.update(cx, |sidebar, cx| {
-                sidebar.act(Action::FinishSession(id), window, cx)
+                sidebar.act(Action::FinishSession(id), window, cx);
             });
             let _ = window.draw(cx);
             let sidebar = sidebar.read(cx);

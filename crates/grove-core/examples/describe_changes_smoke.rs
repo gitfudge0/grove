@@ -48,7 +48,7 @@ fn main() -> Result<(), String> {
     let index = git(path, &["ls-files", "--stage"])?;
     let result =
         change_description::generate(path, &scope, provider, &CommitControl::default(), |phase| {
-            eprintln!("{phase:?}")
+            eprintln!("{phase:?}");
         })?;
     if result.files.is_empty()
         || (scope == Scope::Local

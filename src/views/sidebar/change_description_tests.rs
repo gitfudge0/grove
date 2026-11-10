@@ -2,6 +2,7 @@
 //! start a provider or perform a GitHub write.
 use super::*;
 use gpui::AppContext as _;
+#[cfg(target_os = "linux")]
 use std::io::Write as _;
 
 const FIXTURE_PANEL_WIDTH: f32 = 280.;
@@ -200,7 +201,7 @@ fn fixture(cx: &mut gpui::TestAppContext) -> (Entity<Sidebar>, &mut gpui::Visual
             rem: 16.,
             width: 1100.,
             height: 1000.,
-            measured: Default::default(),
+            measured: std::rc::Rc::default(),
             drive_capture_frames: false,
         });
         gpui_component::Root::new(fixture, window, cx).bordered(false)
@@ -261,7 +262,7 @@ fn stale_reader_blocks_publish_and_preview_restores_focus(cx: &mut gpui::TestApp
                 .unwrap()
                 .freshness = Some(Ok(false));
             cx.notify();
-        })
+        });
     });
     draw(cx);
     let publish = cx.debug_bounds("describe-publish").unwrap();
@@ -287,7 +288,7 @@ fn stale_reader_blocks_publish_and_preview_restores_focus(cx: &mut gpui::TestApp
                 .unwrap()
                 .freshness = Some(Ok(true));
             cx.notify();
-        })
+        });
     });
     draw(cx);
     let publish = cx.debug_bounds("describe-publish").unwrap();
@@ -328,7 +329,7 @@ fn stale_reader_blocks_publish_and_preview_restores_focus(cx: &mut gpui::TestApp
                 .preview_scroll
                 .scroll_to_bottom();
             cx.notify();
-        })
+        });
     });
     draw(cx);
     let confirm = cx.debug_bounds("description-publish-confirm").unwrap();
@@ -393,7 +394,7 @@ fn describe_changes_linux_native_capture() {
                     window.set_window_title("Grove Describe changes QA");
                     let (sidebar, source) = create_sidebar(window, cx);
                     sidebar_handle = Some(sidebar.clone());
-                    let fixture = cx.new(|_| DescriptionReaderFixture { sidebar, source, rem: 16., width: 1100., height: 800., measured: Default::default(), drive_capture_frames: true });
+                    let fixture = cx.new(|_| DescriptionReaderFixture { sidebar, source, rem: 16., width: 1100., height: 800., measured: std::rc::Rc::default(), drive_capture_frames: true });
                     fixture_handle = Some(fixture.clone());
                     cx.new(|cx| gpui_component::Root::new(fixture, window, cx))
                 },
@@ -467,11 +468,11 @@ fn describe_changes_linux_native_capture() {
                     let output = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
                         .join(".grove-artifacts/describe-changes-native")
                         .join(format!("{name}-v3.png"));
-                    std::fs::create_dir_all(output.parent().unwrap()).unwrap();
+                    fs_err::create_dir_all(output.parent().unwrap()).unwrap();
                     let measured = cx.update(|cx| fixture.read(cx).measured.get());
                     assert!(measured.width > gpui::px(0.));
                     if state == "stale" { assert!(measured.width <= gpui::px(320.)); }
-                    let mut metadata = std::fs::OpenOptions::new().create(true).append(true).open(output.parent().unwrap().join("capture-metadata-v3.txt")).unwrap();
+                    let mut metadata = fs_err::OpenOptions::new().create(true).append(true).open(output.parent().unwrap().join("capture-metadata-v3.txt")).unwrap();
                     writeln!(metadata, "{name}: requested {width}x800 logical px; measured {measured:?}").unwrap();
                     assert!(std::process::Command::new("import")
                         .args(["-window", "Grove Describe changes QA"])
@@ -567,7 +568,7 @@ fn linked_fixture(
             rem: 16.,
             width: 1100.,
             height: 1000.,
-            measured: Default::default(),
+            measured: std::rc::Rc::default(),
             drive_capture_frames: false,
         });
         gpui_component::Root::new(fixture, window, cx).bordered(false)
@@ -697,7 +698,7 @@ fn retained_explicit_pr_stays_separate_from_the_attached_pr(cx: &mut gpui::TestA
                 assert_eq!(descriptions[0].label, "Describe changes");
                 assert_eq!(descriptions[1].scope, frozen_description().snapshot.scope);
                 assert_eq!(descriptions[1].label, "Open description");
-            })
+            });
         });
         assert_linked_draft(&fixture, cx);
         assert!(fixture.actions.try_iter().next().is_none());
@@ -728,7 +729,7 @@ fn stale_linked_description_keeps_panel_action_and_never_leaks_to_another_sessio
                     .unwrap()
                     .freshness = Some(Ok(false));
                 cx.notify();
-            })
+            });
         });
         draw(cx);
         assert!(
@@ -804,7 +805,7 @@ fn stale_linked_description_keeps_panel_action_and_never_leaks_to_another_sessio
                 sidebar.selection = Some(Selection::Session(fixture.id));
                 assert!(sidebar.description_is_open(cx));
                 cx.notify();
-            })
+            });
         });
         draw(cx);
         assert!(cx.debug_bounds("description-reader").is_some());
@@ -835,7 +836,7 @@ fn publish_failure_keeps_edited_preview_and_never_offers_generation_retry(
             entry.error =
                 Some("The PR description changed before the update reached GitHub.".into());
             cx.notify();
-        })
+        });
     });
     draw(cx);
     assert!(cx.debug_bounds("description-retry").is_none());
@@ -858,7 +859,7 @@ fn publish_failure_keeps_edited_preview_and_never_offers_generation_retry(
                 .preview_scroll
                 .scroll_to_bottom();
             cx.notify();
-        })
+        });
     });
     draw(cx);
     assert!(cx.debug_bounds("description-publish-confirm").is_some());
@@ -966,7 +967,7 @@ fn description_controls_only_offer_real_choices_and_keyboard_selection(
             sidebar: sidebar.clone(),
             local: true,
             pr: false,
-            bounds: Default::default(),
+            bounds: std::rc::Rc::default(),
             drive_frames: false,
         });
         handles = Some((sidebar, fixture.clone()));
@@ -984,7 +985,7 @@ fn description_controls_only_offer_real_choices_and_keyboard_selection(
     cx.simulate_click(trigger.center(), gpui::Modifiers::default());
     draw(cx);
     sidebar.read_with(cx, |s, _| {
-        assert!(s.checkout_panel.change_tools.menu.is_some())
+        assert!(s.checkout_panel.change_tools.menu.is_some());
     });
     cx.simulate_keystrokes("escape");
     draw(cx);
@@ -996,14 +997,14 @@ fn description_controls_only_offer_real_choices_and_keyboard_selection(
     cx.simulate_keystrokes("enter");
     draw(cx);
     sidebar.read_with(cx, |s, _| {
-        assert!(s.checkout_panel.change_tools.menu.is_some())
+        assert!(s.checkout_panel.change_tools.menu.is_some());
     });
     cx.simulate_keystrokes("escape");
     cx.update(|_, cx| {
         fixture.update(cx, |f, cx| {
             f.pr = true;
             cx.notify();
-        })
+        });
     });
     draw(cx);
     assert!(cx.debug_bounds("checkout-local-tools").is_some());
@@ -1023,7 +1024,7 @@ fn description_controls_only_offer_real_choices_and_keyboard_selection(
             window.focused(cx),
             sidebar.read(cx).checkout_panel.change_tools.focus[&true],
             sidebar.read(cx).checkout_panel.change_tools.focus[&false]
-        )
+        );
     });
 
     cx.update(|_, cx| {
@@ -1072,7 +1073,7 @@ fn description_controls_only_offer_real_choices_and_keyboard_selection(
                 busy.status.is_some(),
                 "progress remains visible outside menus"
             );
-        })
+        });
     });
 }
 
@@ -1088,7 +1089,7 @@ fn describe_controls_linux_native_capture() {
                 .contains(".grove-artifacts/description-controls/")
     );
     let output = config.parent().unwrap().to_path_buf();
-    std::fs::create_dir_all(&output).unwrap();
+    fs_err::create_dir_all(&output).unwrap();
     gpui_platform::application()
         .with_assets(crate::assets::Assets)
         .run(move |cx| {
@@ -1118,7 +1119,7 @@ fn describe_controls_linux_native_capture() {
                             sidebar: sidebar.clone(),
                             local: true,
                             pr: false,
-                            bounds: Default::default(),
+                            bounds: std::rc::Rc::default(),
                             drive_frames: true,
                         });
                         handles = Some((sidebar, fixture.clone()));

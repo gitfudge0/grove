@@ -15,7 +15,7 @@ fn wait(
     connection: &provider::Connection,
     condition: impl Fn(&Snapshot) -> bool,
 ) -> Result<Snapshot, String> {
-    let deadline = Instant::now() + Duration::from_secs(60);
+    let deadline = Instant::now() + Duration::from_mins(1);
     loop {
         let snapshot = connection
             .updates

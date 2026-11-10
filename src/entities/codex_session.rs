@@ -63,7 +63,7 @@ pub struct CodexSession {
     pub catalog_error: Option<String>,
     pub handle: Handle,
     _poll: Task<()>,
-    _skill_watch: Option<Task<()>>,
+    skill_watch: Option<Task<()>>,
     refreshed_skills: Option<Vec<serde_json::Value>>,
     deferred: Option<std::sync::mpsc::Receiver<Action>>,
     catalog_generation: u64,
@@ -89,7 +89,7 @@ impl CodexSession {
             state: state.into(),
             handle,
             _poll: Task::ready(()),
-            _skill_watch: None,
+            skill_watch: None,
             refreshed_skills: None,
             deferred: None,
             catalog_generation: 0,
@@ -122,7 +122,7 @@ impl CodexSession {
             state: state.into(),
             handle,
             _poll: poll,
-            _skill_watch: None,
+            skill_watch: None,
             refreshed_skills: None,
             deferred: Some(receiver),
             catalog_generation: 0,
@@ -442,7 +442,7 @@ impl CodexSession {
             state: state.into(),
             handle,
             _poll: poll,
-            _skill_watch: None,
+            skill_watch: None,
             refreshed_skills: None,
             deferred: None,
             catalog_generation: 0,
@@ -457,7 +457,7 @@ impl CodexSession {
     /// Poll only source metadata in the background; changed sources trigger one
     /// shared metadata handshake, without interrupting the conversation transport.
     fn start_skill_watch(&mut self, args: Vec<String>, cx: &mut Context<Self>) {
-        self._skill_watch = Some(cx.spawn(async move |this, cx| {
+        self.skill_watch = Some(cx.spawn(async move |this, cx| {
             let mut previous = None;
             loop {
                 let Ok(saved) = this.read_with(cx, |this, _| this.state.saved.clone()) else {
@@ -482,7 +482,7 @@ impl CodexSession {
                         (key, catalog)
                     })
                     .await;
-                let successful = catalog.as_ref().is_none_or(|result| result.is_ok());
+                let successful = catalog.as_ref().is_none_or(std::result::Result::is_ok);
                 if let Some(Ok(catalog)) = catalog {
                     if this
                         .update(cx, |this, cx| {
@@ -492,7 +492,7 @@ impl CodexSession {
                                 return;
                             }
                             if this.state.skills != catalog.skills {
-                                this.state.skills = catalog.skills.clone();
+                                this.state.skills.clone_from(&catalog.skills);
                                 if !this.is_deferred() {
                                     this.refreshed_skills = Some(catalog.skills.clone());
                                     let _ = this.handle.send(Action::UpdateSkills(catalog.skills));
@@ -875,7 +875,7 @@ mod dashboard_tests {
                     session.accept_snapshot(ready);
                     assert_eq!(session.state.session_status(), "Working");
                     cx.notify();
-                })
+                });
             });
             window_cx.run_until_parked();
             let dispatched = actions.try_iter().collect::<Vec<_>>();
@@ -1045,9 +1045,9 @@ mod dashboard_tests {
     fn saved(provider: codex::Provider) -> SavedSession {
         SavedSession {
             claude_subagents: std::collections::HashMap::default(),
-            session_review: Default::default(),
+            session_review: grove_core::codex::SessionReview::default(),
             rich_plans: grove_core::rich_plan::PlanStore::default(),
-            side_chats: Default::default(),
+            side_chats: std::collections::HashMap::default(),
             fork_origin: None,
             claude_resume: None,
             edit_checkpoints: Vec::new(),

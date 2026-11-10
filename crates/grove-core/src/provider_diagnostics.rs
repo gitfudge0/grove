@@ -1,7 +1,7 @@
 //! Opt-in, metadata-only protocol traces. Never persist provider payloads or stderr.
+use fs_err::{File, OpenOptions};
 use serde_json::{json, Value};
 use std::{
-    fs::{File, OpenOptions},
     io::Write,
     path::Path,
     sync::{Arc, Mutex},
@@ -26,13 +26,13 @@ impl Capture {
             .unwrap_or_default()
     }
     fn open(directory: &Path, provider: &str) -> std::io::Result<Self> {
-        std::fs::create_dir_all(directory)?;
+        fs_err::create_dir_all(directory)?;
         let id = crate::identity::random_id().map_err(std::io::Error::other)?;
         let mut options = OpenOptions::new();
         options.write(true).create_new(true);
         #[cfg(unix)]
         {
-            use std::os::unix::fs::OpenOptionsExt;
+            use fs_err::os::unix::fs::OpenOptionsExt;
             options.mode(0o600);
         }
         let file = options.open(directory.join(format!("{provider}-{id}.ndjson")))?;
@@ -122,13 +122,13 @@ mod tests {
             true,
             &json!({"method":"secret-method","error":{"message":"secret-error"}}),
         );
-        let path = std::fs::read_dir(dir.path())
+        let path = fs_err::read_dir(dir.path())
             .unwrap()
             .next()
             .unwrap()
             .unwrap()
             .path();
-        let text = std::fs::read_to_string(&path).unwrap();
+        let text = fs_err::read_to_string(&path).unwrap();
         assert!(!text.contains("secret"));
         let rows: Vec<Value> = text
             .lines()
@@ -142,7 +142,7 @@ mod tests {
         {
             use std::os::unix::fs::PermissionsExt;
             assert_eq!(
-                std::fs::metadata(path).unwrap().permissions().mode() & 0o777,
+                fs_err::metadata(path).unwrap().permissions().mode() & 0o777,
                 0o600
             );
         }
@@ -159,13 +159,13 @@ mod tests {
             false,
             &json!({"type":"result", "is_error":false, "terminal_reason":"api_error"}),
         );
-        let path = std::fs::read_dir(dir.path())
+        let path = fs_err::read_dir(dir.path())
             .unwrap()
             .next()
             .unwrap()
             .unwrap()
             .path();
-        let rows: Vec<Value> = std::fs::read_to_string(path)
+        let rows: Vec<Value> = fs_err::read_to_string(path)
             .unwrap()
             .lines()
             .map(|line| serde_json::from_str(line).unwrap())
@@ -181,13 +181,13 @@ mod tests {
         for _ in 0..15000 {
             trace.record(false, &json!({"type":"assistant"}));
         }
-        let path = std::fs::read_dir(dir.path())
+        let path = fs_err::read_dir(dir.path())
             .unwrap()
             .next()
             .unwrap()
             .unwrap()
             .path();
-        let bytes = std::fs::read(path).unwrap();
+        let bytes = fs_err::read(path).unwrap();
         assert!(bytes.len() <= MAX_BYTES);
         assert!(bytes.len() > MAX_BYTES - 256);
         assert_eq!(bytes.last(), Some(&b'\n'));

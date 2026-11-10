@@ -125,7 +125,7 @@ mod tests {
         placements.observe(id, 1, now + Duration::from_millis(500));
         placements.observe(id, 1, now + Duration::from_millis(999));
         assert_eq!(placements.status(id, "Done"), "Working");
-        placements.observe(id, 1, now + Duration::from_millis(1000));
+        placements.observe(id, 1, now + Duration::from_secs(1));
         assert_eq!(placements.status(id, "Done"), "Review");
     }
 }

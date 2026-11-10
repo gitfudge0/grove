@@ -1009,7 +1009,7 @@ mod tests {
         assert!(session.read_with(cx, |session, _| session.spawn_error().is_none()));
         assert!(!session.read_with(cx, |session, _| session.has_exited()));
         session
-            .update(cx, |session, cx| session.request_script_stop(cx))
+            .update(cx, super::TerminalSession::request_script_stop)
             .unwrap();
         // The request cannot synthesize an exit; the PTY remains until EOF/exit polling.
         assert!(!session.read_with(cx, |session, _| session.has_exited()));

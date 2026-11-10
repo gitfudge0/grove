@@ -583,11 +583,13 @@ impl Sidebar {
         .debug_selector(move || format!("dashboard-session-status-{}", id.raw()))
         .flex_shrink_0()
         .text_size(rpx(TEXT_SMALL));
-        let status_slot = if let Some((action_id, label, action)) = status_action {
+        let status_slot = if let (Some((action_id, label, action)), Some(action_focus)) =
+            (status_action, review_focus.as_ref())
+        {
             let action = self
                 .control((action_id, id.raw()), label, action, cx)
                 .debug_selector(move || format!("{action_id}-{}", id.raw()))
-                .track_focus(review_focus.as_ref().unwrap())
+                .track_focus(action_focus)
                 .tab_stop(true)
                 .w_auto()
                 .h(rpx(TIMELINE_TASK_LINE_H))
@@ -622,7 +624,7 @@ impl Sidebar {
                                     MOTION_FAST_MS,
                                 ))
                                 .with_easing(motion::ease_standard),
-                                |action, progress| action.opacity(progress),
+                                gpui::Styled::opacity,
                             )
                             .into_any_element()
                     }

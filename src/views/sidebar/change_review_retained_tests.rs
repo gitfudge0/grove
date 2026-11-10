@@ -163,7 +163,7 @@ fn retained_review_restores_canonical_result_and_permanent_view_for_both_provide
                 assert!(s.reviews.open.is_some());
                 s.close_review(window, cx);
                 assert_eq!(s.selection, Some(Selection::Session(id)));
-            })
+            });
         });
         assert!(
             action_receivers
@@ -184,10 +184,10 @@ fn retained_review_restores_canonical_result_and_permanent_view_for_both_provide
                 let controller = s
                     .review_controller(id, target.clone(), store.clone(), saved.key.clone(), cx)
                     .unwrap();
-                controller.update(cx, |c, cx| c.hydrate(cx));
+                controller.update(cx, crate::views::change_session::ChangeSession::hydrate);
                 s.reviews.open = Some(target);
                 cx.notify();
-            })
+            });
         });
         let mut settled = false;
         for _ in 0..150 {

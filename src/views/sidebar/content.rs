@@ -659,7 +659,7 @@ impl Sidebar {
                 .when(active, |style| style.bg(c::BG_HOVER()))
                 .child(icon("message-circle", ICON_LG, c::FG_DIM()))
                 .on_mouse_down(gpui::MouseButton::Left, move |_, window, cx| {
-                    mouse_focus.focus(window, cx)
+                    mouse_focus.focus(window, cx);
                 })
                 .on_click(cx.listener(|this, _, window, cx| this.toggle_side_chat(window, cx)))
                 .on_key_down(cx.listener(
@@ -2903,9 +2903,9 @@ mod tests {
                 )
             });
             let saved = grove_core::codex::SavedSession {
-                session_review: Default::default(),
+                session_review: grove_core::codex::SessionReview::default(),
                 rich_plans: grove_core::rich_plan::PlanStore::default(),
-                side_chats: Default::default(),
+                side_chats: std::collections::HashMap::default(),
                 fork_origin: None,
                 claude_resume: None,
                 claude_subagents: std::collections::HashMap::default(),
@@ -3013,7 +3013,7 @@ mod tests {
         draw(cx);
         cx.update(|window, cx| {
             sidebar.update(cx, |sidebar, cx| {
-                sidebar.finish_title_edit(id, false, window, cx)
+                sidebar.finish_title_edit(id, false, window, cx);
             });
         });
         draw(cx);
@@ -3061,11 +3061,11 @@ mod tests {
         draw(cx);
         assert!(sidebar.read_with(cx, |sidebar, _| sidebar.dashboard_open));
         assert_eq!(
-            sidebar.read_with(cx, |sidebar, cx| sidebar.dashboard_destination_for_test(cx)),
+            sidebar.read_with(cx, super::super::Sidebar::dashboard_destination_for_test),
             Some((0, "/grove-native-chrome-fixture".into()))
         );
         cx.update(|_, cx| {
-            sidebar.update(cx, |sidebar, cx| sidebar.select(Selection::Session(id), cx))
+            sidebar.update(cx, |sidebar, cx| sidebar.select(Selection::Session(id), cx));
         });
         draw(cx);
         let worktree = cx.debug_bounds("session-header-worktree-1").unwrap();
@@ -3073,7 +3073,7 @@ mod tests {
         draw(cx);
         assert!(sidebar.read_with(cx, |sidebar, _| sidebar.dashboard_open));
         assert_eq!(
-            sidebar.read_with(cx, |sidebar, cx| sidebar.dashboard_destination_for_test(cx)),
+            sidebar.read_with(cx, super::super::Sidebar::dashboard_destination_for_test),
             Some((0, "/grove-native-chrome-feature".into()))
         );
         cx.update(|window, cx| {
@@ -3087,7 +3087,7 @@ mod tests {
         draw(cx);
         assert!(sidebar.read_with(cx, |sidebar, _| sidebar.dashboard_open));
         assert_eq!(
-            sidebar.read_with(cx, |sidebar, cx| sidebar.dashboard_destination_for_test(cx)),
+            sidebar.read_with(cx, super::super::Sidebar::dashboard_destination_for_test),
             Some((0, "/grove-native-chrome-fixture".into()))
         );
     }
@@ -3130,9 +3130,9 @@ mod tests {
                 )
             });
             let saved = grove_core::codex::SavedSession {
-                session_review: Default::default(),
+                session_review: grove_core::codex::SessionReview::default(),
                 rich_plans: grove_core::rich_plan::PlanStore::default(),
-                side_chats: Default::default(),
+                side_chats: std::collections::HashMap::default(),
                 fork_origin: None,
                 claude_resume: None,
                 claude_subagents: std::collections::HashMap::default(),
@@ -3522,7 +3522,7 @@ mod tests {
                             is_main: false,
                         },
                     ],
-                )
+                );
             });
             let mut sidebar = Sidebar::new(runtime, window, cx);
             sidebar.sync(window, cx);
@@ -3556,7 +3556,7 @@ mod tests {
                 sidebar
                     .projects_search
                     .update(cx, |input, cx| input.set_value("not a match", window, cx));
-            })
+            });
         });
         draw(cx);
         assert!(cx.debug_bounds("projects-open-0").is_none());

@@ -2,6 +2,7 @@
 use super::*;
 use crate::entities::codex_session::CodexSession;
 use crate::views::codex_view::{CodexView, CodexViewEvent, CHAT_MAX_W};
+use gpui_component::menu::{PopupMenu, PopupMenuItem};
 
 const NO_PROJECT: usize = usize::MAX;
 
@@ -118,7 +119,6 @@ impl DestinationTray {
         self.popup_generation = self.popup_generation.wrapping_add(1);
         self.closing_popup = None;
         self.popup_motion.show(cx);
-        use gpui_component::menu::{PopupMenu, PopupMenuItem};
         let owner = cx.entity().downgrade();
         let projects = self.projects.clone();
         let worktrees = self.worktrees.clone();
@@ -367,19 +367,24 @@ impl Render for DestinationTray {
                     .child(error.clone()),
             );
         }
-        let exiting = self.popup.is_none() && self.closing_popup.is_some() && !cx.reduce_motion();
-        let visible_popup = self
-            .popup
-            .clone()
-            .or_else(|| exiting.then(|| self.closing_popup.as_ref().unwrap().0.clone()));
-        if let Some(popup) = visible_popup {
-            let (position, worktree) = if exiting {
-                let closing = self.closing_popup.as_ref().unwrap();
+        let visible_popup = if let Some(popup) = &self.popup {
+            Some((
+                popup.clone(),
+                self.position,
+                self.open_selector == Some(1),
+                false,
+            ))
+        } else if !cx.reduce_motion() {
+            self.closing_popup
+                .as_ref()
+                .map(|(popup, position, worktree)| (popup.clone(), *position, *worktree, true))
+        } else {
+            None
+        };
+        if let Some((popup, position, worktree, exiting)) = visible_popup {
+            if exiting {
                 popup.update(cx, |popup, _| popup.set_passive(true));
-                (closing.1, closing.2)
-            } else {
-                (self.position, self.open_selector == Some(1))
-            };
+            }
             tray = tray.child(gpui::deferred(
                 gpui::anchored()
                     .position_mode(gpui::AnchoredPositionMode::Window)
@@ -520,8 +525,7 @@ impl Sidebar {
                 .cloned();
             let project_path = project
                 .as_ref()
-                .map(|p| p.path.clone())
-                .unwrap_or_else(dashboard_home_dir);
+                .map_or_else(dashboard_home_dir, |p| p.path.clone());
             let provider = defaults
                 .as_ref()
                 .map_or(grove_core::codex::Provider::Codex, |defaults| {
@@ -542,9 +546,9 @@ impl Sidebar {
                 }
             };
             let saved = grove_core::codex::SavedSession {
-                session_review: Default::default(),
+                session_review: grove_core::codex::SessionReview::default(),
                 rich_plans: grove_core::rich_plan::PlanStore::default(),
-                side_chats: Default::default(),
+                side_chats: std::collections::HashMap::default(),
                 fork_origin: None,
                 claude_resume: None,
                 claude_subagents: HashMap::default(),
@@ -609,10 +613,10 @@ impl Sidebar {
             let events = vec![
                 cx.subscribe_in(&view, window, |this, source, event, window, cx| {
                     if !this.dashboard_open
-                        || !this
+                        || this
                             .dashboard
                             .as_ref()
-                            .is_some_and(|draft| &draft.view == source)
+                            .is_none_or(|draft| &draft.view != source)
                     {
                         return;
                     }
@@ -721,8 +725,7 @@ impl Sidebar {
                             .store
                             .projects
                             .get(idx)
-                            .map(|p| p.path.clone())
-                            .unwrap_or_else(dashboard_home_dir);
+                            .map_or_else(dashboard_home_dir, |p| p.path.clone());
                         t.generation = t.generation.wrapping_add(1);
                         t.worktrees.clear();
                         t.loading = false;
@@ -1465,7 +1468,7 @@ mod tests {
             })
         });
         view.update(cx, |_, cx| {
-            cx.emit(CodexViewEvent::ForkRequested(usize::MAX, false))
+            cx.emit(CodexViewEvent::ForkRequested(usize::MAX, false));
         });
         cx.run_until_parked();
         sidebar.read_with(cx, |sidebar, cx| {
@@ -1563,7 +1566,7 @@ mod tests {
                 store.projects.push(grove_core::storage::Project {
                     name: name.into(),
                     path: path.into(),
-                    scripts: Default::default(),
+                    scripts: grove_core::storage::ProjectScripts::default(),
                     archived: false,
                     worktree_dir: None,
                 });
@@ -2344,7 +2347,7 @@ mod tests {
                 tray.open(true, window, cx);
                 tray.close_popup(cx);
                 assert!(tray.closing_popup.is_none());
-            })
+            });
         });
     }
 
@@ -2411,12 +2414,15 @@ mod tests {
             });
         }
         cx.simulate_mouse_move(
-            gpui::point(gpui::px(900.), gpui::px(250.)),
+            gpui::point(strip.left() - gpui::px(1.), strip.center().y),
             None,
             gpui::Modifiers::default(),
         );
         cx.run_until_parked();
-        cx.update(|_, cx| assert_eq!(tray.read(cx).hovered, [false; 2]));
+        cx.update(|window, cx| {
+            let _ = window.draw(cx);
+            assert_eq!(tray.read(cx).hovered, [false; 2]);
+        });
 
         cx.simulate_resize(gpui::size(gpui::px(400.), gpui::px(300.)));
         cx.run_until_parked();

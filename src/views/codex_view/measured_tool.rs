@@ -206,7 +206,7 @@ impl Element for MeasuredTool {
         _: Option<&InspectorElementId>,
         _: Bounds<Pixels>,
         layout: &mut ToolLayout,
-        _: &mut (),
+        (): &mut (),
         window: &mut Window,
         cx: &mut App,
     ) {

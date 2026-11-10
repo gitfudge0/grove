@@ -5,6 +5,7 @@
 //! the repository or the PR.
 use crate::change_description::{self, Description, Scope, Snapshot};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use std::fmt::Write as _;
 use std::{
     io::Read,
     path::{Path, PathBuf},
@@ -190,11 +191,11 @@ impl Store {
         builder
             .create(&directory)
             .map_err(|error| format!("Could not create description lock directory: {error}"))?;
-        let mut options = std::fs::OpenOptions::new();
+        let mut options = fs_err::OpenOptions::new();
         options.read(true).write(true).create(true).truncate(false);
         #[cfg(unix)]
         {
-            use std::os::unix::fs::OpenOptionsExt as _;
+            use fs_err::os::unix::fs::OpenOptionsExt as _;
             options.mode(0o600);
         }
         let file = options
@@ -290,7 +291,7 @@ impl Store {
     pub fn clear_pending(&self, session_key: &str) -> Result<()> {
         let path = self.pending_path(session_key)?;
         let _ = self.pending_for_session(session_key)?;
-        match std::fs::remove_file(path) {
+        match fs_err::remove_file(path) {
             Ok(()) => Ok(()),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
             Err(error) => Err(format!("Could not clear saved description job: {error}")),
@@ -411,15 +412,17 @@ fn hash(text: &str) -> String {
     ring::digest::digest(&ring::digest::SHA256, text.as_bytes())
         .as_ref()
         .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect()
+        .fold(String::with_capacity(64), |mut output, byte| {
+            let _ = write!(output, "{byte:02x}");
+            output
+        })
 }
 pub(crate) fn read<T: DeserializeOwned>(path: &Path, limit: u64) -> Result<Option<T>> {
-    let mut options = std::fs::OpenOptions::new();
+    let mut options = fs_err::OpenOptions::new();
     options.read(true);
     #[cfg(unix)]
     {
-        use std::os::unix::fs::OpenOptionsExt as _;
+        use fs_err::os::unix::fs::OpenOptionsExt as _;
         options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
     }
     let file = match options.open(path) {
@@ -617,7 +620,7 @@ mod tests {
         let latest = store.pending_generation("new").unwrap().unwrap();
         assert_eq!(store.save_generation("new", &newer, &latest).unwrap(), path);
         assert_eq!(
-            std::fs::read_dir(fixture.path().join("sources"))
+            fs_err::read_dir(fixture.path().join("sources"))
                 .unwrap()
                 .count(),
             1
@@ -653,7 +656,7 @@ mod tests {
         );
         assert_eq!(reopened.load(&bound).unwrap(), Some(result));
         assert_eq!(
-            std::fs::read_dir(first_path.parent().unwrap())
+            fs_err::read_dir(first_path.parent().unwrap())
                 .unwrap()
                 .count(),
             1
@@ -724,7 +727,10 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let checkout = tempfile::tempdir().unwrap();
         let store = Store::new(root.path().into());
-        let result = description(checkout.path(), Scope::Local);
+        // Captures retain their canonical checkout identity before deletion;
+        // macOS tempfile aliases (/var -> /private/var) are not that identity.
+        let captured_checkout = fs_err::canonicalize(checkout.path()).unwrap();
+        let result = description(&captured_checkout, Scope::Local);
         let source = Source::from(&result);
         store.save(&result).unwrap();
         checkout.close().unwrap();
@@ -738,7 +744,7 @@ mod tests {
         let result = description(checkout.path(), pr(17));
         let source = Source::from(&result);
         let path = store.save(&result).unwrap();
-        let valid = std::fs::read(&path).unwrap();
+        let valid = fs_err::read(&path).unwrap();
         for bytes in [
             b"not json".to_vec(),
             {
@@ -753,10 +759,10 @@ mod tests {
                 serde_json::to_vec(&record).unwrap()
             },
         ] {
-            std::fs::write(&path, &bytes).unwrap();
+            fs_err::write(&path, &bytes).unwrap();
             assert!(store.load(&source).is_err());
             assert!(store.save(&result).is_err());
-            assert_eq!(std::fs::read(&path).unwrap(), bytes);
+            assert_eq!(fs_err::read(&path).unwrap(), bytes);
         }
     }
     #[test]
@@ -819,16 +825,16 @@ mod tests {
         let path = store.link_path(malicious_key).unwrap();
         assert_eq!(path.parent().unwrap(), store.root.join("sessions"));
         let corrupt = b"not a link";
-        std::fs::write(&path, corrupt).unwrap();
+        fs_err::write(&path, corrupt).unwrap();
         assert!(store.bind(malicious_key, &source).is_err());
-        assert_eq!(std::fs::read(&path).unwrap(), corrupt);
+        assert_eq!(fs_err::read(&path).unwrap(), corrupt);
         let result_path = store.result_path(&source).unwrap();
-        std::fs::create_dir_all(result_path.parent().unwrap()).unwrap();
-        let large = std::fs::File::create(&result_path).unwrap();
+        fs_err::create_dir_all(result_path.parent().unwrap()).unwrap();
+        let large = fs_err::File::create(&result_path).unwrap();
         large.set_len(RESULT_LIMIT + 1).unwrap();
         assert!(store.load(&source).is_err());
         assert_eq!(
-            std::fs::metadata(&result_path).unwrap().len(),
+            fs_err::metadata(&result_path).unwrap().len(),
             RESULT_LIMIT + 1
         );
     }
@@ -849,9 +855,9 @@ mod tests {
             &store.link_path("session").unwrap(),
             &store.pending_path("session").unwrap(),
         ] {
-            assert_eq!(std::fs::metadata(file).unwrap().mode() & 0o777, 0o600);
+            assert_eq!(fs_err::metadata(file).unwrap().mode() & 0o777, 0o600);
             assert_eq!(
-                std::fs::metadata(file.parent().unwrap())
+                fs_err::metadata(file.parent().unwrap())
                     .unwrap()
                     .permissions()
                     .mode()
@@ -860,11 +866,11 @@ mod tests {
             );
         }
         let external = root.path().join("external.json");
-        std::fs::write(&external, b"private external data").unwrap();
-        std::fs::remove_file(&path).unwrap();
+        fs_err::write(&external, b"private external data").unwrap();
+        fs_err::remove_file(&path).unwrap();
         symlink(&external, &path).unwrap();
         assert!(store.load(&source).is_err());
         assert!(store.save(&result).is_err());
-        assert_eq!(std::fs::read(external).unwrap(), b"private external data");
+        assert_eq!(fs_err::read(external).unwrap(), b"private external data");
     }
 }

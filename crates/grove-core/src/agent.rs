@@ -433,14 +433,15 @@ mod tests {
     fn finder_path_resolves_standard_user_install_and_preserves_path_priority() {
         use std::os::unix::fs::PermissionsExt;
         let home = tempfile::tempdir().unwrap();
+        let name = format!("grove-agent-path-fixture-{}", std::process::id());
         let install = home.path().join(".npm-global/bin");
         fs_err::create_dir_all(&install).unwrap();
-        let program = install.join("codex");
+        let program = install.join(&name);
         fs_err::write(&program, "#!/bin/sh\nexit 0\n").unwrap();
         std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700)).unwrap();
         assert_eq!(
             super::resolve_unix_agent_in(
-                "codex",
+                &name,
                 std::ffi::OsStr::new("/usr/bin:/bin:/usr/sbin:/sbin"),
                 Some(home.path().as_os_str())
             ),
@@ -448,12 +449,12 @@ mod tests {
         );
         let preferred = home.path().join("configured");
         fs_err::create_dir_all(&preferred).unwrap();
-        let program = preferred.join("codex");
+        let program = preferred.join(&name);
         fs_err::write(&program, "#!/bin/sh\nexit 0\n").unwrap();
         std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700)).unwrap();
         assert_eq!(
             super::resolve_unix_agent_in(
-                "codex",
+                &name,
                 preferred.as_os_str(),
                 Some(home.path().as_os_str())
             ),

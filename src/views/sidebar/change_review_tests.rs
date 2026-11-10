@@ -1,6 +1,7 @@
 //! Native production-reader fixtures. They use frozen source data and never
 //! start a provider or perform a GitHub write.
 use super::*;
+#[cfg(target_os = "linux")]
 use std::io::Write as _;
 
 pub(super) const FIXTURE_PATH: &str = "/grove-review-fixture";
@@ -184,7 +185,7 @@ fn fixture_sized(
             rem,
             width,
             height: 1000.,
-            measured: Default::default(),
+            measured: std::rc::Rc::default(),
         });
         gpui_component::Root::new(fixture, window, cx).bordered(false)
     });
@@ -239,7 +240,7 @@ fn stale_review_remains_readable_and_source_focus_returns(cx: &mut gpui::TestApp
         sidebar.update(cx, |s, cx| {
             s.reviews.entries.values_mut().next().unwrap().freshness = Some(Ok(false));
             cx.notify();
-        })
+        });
     });
     draw(cx);
     assert!(cx.debug_bounds("review-copy").is_some());
@@ -285,7 +286,7 @@ fn review_changes_linux_native_capture() {
                             rem: 16.,
                             width: initial_width,
                             height: 800.,
-                            measured: Default::default(),
+                            measured: std::rc::Rc::default(),
                         });
                         fixture_handle = Some(fixture.clone());
                         cx.new(|cx| gpui_component::Root::new(fixture, window, cx))
@@ -360,10 +361,10 @@ fn review_changes_linux_native_capture() {
                         std::env::var("GROVE_REVIEW_CAPTURE_DIR").unwrap(),
                     )
                     .join(format!("{name}.png"));
-                    std::fs::create_dir_all(output.parent().unwrap()).unwrap();
+                    fs_err::create_dir_all(output.parent().unwrap()).unwrap();
                     let measured = cx.update(|cx| fixture.read(cx).measured.get());
                     let window_bounds = cx.update_window(window.into(), |_, window, _| window.bounds()).unwrap();
-                    let mut meta = std::fs::OpenOptions::new()
+                    let mut meta = fs_err::OpenOptions::new()
                         .create(true)
                         .append(true)
                         .open(output.parent().unwrap().join("metadata.txt"))
@@ -423,7 +424,7 @@ fn narrow_review_back_action_stays_visible_after_scrolling_and_diff(cx: &mut gpu
                     .scroll
                     .scroll_to_bottom();
                 cx.notify();
-            })
+            });
         });
         draw(cx);
         assert_back(cx);
@@ -439,7 +440,7 @@ fn narrow_review_back_action_stays_visible_after_scrolling_and_diff(cx: &mut gpu
                 ));
                 entry.diff_scroll.scroll_to_bottom();
                 cx.notify();
-            })
+            });
         });
         draw(cx);
         assert_back(cx);
@@ -491,6 +492,6 @@ fn unqualified_review_uses_linked_external_pr_before_checkout_fallback(
                     .unwrap(),
                 (path, Some(Scope::PullRequest { url: explicit }))
             );
-        })
+        });
     });
 }

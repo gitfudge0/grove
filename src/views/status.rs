@@ -105,7 +105,7 @@ pub fn drawn_check(
         .size(rpx(size))
         .with_animation(
             SharedString::from(format!("{id}-confirmed-{revision}")),
-            gpui::Animation::new(DRAW - elapsed),
+            gpui::Animation::new(DRAW.saturating_sub(elapsed)),
             move |el, _| {
                 let progress = (started.elapsed().as_secs_f32() / DRAW.as_secs_f32()).min(1.);
                 let frame = (progress * crate::icons::SUCCESS_DRAW_FRAMES as f32).floor() as usize;

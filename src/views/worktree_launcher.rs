@@ -193,17 +193,6 @@ impl WorktreeLauncher {
         cx.notify();
     }
 
-    /// Open the New session project picker without the command rows.
-    pub(crate) fn open_session_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.open(window, cx);
-        let rows = self.rows(cx);
-        if let Some(index) = rows.iter().position(|row| *row == PaletteRow::NewSession) {
-            self.selected = index;
-            self.anchor = Some(launcher::row_identity(&rows[index]));
-            self.activate(window, cx);
-        }
-    }
-
     fn title(&self) -> &'static str {
         match self.mode {
             PaletteMode::Root => "Command palette",
@@ -212,17 +201,8 @@ impl WorktreeLauncher {
         }
     }
 
+    /// Open the existing multi-worktree selector for retained sidebar fixtures.
     #[cfg(test)]
-    pub(crate) fn title_for_test(&self) -> &'static str {
-        self.title()
-    }
-
-    #[cfg(test)]
-    pub(crate) fn rows_for_test(&self, cx: &App) -> Vec<PaletteRow> {
-        self.rows(cx)
-    }
-
-    /// Open the existing multi-worktree selector directly from the sidebar.
     pub(crate) fn open_multi_project(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.open(window, cx);
         let rows = self.rows(cx);
@@ -454,7 +434,7 @@ impl WorktreeLauncher {
                     })
                     .collect::<Vec<_>>();
                 if !self.query.trim().is_empty() {
-                    projects.sort_by(|a, b| b.0.cmp(&a.0));
+                    projects.sort_by_key(|row| std::cmp::Reverse(row.0));
                 }
                 return projects.into_iter().map(|(_, row)| row).collect();
             }

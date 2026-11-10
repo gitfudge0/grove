@@ -32,8 +32,8 @@ impl Render for NativeSideChat {
 
 fn saved(path: &str, provider: grove_core::codex::Provider) -> grove_core::codex::SavedSession {
     grove_core::codex::SavedSession {
-        session_review: Default::default(),
-                        rich_plans: Default::default(),
+        session_review: grove_core::codex::SessionReview::default(),
+                        rich_plans: grove_core::rich_plan::PlanStore::default(),
         side_chats: HashMap::from([(
             path.to_owned(),
             grove_core::codex::SavedSideChat {
@@ -50,12 +50,12 @@ fn saved(path: &str, provider: grove_core::codex::Provider) -> grove_core::codex
         )]),
         fork_origin: None,
             claude_resume: None,
-        claude_subagents: Default::default(),
+        claude_subagents: std::collections::HashMap::default(),
         edit_checkpoints: Vec::new(),
         pending_edit: None,
             rewind_drafts: Vec::new(),
         provider,
-        composer: Default::default(),
+        composer: grove_core::codex::ComposerSettings::default(),
         context: None,
             context_details: None,
         key: "side-chat-native-capture".into(),
@@ -269,7 +269,7 @@ fn verify_stream_reveal(
                 .values_mut()
                 .next()
                 .unwrap();
-            initial = chat.messages.last().unwrap().1.clone();
+            initial.clone_from(&chat.messages.last().unwrap().1);
             identity = Some(chat.message_views.last().unwrap().view.entity_id());
             chat.messages.last_mut().unwrap().1.push_str(&suffix);
             chat.busy = true;
@@ -411,7 +411,6 @@ fn verify_keyboard_routing(
     cx: &mut gpui::HeadlessAppContext,
     window: gpui::AnyWindowHandle,
     sidebar: &Entity<Sidebar>,
-    provider: grove_core::codex::Provider,
 ) {
     const DRAFT: &str = "Can you explain this?\nKeep the draft on two lines.";
     cx.update_window(window, |_, window, cx| {
@@ -512,7 +511,7 @@ fn capture_native_side_chat() {
                     projects: vec![grove_core::storage::Project {
                         name: "Side chat capture".into(),
                         path: path.clone(),
-                        scripts: Default::default(),
+                        scripts: grove_core::storage::ProjectScripts::default(),
                         archived: false,
                         worktree_dir: None,
                     }],
@@ -521,7 +520,7 @@ fn capture_native_side_chat() {
                 cx.set_global(crate::zoom::CurrentPtyDims::default());
                 cx.set_global(crate::zoom::ZoomState::new(rem / crate::zoom::REM_BASE));
             });
-            let (_updates, receive) = std::sync::mpsc::channel();
+            let (updates, receive) = std::sync::mpsc::channel();
             let mut sidebar_entity = None;
             let window = cx
                 .open_window(
@@ -661,7 +660,7 @@ fn capture_native_side_chat() {
                     Path::new(&output),
                     provider.agent().label(),
                 );
-                verify_keyboard_routing(&mut cx, window.into(), &sidebar, provider);
+                verify_keyboard_routing(&mut cx, window.into(), &sidebar);
             }
             // Release retained render-frame/editor handles while the app and its
             // executor are still alive, as in the other native capture fixtures.
@@ -676,7 +675,7 @@ fn capture_native_side_chat() {
             cx.update_window(window.into(), |_, window, _| window.remove_window())
                 .unwrap();
             drop(sidebar);
-            drop(_updates);
+            drop(updates);
             cx.run_until_parked();
         }
     }

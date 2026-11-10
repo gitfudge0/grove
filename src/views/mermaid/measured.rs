@@ -21,7 +21,7 @@ pub(super) struct Layout {
     element: Option<AnyElement>,
     cached: Option<Rc<Measurement>>,
     viewport: Size<Pixels>,
-    layout: LayoutId,
+    root_id: LayoutId,
     proxies: Vec<AnyElement>,
 }
 #[cfg(test)]
@@ -116,7 +116,7 @@ impl Element for DiagramElement {
                 element,
                 cached,
                 viewport,
-                layout,
+                root_id: layout,
                 proxies: Vec::new(),
             },
         )
@@ -189,8 +189,9 @@ impl Element for DiagramElement {
                 view.focus.clone(),
             ];
             for (index, focus) in targets.into_iter().enumerate() {
-                let mut proxy = KeyboardProxy::new(self.0.clone(), focus, index + 1, layout.layout)
-                    .into_any_element();
+                let mut proxy =
+                    KeyboardProxy::new(self.0.clone(), focus, index + 1, layout.root_id)
+                        .into_any_element();
                 proxy.request_layout(window, cx);
                 proxy.prepaint(window, cx);
                 layout.proxies.push(proxy);
@@ -203,7 +204,7 @@ impl Element for DiagramElement {
         _: Option<&InspectorElementId>,
         _: Bounds<Pixels>,
         layout: &mut Layout,
-        _: &mut (),
+        (): &mut (),
         window: &mut Window,
         cx: &mut App,
     ) {
@@ -278,7 +279,7 @@ impl Element for KeyboardProxy {
         _: Option<&GlobalElementId>,
         _: Option<&InspectorElementId>,
         _: Bounds<Pixels>,
-        _: &mut (),
+        (): &mut (),
         window: &mut Window,
         cx: &mut App,
     ) {
@@ -289,8 +290,8 @@ impl Element for KeyboardProxy {
         _: Option<&GlobalElementId>,
         _: Option<&InspectorElementId>,
         _: Bounds<Pixels>,
-        _: &mut (),
-        _: &mut (),
+        (): &mut (),
+        (): &mut (),
         window: &mut Window,
         cx: &mut App,
     ) {
@@ -375,7 +376,7 @@ mod tests {
                 controls: std::array::from_fn(|_| cx.focus_handle()),
                 fullscreen: false,
                 return_focus: None,
-                measurement: Default::default(),
+                measurement: Rc::default(),
             });
             let view = cx.new(|cx| History {
                 viewer,
@@ -409,13 +410,13 @@ mod tests {
                 view.scroll
                     .set_offset(gpui::point(gpui::px(0.), -size.height - gpui::px(100.)));
                 cx.notify();
-            })
+            });
         });
         draw(&history, cx);
         MATERIALIZED.with(|n| n.set(0));
         draw(&history, cx);
         assert_eq!(
-            MATERIALIZED.with(|n| n.get()),
+            MATERIALIZED.with(std::cell::Cell::get),
             0,
             "warm offscreen viewer must retain its measured extent"
         );
@@ -427,7 +428,7 @@ mod tests {
             assert!(
                 controls[3].is_focused(window),
                 "reverse traversal must reach Expand"
-            )
+            );
         });
         cx.simulate_keystrokes("shift-tab");
         draw(&history, cx);
@@ -435,7 +436,7 @@ mod tests {
             assert!(
                 controls[2].is_focused(window),
                 "Fit must stay in the original order"
-            )
+            );
         });
         cx.simulate_keystrokes("shift-tab");
         draw(&history, cx);
@@ -446,7 +447,7 @@ mod tests {
             assert!(
                 history.read(cx).before.is_focused(window),
                 "disabled Zoom out must not enter tab order"
-            )
+            );
         });
         cx.simulate_keystrokes("tab");
         draw(&history, cx);
@@ -467,12 +468,12 @@ mod tests {
         }
         MATERIALIZED.with(|n| n.set(0));
         draw(&history, cx);
-        assert_eq!(MATERIALIZED.with(|n| n.get()), 0);
+        assert_eq!(MATERIALIZED.with(std::cell::Cell::get), 0);
         cx.update(|_, cx| {
             history.update(cx, |view, cx| {
                 view.width = gpui::px(280.);
                 cx.notify();
-            })
+            });
         });
         for _ in 0..4 {
             draw(&history, cx);
@@ -504,20 +505,20 @@ mod tests {
                 view.image = Arc::new(Image::from_bytes(ImageFormat::Png, Vec::new()));
                 view.ratio = 3.;
                 cx.notify();
-            })
+            });
         });
         for _ in 0..4 {
             draw(&history, cx);
         }
         assert!(
-            MATERIALIZED.with(|n| n.get()) > 0,
+            MATERIALIZED.with(std::cell::Cell::get) > 0,
             "changed source/image must invalidate geometry"
         );
         cx.update(|_, cx| {
             history.update(cx, |view, cx| {
                 view.scroll.set_offset(gpui::Point::default());
                 cx.notify();
-            })
+            });
         });
         for _ in 0..3 {
             draw(&history, cx);

@@ -892,7 +892,7 @@ mod tests {
                         root.path().to_path_buf()
                     },
                 )
-                .env("PATH", "/usr/bin:/bin")
+                .env("PATH", root.path().join("empty-inherited-path"))
                 .output()
                 .unwrap();
             assert!(

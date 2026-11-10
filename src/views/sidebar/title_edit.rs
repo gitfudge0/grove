@@ -70,7 +70,7 @@ impl Sidebar {
             let session = self.runtime.read(cx).registry.read(cx).codex(id).cloned();
             if let Some(session) = session {
                 session.update(cx, |session, cx| {
-                    session.send(grove_core::codex::Action::SetTitle(title), cx)
+                    session.send(grove_core::codex::Action::SetTitle(title), cx);
                 });
             }
         }
@@ -89,17 +89,17 @@ impl Sidebar {
         cx: &mut Context<Self>,
     ) {
         if action == 2 {
-            if !self
+            if self
                 .title_edit
                 .as_ref()
-                .is_some_and(|edit| edit.session == id)
+                .is_none_or(|edit| edit.session != id)
             {
                 return;
             }
             let session = self.runtime.read(cx).registry.read(cx).codex(id).cloned();
             if let Some(session) = session {
                 session.update(cx, |session, cx| {
-                    session.send(grove_core::codex::Action::RegenerateTitle, cx)
+                    session.send(grove_core::codex::Action::RegenerateTitle, cx);
                 });
             }
             self.finish_title_edit(id, false, window, cx);

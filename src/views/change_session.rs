@@ -541,7 +541,7 @@ mod tests {
             session.update(cx,|s,cx|{s.state.status=Status::Done;s.state.saved.items=vec![json!({"type":"userMessage","content":[{"text":job.prompt}]}),json!({"type":"agentMessage","phase":"final_answer","text":"Exact recovered answer"}),json!({"type":"userMessage","content":[{"text":"Later question"}]}),json!({"type":"agentMessage","phase":"final_answer","text":"Unrelated"})].into();s.state.saved.work_periods.push(WorkPeriod{start_item:0,end_item:Some(2),duration_ms:None,subagents:vec![]});cx.notify();});
             let controller =
                 cx.new(|cx| ChangeSession::new(session, store.clone(), "session".into(), cx));
-            controller.update(cx, |c, cx| c.hydrate(cx));
+            controller.update(cx, super::ChangeSession::hydrate);
             settle(cx, &controller);
             assert_eq!(
                 controller.read_with(cx, |c, _| c.result.as_ref().unwrap().text.clone()),
@@ -670,7 +670,7 @@ mod tests {
                 .output()
                 .unwrap()
                 .status
-                .success())
+                .success());
         };
         git(&["init", "-b", "main"]);
         git(&["config", "user.name", "Fixture"]);
@@ -694,14 +694,14 @@ mod tests {
                     Scope::Local,
                     "Question one".into(),
                     cx,
-                )
+                );
             });
             let mut prompt = None;
             for _ in 0..200 {
                 cx.run_until_parked();
                 for action in actions.try_iter() {
                     if let Action::Prompt(text) = action {
-                        prompt = Some(text)
+                        prompt = Some(text);
                     }
                 }
                 if prompt.is_some() {

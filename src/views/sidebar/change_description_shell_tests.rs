@@ -60,7 +60,7 @@ fn describe_changes_full_sidebar_linux_capture() {
                 .contains(".grove-artifacts/description-lifecycle/native/")
     );
     let output = config.parent().unwrap().to_path_buf();
-    std::fs::create_dir_all(&output).unwrap();
+    fs_err::create_dir_all(&output).unwrap();
     let repository = tempfile::tempdir().unwrap();
     for args in [
         vec!["init", "-b", "main"],
@@ -90,7 +90,7 @@ fn describe_changes_full_sidebar_linux_capture() {
         grove_core::theme::set_by_name("grove-dark");
         c::sync_component_theme(cx);
         let mut settings = grove_core::storage::Store::default();
-        settings.projects.push(grove_core::storage::Project { name: "northstar".into(), path: path.clone(), scripts: Default::default(), archived: false, worktree_dir: None });
+        settings.projects.push(grove_core::storage::Project { name: "northstar".into(), path: path.clone(), scripts: grove_core::storage::ProjectScripts::default(), archived: false, worktree_dir: None });
         settings.assign_project_to_active_workspace(&path);
         cx.set_global(SettingsState::new(settings));
         let store_root = config.join("change-descriptions");
@@ -155,7 +155,7 @@ fn describe_changes_full_sidebar_linux_capture() {
         let (sidebar, session) = sidebar_handle.unwrap();
         cx.activate(true);
         cx.spawn(async move |cx| {
-            let _keep_alive = (repository, actions, updates);
+            let keep_alive = (repository, actions, updates);
             cx.background_executor().timer(Duration::from_millis(900)).await;
             for (name, state) in [("shell-conversation-dark", "conversation"), ("shell-menu-dark", "menu"), ("shell-description-dark", "description"), ("shell-back-conversation-dark", "back"), ("shell-stale-panel-dark", "stale"), ("shell-stale-description-dark", "stale-description"), ("shell-narrow-description-dark", "narrow"), ("shell-stale-description-light", "light")] {
                 cx.update_window(window.into(), |_, window, cx| {
@@ -183,7 +183,7 @@ fn describe_changes_full_sidebar_linux_capture() {
                     cx.update_window(window.into(), |_, window, cx| { press_key(window, cx, "enter"); press_key(window, cx, "down"); press_key(window, cx, "enter"); }).unwrap();
                 }
                 cx.background_executor().timer(Duration::from_millis(420)).await;
-                let mut metadata = std::fs::OpenOptions::new().create(true).append(true).open(output.join("shell-measurements.txt")).unwrap();
+                let mut metadata = fs_err::OpenOptions::new().create(true).append(true).open(output.join("shell-measurements.txt")).unwrap();
                 cx.update_window(window.into(), |_, window, cx| {
                     let sidebar = sidebar.read(cx);
                     if state == "menu" { assert!(sidebar.checkout_panel.change_tools.menu.is_some(), "actual Checkout section menu opened"); }
@@ -191,14 +191,14 @@ fn describe_changes_full_sidebar_linux_capture() {
                     assert_eq!(open, matches!(state, "description" | "stale-description" | "narrow" | "light"), "native keyboard activation: {state}");
                     assert_eq!(session.read(cx).state.saved.draft, "Can you walk me through the duplicate-delivery guard?");
                     writeln!(metadata, "{name}: viewport {:?}; measured shell {:?}; reading={open}; description scroll bounds {:?}; active theme {} {:?}", window.viewport_size(), measured.get(), sidebar.descriptions.entries.values().next().unwrap().scroll.bounds(), grove_core::theme::current().name, grove_core::theme::current().kind).unwrap();
-                    if let Some(tree) = window.debug_a11y_tree_json() { std::fs::write(output.join(format!("{name}-a11y.json")), tree).unwrap(); }
+                    if let Some(tree) = window.debug_a11y_tree_json() { fs_err::write(output.join(format!("{name}-a11y.json")), tree).unwrap(); }
                 }).unwrap();
                 assert!(std::process::Command::new("import").args(["-window", TITLE]).arg(output.join(format!("{name}.png"))).status().unwrap().success());
             }
             // Capture the grouped production panel with frozen provider fixtures.
             // No provider process, shell script or GitHub mutation is started.
-            std::fs::write(_keep_alive.0.path().join("main.rs"), "fn main() {}\n").unwrap();
-            let frozen_git = grove_core::checkout_git::inspect(_keep_alive.0.path()).unwrap();
+            fs_err::write(keep_alive.0.path().join("main.rs"), "fn main() {}\n").unwrap();
+            let frozen_git = grove_core::checkout_git::inspect(keep_alive.0.path()).unwrap();
             let summary = grove_core::diff::summarize(&grove_core::diff::changed_files(&path));
             for provider in [grove_core::codex::Provider::Codex, grove_core::codex::Provider::Claude] {
                 for (state, theme, width, rem) in [
@@ -230,17 +230,17 @@ fn describe_changes_full_sidebar_linux_capture() {
                         });
                         window.refresh();
                     }).unwrap();
-                    cx.update(|cx| cx.refresh_windows());
+                    cx.update(gpui::App::refresh_windows);
                     cx.background_executor().timer(Duration::from_millis(500)).await;
                     cx.update_window(window.into(), |_, window, cx| {
                         window.set_rem_size(gpui::px(rem));
                         window.refresh();
                         let sidebar = sidebar.read(cx);
-                        let mut metadata = std::fs::OpenOptions::new().create(true).append(true).open(output.join("group-measurements.txt")).unwrap();
+                        let mut metadata = fs_err::OpenOptions::new().create(true).append(true).open(output.join("group-measurements.txt")).unwrap();
                         if matches!(state, "pull-error" | "pull-error-narrow") {
                             if let Some(tree) = window.debug_a11y_tree_json() {
                             let serialized = serde_json::to_string(&tree).unwrap();
-                            std::fs::write(output.join(format!("groups-{}-{state}-a11y.json", provider.label().to_lowercase())), &serialized).unwrap();
+                            fs_err::write(output.join(format!("groups-{}-{state}-a11y.json", provider.label().to_lowercase())), &serialized).unwrap();
                             assert_eq!(serialized.matches("Couldn’t pull: Branches have diverged").count(), 1, "one failure in actual Sidebar");
                             assert_eq!(serialized.matches("Resolve the branch divergence before pulling again").count(), 1, "one recovery explanation in actual Sidebar");
                             } else {

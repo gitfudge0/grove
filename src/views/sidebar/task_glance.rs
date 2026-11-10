@@ -729,7 +729,7 @@ mod tests {
                     session.update(cx, |session, cx| {
                         session.state.status = status;
                         cx.notify();
-                    })
+                    });
                 });
                 cx.run_until_parked();
                 assert!(

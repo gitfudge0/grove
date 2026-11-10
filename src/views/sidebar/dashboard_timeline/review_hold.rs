@@ -149,28 +149,24 @@ impl Sidebar {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        if !self
-            .dashboard_timelines
+        self.dashboard_timelines
             .review_holds
             .focus
-            .contains_key(&key)
-        {
-            let focus = cx.focus_handle();
-            let subscriptions = vec![
-                cx.on_focus_in(&focus, window, move |this, _, cx| {
-                    this.dashboard_timelines.review_holds.focused.insert(key);
-                    this.settle_review_hold(key, cx);
-                }),
-                cx.on_focus_out(&focus, window, move |this, _, _, cx| {
-                    this.dashboard_timelines.review_holds.focused.remove(&key);
-                    this.settle_review_hold(key, cx);
-                }),
-            ];
-            self.dashboard_timelines
-                .review_holds
-                .focus
-                .insert(key, (focus, subscriptions));
-        }
+            .entry(key)
+            .or_insert_with(|| {
+                let focus = cx.focus_handle();
+                let subscriptions = vec![
+                    cx.on_focus_in(&focus, window, move |this, _, cx| {
+                        this.dashboard_timelines.review_holds.focused.insert(key);
+                        this.settle_review_hold(key, cx);
+                    }),
+                    cx.on_focus_out(&focus, window, move |this, _, _, cx| {
+                        this.dashboard_timelines.review_holds.focused.remove(&key);
+                        this.settle_review_hold(key, cx);
+                    }),
+                ];
+                (focus, subscriptions)
+            });
         let focus = self.dashboard_timelines.review_holds.focus[&key].0.clone();
         self.settle_review_hold(key, cx);
         div()
@@ -261,7 +257,7 @@ mod timer_tests {
                 assert!(this.dashboard_timelines.review_holds.timers.is_empty());
                 this.dashboard_timelines.review_holds.hovered.remove(&key);
                 this.settle_review_hold(key, cx);
-            })
+            });
         });
         cx.run_until_parked();
         cx.executor()
@@ -276,7 +272,7 @@ mod timer_tests {
             sidebar.update(cx, |this, cx| {
                 this.dashboard_timelines.review_holds.hovered.insert(key);
                 this.settle_review_hold(key, cx);
-            })
+            });
         });
         cx.executor()
             .advance_clock(std::time::Duration::from_millis(401));
@@ -331,7 +327,7 @@ mod timer_tests {
                 assert!(this.dashboard_timelines.review_holds.timers.is_empty());
                 this.dashboard_timelines.review_holds.focused.remove(&key);
                 this.settle_review_hold(key, cx);
-            })
+            });
         });
         cx.run_until_parked();
         cx.executor()

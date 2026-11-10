@@ -1158,7 +1158,7 @@ pub(super) fn observe_tool_detail(current_work: bool) {
         count.set((total + 1, current + usize::from(current_work)));
     });
 }
-#[cfg(test)]
+#[cfg(all(test, target_os = "macos"))]
 pub(super) fn tool_detail_counts() -> (usize, usize) {
     TOOL_DETAILS.with(Cell::get)
 }

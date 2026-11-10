@@ -1,11 +1,11 @@
 //! Native review of validated, immutable session plan snapshots.
 mod measured;
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "linux"))]
 pub(super) fn take_control_materialization_count() -> usize {
     measured::CONTROL_RENDERS.with(|n| n.replace(0))
 }
-#[cfg(test)]
+#[cfg(all(test, target_os = "linux"))]
 pub(super) fn take_materialization_count() -> usize {
     measured::MATERIALIZED.with(|count| count.replace(0))
 }
@@ -132,7 +132,7 @@ pub(super) fn render_peek(plan: &Entity<NativePlan>, window: &Window, cx: &App) 
                         )
                         .debug_selector(|| "native-plan-expand".into())
                         .on_click(move |_, window, cx| {
-                            target.update(cx, |view, cx| view.reveal(window, cx))
+                            target.update(cx, |view, cx| view.reveal(window, cx));
                         }),
                 ),
         )
@@ -279,8 +279,10 @@ fn resolved_answer(decision: &Value, review: &Value) -> String {
     entries(&decision["options"])
         .iter()
         .find(|option| option["id"] == review["answers"][&id])
-        .map(|option| string(option, "label"))
-        .unwrap_or_else(|| "Needs your answer".into())
+        .map_or_else(
+            || "Needs your answer".into(),
+            |option| string(option, "label"),
+        )
 }
 fn review_locked(snapshot: &Value) -> bool {
     matches!(
@@ -318,13 +320,13 @@ fn markdown_sections(markdown: &str) -> Vec<(String, String)> {
             && trimmed[run..].starts_with(char::is_whitespace)
         {
             if !content.trim().is_empty() {
-                result.push((title, std::mem::take(&mut content)));
+                result.push((std::mem::take(&mut title), std::mem::take(&mut content)));
             }
-            title = trimmed[run..]
+            trimmed[run..]
                 .trim()
                 .trim_end_matches('#')
                 .trim()
-                .to_owned();
+                .clone_into(&mut title);
         }
         content.push_str(line);
     }
@@ -523,10 +525,10 @@ impl NativePlan {
                 Action::UpdatePlanReview {
                     plan_id: self.plan_id.clone(),
                     revision_id: self.revision_id.clone(),
-                    review,
+                    review: Box::new(review),
                 },
                 cx,
-            )
+            );
         });
         cx.notify();
         Ok(())
@@ -765,7 +767,7 @@ impl NativePlan {
                     }
                 },
                 cx,
-            )
+            );
         });
         cx.notify();
     }
@@ -999,8 +1001,8 @@ impl NativePlan {
                 let key = format!("plan:{}:{}:{}", self.plan_id, self.revision_id, path);
                 body = body.child(
                     transcript_action(
-                        format!("legacy-plan-asset-{}", path),
-                        format!("Open saved attachment: {}", path),
+                        format!("legacy-plan-asset-{path}"),
+                        format!("Open saved attachment: {path}"),
                         false,
                         window,
                         cx,
@@ -1012,7 +1014,7 @@ impl NativePlan {
                     )
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.html.update(cx, |html, cx| {
-                            html.open_snapshot(key.clone(), source.clone(), window, cx)
+                            html.open_snapshot(key.clone(), source.clone(), window, cx);
                         });
                     })),
                 );
@@ -1674,7 +1676,7 @@ impl Render for NativePlan {
             .debug_selector(|| "native-plan-card".into())
             .w_full()
             .min_h_0()
-            .when(expanded, |s| s.h_full())
+            .when(expanded, gpui::Styled::h_full)
             .flex()
             .flex_col()
             .text_size(rpx(TEXT_BODY))
@@ -1813,7 +1815,7 @@ mod tests {
             });
             let view = cx.new(|cx| NativePlan::new(session, html, "plan".into(), "r1".into(), cx));
             cx.subscribe(&view, move |_, _, event: &NativePlanEvent, _| {
-                events_out.borrow_mut().push(event.clone())
+                events_out.borrow_mut().push(event.clone());
             })
             .detach();
             plan = Some(view.clone());
@@ -1889,7 +1891,7 @@ mod tests {
             session.update(cx, |session, cx| {
                 session.state.model = Some("unrelated-model-update".into());
                 cx.notify();
-            })
+            });
         });
         cx.run_until_parked();
         assert_eq!(
@@ -1904,7 +1906,7 @@ mod tests {
                     .answer_drafts
                     .insert("access".into(), "Draft from actor".into());
                 cx.notify();
-            })
+            });
         });
         cx.run_until_parked();
         assert!(
@@ -1936,7 +1938,7 @@ mod tests {
                 assert_eq!(view.session.read(cx).state.saved.draft, "KEEP THIS DRAFT");
                 view.set_composer_pending(true, cx);
                 view.dispatch(false, cx);
-            })
+            });
         });
         assert!(!actions.try_iter().any(|action| matches!(
             action,

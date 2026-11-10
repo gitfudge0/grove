@@ -167,7 +167,7 @@ impl Sidebar {
                         keyboard_bounds.get().bottom_right(),
                         window,
                         cx,
-                    )
+                    );
                 }))
                 .on_key_down(
                     cx.listener(move |this, event: &gpui::KeyDownEvent, window, cx| {
@@ -297,11 +297,11 @@ impl Sidebar {
                                     return;
                                 }
                                 let targets = this.checkout_targets(cx);
-                                if !super::checkout_panel::selected_checkout(
+                                if super::checkout_panel::selected_checkout(
                                     &targets,
                                     this.checkout_panel.chosen_root.as_deref(),
                                 )
-                                .is_some_and(|(_, path)| path == target.1)
+                                .is_none_or(|(_, path)| path != target.1)
                                 {
                                     return;
                                 }
