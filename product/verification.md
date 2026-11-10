@@ -1144,4 +1144,6 @@ Strict workspace Clippy failed with 32 diagnostics in unchanged core files. Ever
 one reproduced at the same file, line, column and message on the untouched base;
 this change does not establish a clean whole-workspace lint result. Formatting,
 repository artifact policy, reference-verifier tests and artifact-tool tests passed.
-No local installation or user-app restart was performed.
+CI spelling and supply-chain jobs also fail on unchanged baseline inputs; a
+locked dependency has been yanked. No local installation or user-app restart was
+performed.

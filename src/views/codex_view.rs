@@ -21435,7 +21435,7 @@ mod tests {
                 for (name, provider, draft, proposal, width, light, rem) in [
                     ("codex-empty-dark", codex::Provider::Codex, "", "Add regression coverage for draft preservation.", 600., false, 16.),
                     ("claude-prefix-light", codex::Provider::Claude, "Add regression", "Add regression coverage for draft preservation.", 600., true, 16.),
-                    ("codex-narrow-prefix", codex::Provider::Codex, "Add regression coverage for draft preserv", "Add regression coverage for draft preservation and verify the original draft remains unchanged when switching sessions.", 300., false, 16.),
+                    ("codex-narrow-prefix", codex::Provider::Codex, "Add regression coverage for draft", "Add regression coverage for drafts and verify the original text remains unchanged when switching sessions.", 300., false, 16.),
                     ("claude-multiline", codex::Provider::Claude, "Add regression coverage.\nThen", "Add regression coverage.\nThen verify draft preservation with both providers before opening a pull request.", 360., true, 16.),
                     ("claude-zoom", codex::Provider::Claude, "Add regression", "Add regression coverage for draft preservation.", 360., true, 20.),
                 ] {
