@@ -6527,6 +6527,51 @@ impl Render for CodexView {
                     ),
             );
         }
+        let busy = state.status.busy();
+        let stopping = busy && self.interrupt_requested_for_turn.is_some();
+        // Keep immediate stop feedback above every attached panel, alongside live activity.
+        if self.stop_confirmation.is_some() || stopping {
+            surface = surface.child(
+                div()
+                    .w_full()
+                    .flex_shrink_0()
+                    .flex()
+                    .justify_center()
+                    .when(!minimap_entries.is_empty(), |row| {
+                        row.pl(rpx(CHROME_CONTROL_H))
+                    })
+                    .px(rpx(content_inset))
+                    .child(
+                        div()
+                            .id("codex-stop-confirmation")
+                            .debug_selector(|| "codex-stop-confirmation".into())
+                            .role(gpui::Role::Status)
+                            .w_full()
+                            .max_w(rpx(CHAT_MAX_W))
+                            .flex()
+                            .items_center()
+                            .gap(rpx(SPACE_SM))
+                            .py(rpx(SPACE_MD))
+                            .text_size(rpx(TEXT_SMALL))
+                            .text_color(c::FG())
+                            .child(if stopping {
+                                super::status::mark(
+                                    "escape-stopping",
+                                    StatusKind::Working,
+                                    ICON_SM,
+                                    cx,
+                                )
+                            } else {
+                                crate::icons::icon("stop", ICON_SM, c::FG_DIM()).into_any_element()
+                            })
+                            .child(div().flex_1().min_w_0().child(if stopping {
+                                "Stopping agent…"
+                            } else {
+                                "Press Esc again to stop the agent"
+                            })),
+                    ),
+            );
+        }
         self.sync_status_cards(&state);
         let session_notice = self.session_notice(false, &state, window, cx);
         let (notice_above, notice_below) = if self.dashboard_tray.is_some() {
@@ -6693,8 +6738,6 @@ impl Render for CodexView {
         {
             self.interrupt_requested_for_turn = None;
         }
-        let busy = state.status.busy();
-        let stopping = busy && self.interrupt_requested_for_turn.is_some();
         let draft_disabled = self.edit_confirmation.is_some()
             || self.edit_request_pending
             || state.saved.pending_edit.is_some()
@@ -7073,27 +7116,6 @@ impl Render for CodexView {
                             .when_some(rewind_drafts, gpui::ParentElement::child)
                             .when_some(choices, gpui::ParentElement::child)
                             .when(!self.queue_motion_rows.is_empty(), |rail| rail.child(queued))
-                            // Immediate keyboard feedback: arming/disarming must be visible at
-                            // the same input event, including with reduced motion.
-                            .when(self.stop_confirmation.is_some() || stopping, |rail| rail.child(
-                                div()
-                                    .id("codex-stop-confirmation")
-                                    .debug_selector(|| "codex-stop-confirmation".into())
-                                    .role(gpui::Role::Status)
-                                    .w_full()
-                                    .flex()
-                                    .items_center()
-                                    .gap(rpx(SPACE_SM))
-                                    .py(rpx(SPACE_MD))
-                                    .text_size(rpx(TEXT_SMALL))
-                                    .text_color(c::FG())
-                                    .child(if stopping {
-                                        super::status::mark("escape-stopping", StatusKind::Working, ICON_SM, cx)
-                                    } else {
-                                        crate::icons::icon("stop", ICON_SM, c::FG_DIM()).into_any_element()
-                                    })
-                                    .child(div().flex_1().min_w_0().child(if stopping { "Stopping agent…" } else { "Press Esc again to stop the agent" }))
-                            ))
                             .child(div().w_full().flex().flex_col().flex_shrink_0()
                             .children(self.render_reference_preview(composer_attached, window, cx))
                             .child(
@@ -22357,6 +22379,7 @@ mod tests {
                             session.state.saved.provider = provider;
                             session.state.status = Status::Working;
                             session.state.turn_id = Some("ime-turn".into());
+                            session.state.saved.items = vec![json!({"id":"grove-plan-escape", "type":"plan", "text":"", "plan":[{"step":"Working", "status":"inProgress"}]})].into();
                             cx.notify();
                         });
                         view.input.update(cx, |input, cx| {
@@ -22376,6 +22399,11 @@ mod tests {
                 let composer = cx.debug_bounds("codex-composer").unwrap();
                 assert!(hint.left() >= composer.left() && hint.right() <= composer.right());
                 assert!(hint.bottom() <= composer.top());
+                let tasks = cx.debug_bounds("codex-task-strip-panel").unwrap();
+                assert!(
+                    hint.bottom() <= tasks.top(),
+                    "stop feedback stays above tasks"
+                );
                 assert!(!actions.try_iter().any(|a| matches!(a, Action::Interrupt)));
             }
         }
