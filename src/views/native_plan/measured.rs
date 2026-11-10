@@ -930,7 +930,8 @@ mod tests {
                 .as_ref()
                 .unwrap()
                 .controls
-                .iter().rfind(|(control, _)| control.enabled)
+                .iter()
+                .rfind(|(control, _)| control.enabled)
                 .unwrap()
                 .0
                 .focus
