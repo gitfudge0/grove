@@ -6797,7 +6797,7 @@ mod tests {
                 sidebar.update(cx, |sidebar, _| {
                     sidebar.checkout_panel.width_override =
                         Some(Sidebar::logical_window_width(window));
-                })
+                });
             });
             cx.run_until_parked();
             cx.update(|window, cx| {
@@ -7435,7 +7435,7 @@ mod tests {
             sidebar.update(cx, |sidebar, cx| {
                 sidebar.checkout_panel.hidden = true;
                 sidebar.toggle_session_panel(window, cx);
-            })
+            });
         });
         cx.run_until_parked();
         cx.update(|window, cx| {

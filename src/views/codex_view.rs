@@ -5177,7 +5177,7 @@ impl CodexView {
         self.next_reply_control = None;
         self.next_reply_task = None;
         self.input.update(cx, |input, cx| {
-            input.set_reply_preview(None, c::FG_DIM(), cx)
+            input.set_reply_preview(None, c::FG_DIM(), cx);
         });
         cx.notify();
     }
@@ -5208,7 +5208,7 @@ impl CodexView {
         };
         self.dismiss_next_reply(cx);
         self.input.update(cx, |input, cx| {
-            input.accept_reply_preview(text.into(), window, cx)
+            input.accept_reply_preview(text.into(), window, cx);
         });
         // Explicit replacements use silent input events; persist the actual accepted draft.
         let draft = self.input.read(cx).value().to_string();
@@ -5269,7 +5269,7 @@ impl CodexView {
             .next_reply_text(window, cx)
             .map(gpui::SharedString::from);
         self.input.update(cx, |input, cx| {
-            input.set_reply_preview(preview, c::FG_DIM(), cx)
+            input.set_reply_preview(preview, c::FG_DIM(), cx);
         });
     }
 }
@@ -21231,8 +21231,8 @@ mod tests {
         for provider in [codex::Provider::Codex, codex::Provider::Claude] {
             cx.update(|window, cx| {
                 view.update(cx, |view, cx| {
-                    seed_next_reply(view, provider, "", proposal, window, cx)
-                })
+                    seed_next_reply(view, provider, "", proposal, window, cx);
+                });
             });
             draw(cx);
             assert!(cx.debug_bounds("next-reply-hint").is_some());
@@ -21281,8 +21281,8 @@ mod tests {
         for provider in [codex::Provider::Codex, codex::Provider::Claude] {
             cx.update(|window, cx| {
                 view.update(cx, |view, cx| {
-                    seed_next_reply(view, provider, "", "Add regression coverage.", window, cx)
-                })
+                    seed_next_reply(view, provider, "", "Add regression coverage.", window, cx);
+                });
             });
             draw(cx);
             cx.simulate_input("Add integration");
@@ -21294,8 +21294,8 @@ mod tests {
             );
             cx.update(|window, cx| {
                 view.update(cx, |view, cx| {
-                    seed_next_reply(view, provider, "Add", "Add coverage.", window, cx)
-                })
+                    seed_next_reply(view, provider, "Add", "Add coverage.", window, cx);
+                });
             });
             draw(cx);
             cx.simulate_keystrokes("escape");
@@ -21311,7 +21311,7 @@ mod tests {
                         "stale acceptance must fail before any render"
                     );
                     assert_eq!(view.input.read(cx).value().as_ref(), "Add");
-                })
+                });
             });
             assert!(!actions
                 .try_iter()
@@ -21340,7 +21340,7 @@ mod tests {
                     session.state.accepted_submission = Some(42);
                 });
                 view.next_reply_generate = |_, _| Ok(Some("Add regression coverage.".into()));
-            })
+            });
         });
         draw(cx);
         view.read_with(cx, |view, cx| {
@@ -21367,8 +21367,8 @@ mod tests {
                     "Add coverage.",
                     window,
                     cx,
-                )
-            })
+                );
+            });
         });
         draw(cx);
         cx.simulate_keystrokes("enter");
@@ -21390,7 +21390,7 @@ mod tests {
                     .update(cx, |input, cx| input.set_selected_range(0..3, cx));
                 assert!(!view.accept_next_reply(window, cx));
                 assert_eq!(view.input.read(cx).value().as_ref(), "Add");
-            })
+            });
         });
     }
 
@@ -21421,7 +21421,7 @@ mod tests {
         let output =
             std::path::PathBuf::from(std::env::var("GROVE_NEXT_REPLY_CAPTURE_DIR").unwrap());
         assert!(output.is_absolute());
-        std::fs::create_dir_all(&output).unwrap();
+        fs_err::create_dir_all(&output).unwrap();
         // A fresh process per state avoids stale X11 compositor frames after
         // theme/zoom changes in an inactive QA window.
         let selected_case = std::env::var("GROVE_NEXT_REPLY_CAPTURE_CASE")

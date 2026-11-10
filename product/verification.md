@@ -15,6 +15,16 @@ Dashboard placement, hover/disabled/loading combinations, nondefault themes,
 and macOS/Windows rendering remain untested. This change does not modify
 provider transport or install/restart the user app.
 
+CI repair follow-up: all 33 formerly failing application cases passed in
+separate Linux fixture processes, and all 43 Shell fixtures passed on the
+base-integrated binary. These cover moved Grid/Settings focus and blocking,
+responsive close-confirmation retention, Dashboard draft focus and narrow live
+activity alignment. Native composer captures also exercised compacting status
+for Codex and Claude after integrating the newer input renderer. Native manual
+sidebar/confirmation interaction remains untested. The glow was visually checked
+against the exploratory option-B direction; no measured-reference certification
+is claimed.
+
 ## Responsive sidebar fitting and transcript insets
 
 Navigation and Checkout now yield space using rem-aware width budgets; explicit

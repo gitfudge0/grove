@@ -545,7 +545,7 @@ pub struct Sidebar {
     navigation_focus: [FocusHandle; 3],
     session_grid_focus: FocusHandle,
     grid_blocked_by_shell: bool,
-    sidebar_settings_focus: FocusHandle,
+    settings_button_focus: FocusHandle,
     session_history: Vec<grove_core::codex::SavedSession>,
     cli_session_history: Vec<grove_core::session_meta::ClosedCliSession>,
     session_history_loading: bool,
@@ -807,7 +807,7 @@ impl Sidebar {
             navigation_focus: std::array::from_fn(|_| cx.focus_handle().tab_stop(true)),
             session_grid_focus: cx.focus_handle().tab_stop(true),
             grid_blocked_by_shell: false,
-            sidebar_settings_focus: cx.focus_handle().tab_stop(true),
+            settings_button_focus: cx.focus_handle().tab_stop(true),
             session_history: Vec::new(),
             cli_session_history: Vec::new(),
             session_history_loading: false,
@@ -5391,7 +5391,7 @@ impl Sidebar {
         }
         body.into_any_element()
     }
-    fn terminals(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
+    fn terminals(&self, _window: &Window, cx: &mut Context<Self>) -> AnyElement {
         let mut panel = div().flex().flex_col().flex_shrink_0().child(
             div()
                 .h(rpx(HEAD_H))
@@ -11250,7 +11250,7 @@ for line in sys.stdin:
                     sidebar.update(cx, |sidebar, cx| {
                         sidebar.checkout_panel.hidden = true;
                         sidebar.toggle_session_panel(window, cx);
-                    })
+                    });
                 });
                 draw(cx);
                 let ids = [

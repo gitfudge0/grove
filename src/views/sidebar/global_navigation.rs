@@ -434,12 +434,12 @@ impl Sidebar {
                     .child(
                         self.control("sidebar-settings", "Settings", Action::OpenSettings, cx)
                             .debug_selector(|| "sidebar-settings".into())
-                            .track_focus(&self.sidebar_settings_focus)
+                            .track_focus(&self.settings_button_focus)
                             .on_mouse_down(
                                 MouseButton::Left,
                                 cx.listener(|this, _, window, cx| {
                                     if this.navigation_available() {
-                                        this.sidebar_settings_focus.focus(window, cx);
+                                        this.settings_button_focus.focus(window, cx);
                                     }
                                 }),
                             )

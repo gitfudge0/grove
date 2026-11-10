@@ -228,7 +228,7 @@ mod tests {
         state.saved.items = state.saved.items[..4]
             .iter()
             .cloned()
-            .map(|item| item.into_value())
+            .map(crate::transcript_items::TranscriptItem::into_value)
             .collect::<Vec<_>>()
             .into();
         assert!(
@@ -243,7 +243,7 @@ mod tests {
         items[4]["text"] = json!("\"é🦀".repeat(10000));
         state.saved.items = items
             .into_iter()
-            .map(|item| item.into_value())
+            .map(crate::transcript_items::TranscriptItem::into_value)
             .collect::<Vec<_>>()
             .into();
         assert!(Request::capture(&state).unwrap().context.len() <= 8000);
