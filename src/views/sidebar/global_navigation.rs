@@ -430,7 +430,22 @@ impl Sidebar {
                             .size(rpx(ICON_LG))
                             .flex_shrink_0(),
                     )
-                    .child(div().flex_1().min_w_0().truncate().child("Grove"))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .flex()
+                            .items_center()
+                            .gap(rpx(SPACE_SM))
+                            .child(div().truncate().child("Grove"))
+                            .child(
+                                div()
+                                    .flex_shrink_0()
+                                    .text_size(rpx(TEXT_SMALL))
+                                    .text_color(c::FG_DIM())
+                                    .child(format!("v{}", env!("CARGO_PKG_VERSION"))),
+                            ),
+                    )
                     .child(
                         self.control("sidebar-settings", "Settings", Action::OpenSettings, cx)
                             .debug_selector(|| "sidebar-settings".into())
