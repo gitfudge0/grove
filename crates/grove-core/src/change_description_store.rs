@@ -727,7 +727,10 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let checkout = tempfile::tempdir().unwrap();
         let store = Store::new(root.path().into());
-        let result = description(checkout.path(), Scope::Local);
+        // Captures retain their canonical checkout identity before deletion;
+        // macOS tempfile aliases (/var -> /private/var) are not that identity.
+        let captured_checkout = fs_err::canonicalize(checkout.path()).unwrap();
+        let result = description(&captured_checkout, Scope::Local);
         let source = Source::from(&result);
         store.save(&result).unwrap();
         checkout.close().unwrap();

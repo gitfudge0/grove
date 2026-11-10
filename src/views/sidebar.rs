@@ -7332,13 +7332,18 @@ mod tests {
                 registry.insert_meta("alpha".into(), "/repo/alpha/".into(), Agent::Codex);
                 registry.insert_meta("beta".into(), "/repo/beta/".into(), Agent::Claude);
             });
-            let sidebar = Sidebar::new(runtime, window, cx);
-            sidebar.focus.focus(window, cx);
-            sidebar
+            Sidebar::new(runtime, window, cx)
         });
+        draw(cx);
         cx.update(|window, cx| {
             sidebar.update(cx, |sidebar, cx| {
+                // Initial landing focuses the Dashboard composer. Establish the
+                // actual invoking source after that first render has settled.
+                sidebar.focus.focus(window, cx);
+                let source = window.focused(cx).expect("focused diff trigger source");
+                assert_eq!(source, sidebar.focus);
                 sidebar.act(Action::OpenDiff(SessionId::from_raw(2)), window, cx);
+                assert_eq!(sidebar.diff_return_focus.as_ref(), Some(&source));
                 assert_eq!(
                     sidebar.diff_viewer.as_ref().unwrap().read(cx).wt_path,
                     "/repo/beta"
@@ -7346,6 +7351,7 @@ mod tests {
                 assert!(sidebar.diff_focus.is_focused(window));
                 sidebar.act(Action::CloseDiff, window, cx);
                 assert!(sidebar.diff_viewer.is_none());
+                assert_eq!(window.focused(cx), Some(source));
                 assert!(sidebar.focus.is_focused(window));
             });
         });

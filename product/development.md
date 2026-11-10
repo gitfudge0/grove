@@ -43,6 +43,11 @@ are not a verified API reference. Inspect signatures before writing code.
 
 ## Validation
 
+Unoptimized GPUI render trees need more than libtest's default 2 MiB test-thread
+stack. Run full workspace tests with `RUST_MIN_STACK=16777216`, matching CI and
+isolated native QA. This changes the test harness stack only; test assertions,
+timeouts and flaky-result failures remain enforced.
+
 Run relevant formatting, focused tests and the affected build. Native fixture
 checks and live provider-boundary checks prove different things: report the
 method, platform and provider actually exercised. Follow

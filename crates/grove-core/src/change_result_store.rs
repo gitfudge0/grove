@@ -495,7 +495,7 @@ mod tests {
     #[test]
     fn old_links_load_without_input_and_corrupt_input_link_is_preserved() {
         let (_dir, store, job) = setup();
-        let source = source(&job.snapshot);
+        let source = source(&job.snapshot).normalized().unwrap();
         store.bind("session", &source).unwrap();
         let path = store.path("sessions", "session").unwrap();
         let mut legacy: serde_json::Value =

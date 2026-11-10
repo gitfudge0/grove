@@ -96,17 +96,21 @@ thread_local! {
 }
 
 pub fn capture_for_send(paths: &[PathBuf]) -> Result<Checkpoint, String> {
+    capture_for_send_with_budget(paths, std::time::Duration::from_millis(500))
+}
+
+fn capture_for_send_with_budget(
+    paths: &[PathBuf],
+    budget: std::time::Duration,
+) -> Result<Checkpoint, String> {
     struct Reset(Option<std::time::Instant>);
     impl Drop for Reset {
         fn drop(&mut self) {
             SEND_DEADLINE.with(|slot| slot.set(self.0));
         }
     }
-    let _reset = Reset(SEND_DEADLINE.with(|slot| {
-        slot.replace(Some(
-            std::time::Instant::now() + std::time::Duration::from_millis(500),
-        ))
-    }));
+    let _reset =
+        Reset(SEND_DEADLINE.with(|slot| slot.replace(Some(std::time::Instant::now() + budget))));
     repository_roots(paths).and_then(|roots| capture(&roots))
 }
 
@@ -480,9 +484,15 @@ mod tests {
         dir
     }
     #[test]
-    fn send_checkpoint_preserves_fast_worktrees() {
+    fn send_checkpoint_preserves_worktrees_within_its_budget() {
         let directory = repo();
-        let checkpoint = capture_for_send(&[directory.path().to_path_buf()]).unwrap();
+        // This verifies capture correctness, not external Git process latency.
+        // Keep the public 500ms dispatch budget and its slow-filter bound test.
+        let checkpoint = capture_for_send_with_budget(
+            &[directory.path().to_path_buf()],
+            std::time::Duration::from_secs(5),
+        )
+        .unwrap();
         assert_eq!(checkpoint.roots.len(), 1);
     }
 

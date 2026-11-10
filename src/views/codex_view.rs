@@ -21263,7 +21263,11 @@ mod tests {
             assert!(!actions
                 .try_iter()
                 .any(|action| matches!(action, Action::Submit { .. } | Action::Prompt(_))));
-            cx.simulate_keystrokes("ctrl-z");
+            cx.simulate_keystrokes(if cfg!(target_os = "macos") {
+                "cmd-z"
+            } else {
+                "ctrl-z"
+            });
             draw(cx);
             assert_eq!(
                 view.read_with(cx, |view, cx| view.input.read(cx).value().to_string()),

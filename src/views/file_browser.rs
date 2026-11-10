@@ -936,10 +936,13 @@ mod tests {
     fn explorer_automatically_refreshes_without_resetting_expansion(cx: &mut gpui::TestAppContext) {
         cx.update(gpui_component::init);
         let root = tempfile::tempdir().unwrap();
-        let nested = root.path().join("nested");
+        // Directory entries use checked_path's canonical checkout path. macOS
+        // temporary paths may begin at the /var alias for /private/var.
+        let root_path = fs_err::canonicalize(root.path()).unwrap();
+        let nested = root_path.join("nested");
         fs_err::create_dir(&nested).unwrap();
         let (browser, cx) =
-            cx.add_window_view(|window, cx| FileBrowser::new(root.path().to_owned(), window, cx));
+            cx.add_window_view(|window, cx| FileBrowser::new(root_path, window, cx));
         cx.run_until_parked();
         cx.update(|window, cx| {
             browser.update(cx, |browser, cx| {
