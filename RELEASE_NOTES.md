@@ -1,3 +1,35 @@
+# Grove 1.2.0
+
+Grove 1.2.0 is a major redesign of the app—from how you start work to how you follow agents, review changes, and move between projects. A new sidebar, live dashboard, and redesigned conversation workspace bring your coding workflow into one place.
+
+## A new workspace
+
+- Navigate projects, sessions, history, and terminals from one sidebar. Group sessions by activity or worktree, search past conversations, and collapse the sidebar when you need more room.
+- Start conversations directly from the dashboard and follow active sessions in Activity. See what needs your attention, read completion summaries, and reply without losing your place.
+- Browse files, inspect changes, manage branches and pull requests, and use a resizable worktree terminal alongside your conversation.
+
+## A better place to talk to agents
+
+- A redesigned composer brings context, model selection, effort, and conversation controls together, with favorite models and a subtle focus glow in Grove Light and Grove Dark.
+- Quote selected text into a reply, rewind a message into the composer to edit it, or fork a conversation to explore another direction.
+- Accept a suggested next reply with Tab, keep drafts while navigating, and press Escape twice to stop an active agent with visible confirmation.
+- Follow long conversations with compact history and a transcript minimap. Keep side conversations attached to their sessions using your signed-in provider.
+
+## Review and understand your changes
+
+- Run **Describe changes** or **Review changes** on local edits or a pull request. Results live in dedicated conversations, stay available after restart, and show when their captured changes are out of date.
+- Read saved descriptions and actionable review findings in native readers. Updating a pull request description remains an explicit action with an editable preview.
+- Read plans inline, answer decisions in the existing composer, and approve a finalized revision for implementation.
+
+## More context, less friction
+
+- See provider-aware context usage for Codex and Claude, including Claude's reported context breakdown.
+- Check account-wide GitHub contribution activity from Home.
+- Use a native file explorer and theme-aware file viewer, open HTML documents in a browser, and expand Mermaid diagrams for a closer look.
+- Newly installed skills become available without restarting Grove, and provider or MCP connection failures are easier to find in the conversation.
+
+This release also refines typography, spacing, icons, keyboard focus, motion, and feedback throughout the app, with improvements to long-conversation rendering, recovery, and local build times.
+
 # Grove 1.1.8
 
 ## Checkout and history
