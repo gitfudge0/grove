@@ -6287,6 +6287,9 @@ impl Render for CodexView {
             .child(super::components::composer_focus_glow(
                 glow_bounds,
                 writing_focused,
+                !self.composer_collapsed && !composer_disabled,
+                ("composer-focus-pulse", self.input.entity_id()),
+                cx,
             ))
             .when(!focused_launch, |surface| {
                 surface
@@ -21511,12 +21514,14 @@ mod tests {
         let output = std::path::PathBuf::from(std::env::var("GROVE_FOCUS_CAPTURE_DIR").unwrap());
         assert!(output.is_absolute());
         fs_err::create_dir_all(&output).unwrap();
+        let dashboard = std::env::var_os("GROVE_FOCUS_DASHBOARD").is_some();
+        let animate = std::env::var_os("GROVE_FOCUS_ANIMATE").is_some();
         gpui_platform::application().with_assets(crate::assets::Assets).run(move |cx| {
             gpui_component::init(cx);
             crate::fonts::register(cx).unwrap();
             cx.set_global(crate::settings::SettingsState::new(grove_core::storage::Store::default()));
             cx.set_global(crate::zoom::CurrentPtyDims::default());
-            cx.set_reduce_motion(true);
+            cx.set_reduce_motion(!animate);
             c::sync_component_theme(cx);
             let (handle, actions) = Handle::channel();
             let (updates, receive) = mpsc::channel();
@@ -21531,8 +21536,16 @@ mod tests {
                 state.compacting = std::env::var_os("GROVE_FOCUS_COMPACTING").is_some();
                 state.status = if state.compacting { Status::Working } else { Status::Done };
                 state.saved.items = vec![json!({"id":"answer","type":"agentMessage","text":"Ready for your next instruction."})].into();
+                if dashboard { state.saved.items = vec![].into(); }
                 let session = cx.new(|cx| CodexSession::from_connection(state, Connection { handle, updates: receive.into() }, cx));
                 let chat = cx.new(|cx| CodexView::new(session, window, cx));
+                if dashboard {
+                    chat.update(cx, |view, cx| {
+                        view.dashboard_tray = Some(cx.new(|_| {
+                            super::super::sidebar::dashboard::DestinationTray::picker_test_tray("/unused".into())
+                        }));
+                    });
+                }
                 retained = Some(chat.clone());
                 cx.new(|cx| gpui_component::Root::new(chat, window, cx).bordered(false))
             }).unwrap();
@@ -21541,7 +21554,7 @@ mod tests {
             cx.spawn(async move |cx| {
                 let _transport = (actions, updates);
                 for provider in [codex::Provider::Codex, codex::Provider::Claude] {
-                    for (theme, width, rem) in [("grove-dark",900.,16.),("grove-light",900.,16.),("grove-dark",540.,20.)] {
+                    for (theme, width, rem) in [("grove-dark",900.,16.),("grove-light",900.,16.),("tokyo-night",900.,16.),("grove-dark",540.,20.)] {
                         cx.update(|cx| { grove_core::theme::set_by_name(theme); c::sync_component_theme(cx); gpui_component::Theme::global_mut(cx).font_size = gpui::px(rem); });
                         for focused in [true, false] {
                             cx.update_window(window.into(), |_, window, cx| {
@@ -21561,8 +21574,24 @@ mod tests {
                             cx.update_window(window.into(), |_, window, _| {
                                 eprintln!("focus capture {provider:?} {theme}: viewport={:?}, rem={:?}", window.viewport_size(), window.rem_size());
                             }).unwrap();
+                            // Flush theme/zoom changes before sampling the X11 backing pixmap.
+                            cx.update_window(window.into(), |_, window, _| window.refresh()).unwrap();
+                            cx.background_executor().timer(std::time::Duration::from_millis(250)).await;
                             let path = output.join(format!("{provider:?}-{theme}-{width}-{rem}-{focused}.png"));
                             assert!(std::process::Command::new("import").args(["-window", "Grove composer focus QA"]).arg(path).status().unwrap().success());
+                            if animate && focused && theme == "grove-dark" && rem == 16. {
+                                for phase in ["peak", "trough"] {
+                                    cx.background_executor().timer(std::time::Duration::from_secs(5)).await;
+                                    cx.update_window(window.into(), |_, window, _| window.refresh()).unwrap();
+                                    cx.background_executor().timer(std::time::Duration::from_millis(250)).await;
+                                    let path = output.join(format!("{provider:?}-pulse-{phase}.png"));
+                                    assert!(std::process::Command::new("import").args(["-window", "Grove composer focus QA"]).arg(path).status().unwrap().success());
+                                }
+                                cx.update_window(window.into(), |_, window, cx| chat.read_with(cx, |view, cx| {
+                                    assert!(view.input.focus_handle(cx).is_focused(window));
+                                    assert_eq!(view.input.read(cx).value().to_string(), "Refine the composer focus treatment.");
+                                })).unwrap();
+                            }
                         }
                     }
                 }

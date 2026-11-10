@@ -535,27 +535,52 @@ pub fn composer_surface() -> Div {
 pub fn composer_focus_glow(
     bounds: std::rc::Rc<std::cell::Cell<gpui::Bounds<gpui::Pixels>>>,
     focused: bool,
-) -> impl gpui::IntoElement {
-    gpui::canvas(
+    enabled: bool,
+    id: impl Into<gpui::ElementId>,
+    cx: &App,
+) -> gpui::AnyElement {
+    if !enabled || !c::composer_focus_glow_enabled() {
+        return div().into_any_element();
+    }
+    let light = gpui::canvas(
         |_, _, _| {},
         move |_, (), window, _| {
             let bounds = bounds.get();
-            if focused && bounds.size.width > gpui::px(0.) {
+            if bounds.size.width > gpui::px(0.) {
                 window.paint_drop_shadows(
                     bounds,
                     gpui::Corners::all(rpx(RADIUS_PANEL).to_pixels(window.rem_size())),
-                    &[composer_focus_shadow(window)],
+                    &[composer_focus_shadow(window, focused)],
                 );
             }
         },
     )
     .absolute()
-    .size_full()
+    .size_full();
+    // Div owns opacity propagation in GPUI; Canvas does not apply it itself.
+    let glow = div().absolute().size_full().child(light);
+    if !focused {
+        return glow.opacity(COMPOSER_GLOW_MIN_OPACITY).into_any_element();
+    }
+    if cx.reduce_motion() {
+        return glow.into_any_element();
+    }
+    glow.with_animation(
+        id,
+        gpui::Animation::new(COMPOSER_GLOW_PERIOD).repeat(),
+        |glow, progress| {
+            // Cosine keeps both turnarounds and the repeat seam smooth. Only
+            // the underlay pulses: the writing surface and text stay steady.
+            let wave = (1.0 - (progress * std::f32::consts::TAU).cos()) * 0.5;
+            glow.opacity(COMPOSER_GLOW_MIN_OPACITY + (1.0 - COMPOSER_GLOW_MIN_OPACITY) * wave)
+        },
+    )
+    .into_any_element()
 }
 
-/// Shared broad light, also painted at the conversation level to avoid the
+/// Shared compact light, also painted at the conversation level to avoid the
 /// composer's scrolling rail clipping the ambient falloff.
-pub fn composer_focus_shadow(window: &gpui::Window) -> gpui::BoxShadow {
+fn composer_focus_shadow(window: &gpui::Window, focused: bool) -> gpui::BoxShadow {
     gpui::BoxShadow {
         color: c::COMPOSER_FOCUS_GLOW(),
         offset: gpui::point(
@@ -563,7 +588,12 @@ pub fn composer_focus_shadow(window: &gpui::Window) -> gpui::BoxShadow {
             rpx(COMPOSER_GLOW_OFFSET_Y).to_pixels(window.rem_size()),
         ),
         blur_radius: rpx(COMPOSER_GLOW_BLUR).to_pixels(window.rem_size()),
-        spread_radius: rpx(COMPOSER_GLOW_SPREAD).to_pixels(window.rem_size()),
+        spread_radius: rpx(if focused {
+            COMPOSER_GLOW_SPREAD
+        } else {
+            COMPOSER_GLOW_REST_SPREAD
+        })
+        .to_pixels(window.rem_size()),
         inset: false,
     }
 }

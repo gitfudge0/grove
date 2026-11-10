@@ -428,6 +428,9 @@ impl Sidebar {
             .child(super::super::components::composer_focus_glow(
                 glow_bounds,
                 writing_focused,
+                reply.pending.is_none() && active,
+                ("composer-focus-pulse", input.entity_id()),
+                cx,
             ))
             .child(frame);
         let trigger_focus = self.dashboard_timelines.reply_focus[&key].clone();

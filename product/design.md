@@ -575,11 +575,15 @@ Refresh remains available while idle; errors leave the conversation usable.
 
 New session navigation, the New session shortcut, switcher action and New session landing preference open the main Dashboard composer directly, preserving its draft. Empty Codex and Claude conversations omit the alternate “What would you like to build?” introduction and starter cards.
 
-A focused composer writing area casts a broad, diffuse blue ambient glow behind
-its surface, matching option B of the approved focus mock. The neutral seam,
-flat writing fill and geometry remain unchanged. The glow is immediate on focus
-and blur (including reduced motion), disappears when the input is disabled or
-collapsed, and does not appear merely from pointer hover or toolbar focus. Main
+In Grove Dark and Grove Light only, a focused composer writing area casts a
+compact, diffuse blue ambient glow close to its surface. Other themes have no
+composer glow and schedule no pulse animation. While focused, its intensity
+gently brightens and dims over a ten-second cycle without changing the glow footprint or moving content. The
+neutral seam, flat writing fill and geometry remain unchanged. On blur, the glow
+stays visible at a tighter spread and steady low intensity with no animation
+frames. Focus immediately restores the normal spread and pulse; Reduce motion
+keeps a steady glow. Disabled or collapsed inputs hide it. Pointer hover and
+toolbar focus never start the pulse. Main
 Dashboard/session composers and compact activity replies share this treatment
 for Codex and Claude; intensity follows the active light/dark theme.
 

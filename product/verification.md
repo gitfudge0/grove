@@ -2,6 +2,22 @@
 
 ## Ambient composer focus glow
 
+Follow-up: tightened the shadow footprint and added a ten-second opacity pulse
+while focused. Blur retains a tighter, steady low-intensity glow; disabled and
+collapsed inputs hide it. The effect is restricted to the exact Grove Dark and Grove Light themes (including exclusion
+of custom copies). Theme-catalog restriction, composer edge alignment, compact
+reply keyboard/draft/acknowledgment and 33 conformance checks passed. Linux native
+fixtures exercised Codex and Claude with synthetic transports: reduced-motion
+steady focus/toolbar blur in both Grove themes, Tokyo Night without glow, and
+16/20px rem; a Dashboard composer fixture also captured a complete pulse with
+focus and draft preservation. This Dashboard fixture includes the destination
+tray, not the complete Home layout. Desktop tiling constrained captures to about
+570px wide. Live Codex/Claude transport, native compact-reply pulse, full Home
+placement, wide native rendering and macOS/Windows visuals remain untested.
+No installation or restart was performed for this follow-up.
+
+Previous implementation evidence (before the pulse follow-up):
+
 Option B uses a shared, theme-owned blue ambient shadow behind the writing
 surface. Linux native fixture captures exercised both Codex and Claude focus
 and toolbar-focus blur, dark/light themes, and 16/20px rem with reduced motion.

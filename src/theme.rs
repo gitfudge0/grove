@@ -453,12 +453,21 @@ pub fn OPENAI_BRAND() -> Hsla {
 pub fn BLUE() -> Hsla {
     chrome(ChromeRole::Info)
 }
-/// Broad blue writing-focus light from the approved ambient reference.
-/// Native blurred shadows need more opacity than the mock's radial fill.
+/// The ambient focus treatment belongs only to the two built-in Grove themes.
+pub fn composer_focus_glow_enabled() -> bool {
+    theme::with_current(|theme| {
+        matches!(
+            theme.name.as_ref(),
+            DEFAULT_DARK_THEME | DEFAULT_LIGHT_THEME
+        )
+    })
+}
+
+/// Restrained blue writing-focus light; shared motion modulates its opacity.
 pub fn COMPOSER_FOCUS_GLOW() -> Hsla {
     alpha(
         gpui::rgb(if is_dark() { 0x2852e7 } else { 0x416ef5 }).into(),
-        if is_dark() { 0.60 } else { 0.30 },
+        if is_dark() { 0.32 } else { 0.16 },
     )
 }
 
@@ -992,6 +1001,25 @@ mod tests {
         fn drop(&mut self) {
             theme::set(self.0.clone());
         }
+    }
+
+    #[test]
+    fn composer_glow_is_exclusive_to_grove_dark_and_light() {
+        let _lock = ACTIVE_THEME_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _restore = ActiveThemeGuard::capture();
+        for item in grove_core::app_theme::CATALOG {
+            let theme = item.terminal();
+            let expected = matches!(theme.name.as_ref(), "grove-dark" | "grove-light");
+            theme::set(theme);
+            assert_eq!(composer_focus_glow_enabled(), expected, "{}", item.label);
+        }
+        // A copied/custom Grove palette must not inherit the built-in effect.
+        let mut custom = theme::by_name("grove-dark").unwrap();
+        custom.name = "grove-custom".into();
+        theme::set(custom);
+        assert!(!composer_focus_glow_enabled());
     }
 
     #[test]
