@@ -1111,3 +1111,39 @@ Zen/grid and worktree input expectations); no baseline comparison established
 whether these failures predate this layout change. This is not a green suite.
 The final Linux local build/install succeeded; installed and built binaries
 matched by SHA-256. The running application was not restarted.
+
+## Suggested next replies
+
+Linux verification passed 12 focused core/generation-transport tests and 51
+native reply, completion, focus-traversal and design-conformance fixtures. These
+cover Codex and Claude fixtures, exact-prefix persistence, divergence/Escape,
+whole-reply Tab acceptance, caret placement, Undo, stale acceptance and coalesced
+submission/completion handling. The production binary build passed. The adjacent
+worktree-input test's obsolete Projects selector failed on the untouched base;
+its selector was corrected and the test then passed.
+
+Fresh isolated Linux capture processes inspected empty, matching-prefix,
+constrained-width and multiline states for Codex and Claude, in Grove Dark and
+Light, including rem 20. The compositor retained its window geometry, so these
+captures constrain the actual conversation pane rather than claiming full-window
+resize coverage. Ghost text sampled from native frames measured 5.32:1 contrast
+in Light and 7.78:1 in Dark. Earlier multi-state capture attempts reused stale
+compositor frames; the supported fixture selects one state per process with
+`GROVE_NEXT_REPLY_CAPTURE_CASE`. Focus is released before teardown.
+
+**Codex:** isolated production generation with CLI 0.167.0 and `gpt-6-luna`
+returned a valid structured suggestion. **Claude:** CLI 2.1.220 attempted the
+`haiku` request but its OAuth session expired and could not refresh; successful
+live Haiku generation remains unverified. Native provider fixtures and live
+backend requests were exercised separately, not as an end-to-end live composer
+session. Actual screen-reader and IME interaction, long-preview scrolling, and
+macOS/Windows runtime behavior remain untested. Windows process-tree termination
+follows the existing title-generation cleanup pattern but lacks runtime evidence.
+
+Strict workspace Clippy failed with 32 diagnostics in unchanged core files. Every
+one reproduced at the same file, line, column and message on the untouched base;
+this change does not establish a clean whole-workspace lint result. Formatting,
+repository artifact policy, reference-verifier tests and artifact-tool tests passed.
+CI spelling and supply-chain jobs also fail on unchanged baseline inputs; a
+locked dependency has been yanked. No local installation or user-app restart was
+performed.

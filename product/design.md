@@ -574,3 +574,24 @@ New occupancy clears old attribution rather than mixing snapshots. Manual
 Refresh remains available while idle; errors leave the conversation usable.
 
 New session navigation, the New session shortcut, switcher action and New session landing preference open the main Dashboard composer directly, preserving its draft. Empty Codex and Claude conversations omit the alternate “What would you like to build?” introduction and starter cards.
+
+## Suggested next replies
+
+After a newly completed successful main-agent response, the native Codex and
+Claude composer may show one complete suggested user reply while its actual draft
+is empty. Ghost text remains presentation only: it is never copied, saved, queued
+or submitted as user text until explicitly accepted. Matching exact prefix typing
+keeps the remaining suggestion visible; the first difference or Escape dismisses
+it for that composition. Typing never regenerates the candidate.
+
+Tab accepts the whole reply in one undo step, without duplicating a matching
+prefix or sending. Enter sends only actual draft text; an empty ghost reply does
+not enable Send. Existing file, skill and slash completion, menus, selections,
+IME and specialized answer modes retain priority; Shift+Tab retains normal focus
+traversal. A quiet “Tab to use suggested reply · Esc to dismiss” hint explains the
+available action. Preview changes are immediate input feedback, with native font
+shaping, wrapping and resolved supporting foreground color.
+
+Candidates belong to the response and native composer that requested them. New
+turns, draft handoffs and changed response identity invalidate stale acceptance.
+Historical/read-only transcripts and restored responses do not trigger generation.

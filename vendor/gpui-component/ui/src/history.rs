@@ -64,6 +64,14 @@ where
         self.grouping = false;
     }
 
+    /// Separate an explicit replacement from preceding and following typing.
+    pub(crate) fn break_group(&mut self) {
+        self.grouping = false;
+        self.version += 1;
+        // inc_version may retain this version within the typing interval.
+        self.last_changed_at = Instant::now();
+    }
+
     fn inc_version(&mut self) -> usize {
         let t = Instant::now();
         if !self.grouping && Some(self.last_changed_at.elapsed()) > self.group_interval {
