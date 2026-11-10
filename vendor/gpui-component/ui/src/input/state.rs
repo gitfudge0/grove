@@ -377,6 +377,8 @@ pub struct InputState {
     pub(crate) mask_pattern: MaskPattern,
     pub(super) mask_pattern_set: bool,
     pub(super) placeholder: SharedString,
+    pub(super) reply_preview: Option<(SharedString, gpui::Hsla)>,
+    pub(super) reply_preview_rows: Cell<usize>,
 
     diagnostic_popover: Option<Entity<DiagnosticPopover>>,
     pub(super) context_menu_content: Option<ContextMenu>,
@@ -487,6 +489,8 @@ impl InputState {
             deferred_scroll_offset: None,
             preferred_column: None,
             placeholder: SharedString::default(),
+            reply_preview: None,
+            reply_preview_rows: Cell::new(0),
             mask_pattern: MaskPattern::default(),
             mask_pattern_set: false,
             text_align: TextAlign::Left,
@@ -1103,6 +1107,60 @@ impl InputState {
         self.display_map
             .set_text_replacements(self.text_replacements.clone(), cx);
         cx.notify();
+    }
+
+    /// Display-only full-reply preview. It never enters the buffer, selection,
+    /// clipboard, accessibility value, input events or undo history.
+    pub fn set_reply_preview(
+        &mut self,
+        text: Option<SharedString>,
+        color: gpui::Hsla,
+        cx: &mut Context<Self>,
+    ) {
+        let next = text.map(|text| (text, color));
+        if self.reply_preview != next {
+            self.reply_preview = next;
+            if self.reply_preview.is_none() {
+                self.reply_preview_rows.set(0);
+            }
+            cx.notify();
+        }
+    }
+
+    pub fn reply_preview_eligible(&self) -> bool {
+        !self.disabled
+            && !self.masked
+            && self.ime_marked_range.is_none()
+            && self.selected_range.is_empty()
+            && self.cursor() == self.text.len()
+            && self.context_menu_content.is_none()
+    }
+
+    pub(super) fn visible_reply_preview(
+        &self,
+        focused: bool,
+    ) -> Option<&(SharedString, gpui::Hsla)> {
+        self.reply_preview.as_ref().filter(|(text, _)| {
+            focused
+                && self.reply_preview_eligible()
+                && text.len() > self.text.len()
+                && text.starts_with(&self.text.to_string())
+        })
+    }
+
+    /// A completion acceptance must not merge with adjacent typing in Undo.
+    pub fn accept_reply_preview(
+        &mut self,
+        text: SharedString,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.history.break_group();
+        let end = text.len();
+        self.replace_all(text, window, cx);
+        self.set_selected_range(end..end, cx);
+        self.scroll_to(end, None, cx);
+        self.history.break_group();
     }
 
     pub fn value(&self) -> SharedString {

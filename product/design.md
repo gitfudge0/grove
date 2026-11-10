@@ -582,3 +582,24 @@ and blur (including reduced motion), disappears when the input is disabled or
 collapsed, and does not appear merely from pointer hover or toolbar focus. Main
 Dashboard/session composers and compact activity replies share this treatment
 for Codex and Claude; intensity follows the active light/dark theme.
+
+## Suggested next replies
+
+After a newly completed successful main-agent response, the native Codex and
+Claude composer may show one complete suggested user reply while its actual draft
+is empty. Ghost text remains presentation only: it is never copied, saved, queued
+or submitted as user text until explicitly accepted. Matching exact prefix typing
+keeps the remaining suggestion visible; the first difference or Escape dismisses
+it for that composition. Typing never regenerates the candidate.
+
+Tab accepts the whole reply in one undo step, without duplicating a matching
+prefix or sending. Enter sends only actual draft text; an empty ghost reply does
+not enable Send. Existing file, skill and slash completion, menus, selections,
+IME and specialized answer modes retain priority; Shift+Tab retains normal focus
+traversal. A quiet “Tab to use suggested reply · Esc to dismiss” hint explains the
+available action. Preview changes are immediate input feedback, with native font
+shaping, wrapping and resolved supporting foreground color.
+
+Candidates belong to the response and native composer that requested them. New
+turns, draft handoffs and changed response identity invalidate stale acceptance.
+Historical/read-only transcripts and restored responses do not trigger generation.

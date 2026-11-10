@@ -1430,6 +1430,8 @@ pub(super) struct PrepaintState {
     indent_guides_path: Option<Path<Pixels>>,
     bounds: Bounds<Pixels>,
     fold_icon_layout: FoldIconLayout,
+    reply_preview_first: Option<ShapedLine>,
+    reply_preview_rest: Vec<gpui::WrappedLine>,
     ghost_lines: Vec<ShapedLine>,
     ghost_first_line: Option<ShapedLine>,
     ghost_lines_height: Pixels,
@@ -1512,7 +1514,10 @@ impl Element for TextElement {
             style.size.height = relative(1.).into();
             if state.mode.is_auto_grow() {
                 // Auto grow to let height match to rows, but not exceed max rows.
-                let rows = state.mode.max_rows().min(state.mode.rows());
+                let rows = state
+                    .mode
+                    .max_rows()
+                    .min(state.mode.rows().max(state.reply_preview_rows.get()));
                 style.min_size.height = (rows * line_height).into();
             } else {
                 style.min_size.height = line_height.into();
@@ -1560,7 +1565,14 @@ impl Element for TextElement {
         let multi_line = state.mode.is_multi_line();
         let text = state.text.clone();
         let is_empty = text.len() == 0;
-        let placeholder = self.placeholder.clone();
+        let placeholder = if state
+            .visible_reply_preview(state.focus_handle.is_focused(window))
+            .is_some()
+        {
+            SharedString::default()
+        } else {
+            self.placeholder.clone()
+        };
 
         let text_style = window.text_style();
         let disabled = state.disabled;
@@ -1787,7 +1799,7 @@ impl Element for TextElement {
             } else {
                 longest_line_width
             },
-            (total_wrapped_lines as f32 * line_height
+            (total_wrapped_lines.max(state.reply_preview_rows.get()) as f32 * line_height
                 + empty_bottom_height.max(ghost_lines_height))
             .max(bounds.size.height),
         );
@@ -1803,6 +1815,78 @@ impl Element for TextElement {
 
         let (cursor_bounds, cursor_scroll_offset, current_row) =
             self.layout_cursor(&last_layout, &mut bounds, scroll_size, window, cx);
+        let state = self.state.read(cx);
+        // Start ghost text at the actual native caret, never reshape or move the
+        // user's prefix. This also respects scroll offsets and Markdown projection.
+        let previous_preview_rows = state.reply_preview_rows.get();
+        let mut reply_preview_first = None;
+        let mut reply_preview_rest = Vec::new();
+        if let Some((proposal, color)) =
+            state.visible_reply_preview(state.focus_handle.is_focused(window))
+        {
+            if let Some(cursor) = cursor_bounds {
+                let suffix = &proposal[state.text.len()..];
+                let first = suffix.split('\n').next().unwrap_or_default();
+                let run = |len| TextRun {
+                    len,
+                    font: style.font(),
+                    color: *color,
+                    background_color: None,
+                    underline: None,
+                    strikethrough: None,
+                };
+                let line = window.text_system().shape_line(
+                    first.to_owned().into(),
+                    text_size,
+                    &[run(first.len())],
+                    None,
+                );
+                let available = (input_bounds.right() - cursor.origin.x).max(px(0.));
+                let mut end = if line.width <= available {
+                    first.len()
+                } else {
+                    line.index_for_x(available).unwrap_or(0)
+                };
+                while !first.is_char_boundary(end) {
+                    end -= 1;
+                }
+                if end > 0 {
+                    reply_preview_first = Some(window.text_system().shape_line(
+                        first[..end].to_owned().into(),
+                        text_size,
+                        &[run(end)],
+                        None,
+                    ));
+                }
+                let remainder = if end == first.len() {
+                    suffix.get(end + 1..).unwrap_or_default()
+                } else {
+                    &suffix[end..]
+                };
+                if !remainder.is_empty() {
+                    reply_preview_rest = window
+                        .text_system()
+                        .shape_text(
+                            remainder.to_owned().into(),
+                            text_size,
+                            &[run(remainder.len())],
+                            Some(last_layout.content_width),
+                            None,
+                        )
+                        .unwrap_or_default()
+                        .into_vec();
+                }
+                let extra: usize = reply_preview_rest
+                    .iter()
+                    .map(|line| line.wrap_boundaries.len() + 1)
+                    .sum();
+                state
+                    .reply_preview_rows
+                    .set(state.display_map.wrap_row_count() + extra);
+            }
+        } else {
+            state.reply_preview_rows.set(0);
+        }
         last_layout.cursor_bounds = cursor_bounds;
 
         let search_match_paths = self.layout_search_matches(&last_layout, &mut bounds, cx);
@@ -1891,6 +1975,9 @@ impl Element for TextElement {
         let fold_icon_layout =
             self.layout_fold_icons(original_x, &bounds, &last_layout, window, cx);
 
+        if previous_preview_rows != self.state.read(cx).reply_preview_rows.get() {
+            cx.notify(self.state.entity_id());
+        }
         PrepaintState {
             bounds,
             last_layout,
@@ -1907,6 +1994,8 @@ impl Element for TextElement {
             document_color_paths,
             indent_guides_path,
             fold_icon_layout,
+            reply_preview_first,
+            reply_preview_rest,
             ghost_first_line,
             ghost_lines,
             ghost_lines_height,
@@ -2208,6 +2297,37 @@ impl Element for TextElement {
 
                     _ = first_line.paint(p, line_height, text_align, None, window, cx);
                 }
+            }
+        }
+
+        if let Some(cursor) = prepaint.cursor_bounds_with_scroll() {
+            // The caret is vertically centered inside the row; glyph painting
+            // starts at the row origin, not at the inset caret top.
+            let row_top = cursor.origin.y - (line_height - cursor.size.height) / 2.;
+            if let Some(line) = &prepaint.reply_preview_first {
+                let _ = line.paint(
+                    point(cursor.origin.x, row_top),
+                    line_height,
+                    TextAlign::Left,
+                    None,
+                    window,
+                    cx,
+                );
+            }
+            let mut preview_origin = point(
+                origin.x + prepaint.last_layout.line_number_width,
+                row_top + line_height,
+            );
+            for line in &prepaint.reply_preview_rest {
+                let _ = line.paint(
+                    preview_origin,
+                    line_height,
+                    TextAlign::Left,
+                    Some(input_bounds),
+                    window,
+                    cx,
+                );
+                preview_origin.y += (line.wrap_boundaries.len() + 1) as f32 * line_height;
             }
         }
 

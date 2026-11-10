@@ -1263,6 +1263,15 @@ pub struct CodexView {
     pub(super) file_browser: Entity<super::file_browser::FileBrowser>,
     markdown_decorations: TextDecorationCollection,
     markdown_source: Option<(String, u64, Vec<TextDecoration>)>,
+    next_reply_seen: Option<String>,
+    next_reply_request: Option<String>,
+    next_reply: grove_core::next_reply::Candidate,
+    next_reply_control: Option<grove_core::next_reply::JobControl>,
+    next_reply_task: Option<gpui::Task<()>>,
+    next_reply_generate: fn(
+        &grove_core::next_reply::Request,
+        &grove_core::commit_agent::CommitControl,
+    ) -> Result<Option<String>, String>,
     plan_answer: Option<PlanAnswerComposer>,
     native_plans: HashMap<(String, String), Entity<super::native_plan::NativePlan>>,
     pub(crate) description_scope: Option<grove_core::change_description::Scope>,
@@ -1796,6 +1805,7 @@ impl CodexView {
                     }
                     InputEvent::Blur => cx.notify(),
                     InputEvent::Change => {
+                        this.next_reply.edit(&this.input.read(cx).value());
                         this.clear_stop_confirmation(cx);
                         if this.plan_answer.is_some() {
                             this.persist_plan_answer_draft(cx);
@@ -1864,6 +1874,8 @@ impl CodexView {
                 this.clear_stop_confirmation(cx);
             }),
         );
+        let next_reply_seen =
+            grove_core::next_reply::Request::capture(&session.read(cx).state).map(|r| r.key);
         let mut view = Self {
             preview_child: None,
             history_readonly,
@@ -1876,6 +1888,12 @@ impl CodexView {
             review_scope: None,
             markdown_decorations,
             markdown_source: None,
+            next_reply_seen,
+            next_reply_request: None,
+            next_reply: grove_core::next_reply::Candidate::pending(),
+            next_reply_control: None,
+            next_reply_task: None,
+            next_reply_generate: grove_core::next_reply::Request::generate,
             input,
             reference,
             submitted_reference: None,
@@ -2179,6 +2197,7 @@ impl CodexView {
         }
     }
     fn begin_queue_edit(&mut self, id: u64, cx: &mut Context<Self>) {
+        self.dismiss_next_reply(cx);
         if self.plan_answer.is_some()
             || self.queue_editor.is_some()
             || self.submitted.is_some()
@@ -5029,6 +5048,7 @@ impl CodexView {
         cx.notify();
     }
     fn submit_mode(&mut self, mode: SubmissionMode, window: &mut Window, cx: &mut Context<Self>) {
+        self.dismiss_next_reply(cx);
         if self.plan_answer.is_some() {
             self.save_plan_answer(window, cx);
             return;
@@ -5127,6 +5147,133 @@ impl Focusable for CodexView {
         self.input.focus_handle(cx)
     }
 }
+impl CodexView {
+    fn next_reply_mode_eligible(&self, state: &codex::Snapshot) -> bool {
+        !self.transcript_only()
+            && !self.dashboard_pending
+            && self.dashboard_tray.is_none()
+            && self.plan_answer.is_none()
+            && self.queue_editor.is_none()
+            && self.submitted.is_none()
+            && !self.edit_request_pending
+            && self.edit_confirmation.is_none()
+            && state.saved.pending_edit.is_none()
+            && state.questions.is_empty()
+            && state.approvals.is_empty()
+            && state.elicitations.is_empty()
+            && state.queued_prompts.is_empty()
+            && !state.status.busy()
+            && self.images.is_empty()
+            && self.reference.is_none()
+            && self.pending_image_pastes == 0
+            && !self.pending_attachment_picker
+            && self.description_scope.is_none()
+            && self.review_scope.is_none()
+    }
+
+    fn dismiss_next_reply(&mut self, cx: &mut Context<Self>) {
+        self.next_reply.dismiss();
+        self.next_reply_request = None;
+        self.next_reply_control = None;
+        self.next_reply_task = None;
+        self.input.update(cx, |input, cx| {
+            input.set_reply_preview(None, c::FG_DIM(), cx)
+        });
+        cx.notify();
+    }
+
+    fn next_reply_text(&self, window: &Window, cx: &App) -> Option<String> {
+        let state = &self.session.read(cx).state;
+        let input = self.input.read(cx);
+        if self.next_reply_request.as_deref()
+            != grove_core::next_reply::Request::capture(state)
+                .as_ref()
+                .map(|r| r.key.as_str())
+            || !self.next_reply_mode_eligible(state)
+            || self.menu.is_some()
+            || self.popup.is_some()
+            || self.composer_collapsed
+            || !input.focus_handle(cx).is_focused(window)
+            || !input.reply_preview_eligible()
+            || self.suggestion_choices(state, cx).is_some()
+        {
+            return None;
+        }
+        self.next_reply.visible(&input.value()).map(str::to_owned)
+    }
+
+    fn accept_next_reply(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        let Some(text) = self.next_reply_text(window, cx) else {
+            return false;
+        };
+        self.dismiss_next_reply(cx);
+        self.input.update(cx, |input, cx| {
+            input.accept_reply_preview(text.into(), window, cx)
+        });
+        // Explicit replacements use silent input events; persist the actual accepted draft.
+        let draft = self.input.read(cx).value().to_string();
+        self.session
+            .update(cx, |session, cx| session.send(Action::Draft(draft), cx));
+        true
+    }
+
+    fn sync_next_reply(
+        &mut self,
+        state: &codex::Snapshot,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let request = grove_core::next_reply::Request::capture(state);
+        if self
+            .next_reply_request
+            .as_ref()
+            .is_some_and(|key| request.as_ref().is_none_or(|r| &r.key != key))
+            || (self.next_reply_request.is_some() && !self.next_reply_mode_eligible(state))
+        {
+            self.dismiss_next_reply(cx);
+        }
+        if let Some(request) = request.filter(|r| self.next_reply_seen.as_ref() != Some(&r.key)) {
+            self.next_reply_seen = Some(request.key.clone());
+            if self.next_reply_mode_eligible(state) && self.input.read(cx).value().is_empty() {
+                self.next_reply = grove_core::next_reply::Candidate::pending();
+                self.next_reply_request = Some(request.key.clone());
+                let control = grove_core::next_reply::JobControl::default();
+                let cancel = control.0.clone();
+                self.next_reply_control = Some(control);
+                let generate = self.next_reply_generate;
+                self.next_reply_task = Some(cx.spawn(async move |this, cx| {
+                    let key = request.key.clone();
+                    let result = cx
+                        .background_executor()
+                        .spawn(async move { generate(&request, &cancel) })
+                        .await;
+                    let _ = this.update(cx, |this, cx| {
+                        if this.next_reply_request.as_ref() == Some(&key) {
+                            this.next_reply_control = None;
+                            let result = match result {
+                                Ok(text) => text,
+                                Err(error) => {
+                                    tracing::debug!(%error, "Next reply generation unavailable");
+                                    None
+                                }
+                            };
+                            this.next_reply.resolve(result);
+                            cx.notify();
+                        }
+                    });
+                }));
+            }
+        }
+        self.next_reply.edit(&self.input.read(cx).value());
+        let preview = self
+            .next_reply_text(window, cx)
+            .map(gpui::SharedString::from);
+        self.input.update(cx, |input, cx| {
+            input.set_reply_preview(preview, c::FG_DIM(), cx)
+        });
+    }
+}
+
 impl Render for CodexView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         #[cfg(test)]
@@ -5320,6 +5467,9 @@ impl Render for CodexView {
             self.submitted = None;
             self.submitted_ack = None;
         }
+        // Submission receipts and restored/queued drafts must settle before
+        // deciding whether the newly completed response has an empty composer.
+        self.sync_next_reply(&state, window, cx);
         let optimistic_items: Vec<_> = self
             .bubble_entrances
             .iter()
@@ -6226,7 +6376,8 @@ impl Render for CodexView {
             )
             .capture_action(cx.listener(|this, _: &IndentInline, window, cx| {
                 if this.input.focus_handle(cx).is_focused(window)
-                    && this.accept_first_suggestion(window, cx)
+                    && (this.accept_first_suggestion(window, cx)
+                        || this.accept_next_reply(window, cx))
                 {
                     cx.stop_propagation();
                 } else {
@@ -6312,6 +6463,12 @@ impl Render for CodexView {
                     this.dismissed_suggestions = Some(this.input.read(cx).value().to_string());
                     this.input.focus_handle(cx).focus(window, cx);
                     cx.notify();
+                    cx.stop_propagation();
+                    return;
+                }
+                if event.keystroke.key == "escape" && this.next_reply_text(window, cx).is_some() {
+                    this.dismiss_next_reply(cx);
+                    window.prevent_default();
                     cx.stop_propagation();
                     return;
                 }
@@ -6651,6 +6808,7 @@ impl Render for CodexView {
                                     {
                                         return;
                                     }
+                                    this.dismiss_next_reply(cx);
                                     this.sync_composer_before_rewind(cx);
                                     this.edit_request_pending = true;
                                     this.rewind_attempt =
@@ -6792,6 +6950,17 @@ impl Render for CodexView {
                                     .text_color(c::FG())
                                     .p_0(),
                             )
+                            .when(self.next_reply_text(window, cx).is_some(), |field| {
+                                field.child(
+                                    div()
+                                        .id("next-reply-hint")
+                                        .debug_selector(|| "next-reply-hint".into())
+                                        .role(gpui::Role::Status)
+                                        .text_size(rpx(TEXT_MICRO))
+                                        .text_color(c::FG_DIM())
+                                        .child("Tab to use suggested reply · Esc to dismiss"),
+                                )
+                            })
                             .when(self.composer_collapsed, |field| {
                                 field.child(
                                     div()
@@ -15923,6 +16092,7 @@ mod tests {
         let (_, cx) = cx.add_window_view(|window, cx| {
             let session = cx.new(|cx| CodexSession::from_connection(snapshot(), connection, cx));
             let chat = cx.new(|cx| CodexView::new(session, window, cx));
+            chat.update(cx, |view, _| view.next_reply_generate = |_, _| Ok(None));
             view = Some(chat.clone());
             if shell_navigation {
                 let shell = cx.new(|_| ConversationNavigationFixture(chat));
@@ -21022,6 +21192,311 @@ mod tests {
                 draw(cx);
             }
         }
+    }
+
+    fn seed_next_reply(
+        view: &mut CodexView,
+        provider: codex::Provider,
+        draft: &str,
+        proposal: &str,
+        window: &mut Window,
+        cx: &mut Context<CodexView>,
+    ) {
+        view.dismiss_next_reply(cx);
+        view.session.update(cx, |session, _| {
+            session.state.saved.provider = provider;
+            session.state.status = Status::Done;
+            session.state.saved.items = vec![
+                json!({"id":"reply-user", "type":"userMessage", "content":[{"type":"inputText", "text":"Fix draft preservation."}]}),
+                json!({"id":"reply-agent", "type":"agentMessage", "text":"The fix is ready. I can add regression coverage for draft preservation."}),
+            ].into();
+        });
+        view.input.update(cx, |input, cx| {
+            input.set_value(draft, window, cx);
+            input.set_selected_range(draft.len()..draft.len(), cx);
+        });
+        view.input.focus_handle(cx).focus(window, cx);
+        let request =
+            grove_core::next_reply::Request::capture(&view.session.read(cx).state).unwrap();
+        view.next_reply_seen = Some(request.key.clone());
+        view.next_reply_request = Some(request.key);
+        view.next_reply = grove_core::next_reply::Candidate::pending();
+        view.next_reply.resolve(Some(proposal.into()));
+    }
+
+    #[gpui::test]
+    fn next_reply_tab_accepts_whole_reply_for_codex_and_claude(cx: &mut gpui::TestAppContext) {
+        let (view, cx, actions, _) = fixture(cx);
+        let proposal = "Add regression coverage for draft preservation.";
+        for provider in [codex::Provider::Codex, codex::Provider::Claude] {
+            cx.update(|window, cx| {
+                view.update(cx, |view, cx| {
+                    seed_next_reply(view, provider, "", proposal, window, cx)
+                })
+            });
+            draw(cx);
+            assert!(cx.debug_bounds("next-reply-hint").is_some());
+            assert_eq!(
+                view.read_with(cx, |view, cx| view.input.read(cx).value().to_string()),
+                ""
+            );
+            cx.simulate_input("Add regression");
+            draw(cx);
+            assert!(cx.debug_bounds("next-reply-hint").is_some());
+            cx.simulate_keystrokes("tab");
+            draw(cx);
+            assert_eq!(
+                view.read_with(cx, |view, cx| view.input.read(cx).value().to_string()),
+                proposal
+            );
+            view.read_with(cx, |view, cx| {
+                assert_eq!(
+                    view.input.read(cx).cursor(),
+                    proposal.len(),
+                    "Tab must leave the caret at the accepted reply end"
+                );
+                assert_eq!(
+                    view.input.read(cx).selected_range(),
+                    proposal.len()..proposal.len()
+                );
+            });
+            assert!(!actions
+                .try_iter()
+                .any(|action| matches!(action, Action::Submit { .. } | Action::Prompt(_))));
+            cx.simulate_keystrokes("ctrl-z");
+            draw(cx);
+            assert_eq!(
+                view.read_with(cx, |view, cx| view.input.read(cx).value().to_string()),
+                "Add regression"
+            );
+            assert!(cx.debug_bounds("next-reply-hint").is_none());
+        }
+    }
+
+    #[gpui::test]
+    fn next_reply_divergence_escape_and_stale_acceptance_preserve_draft(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (view, cx, actions, _) = fixture(cx);
+        for provider in [codex::Provider::Codex, codex::Provider::Claude] {
+            cx.update(|window, cx| {
+                view.update(cx, |view, cx| {
+                    seed_next_reply(view, provider, "", "Add regression coverage.", window, cx)
+                })
+            });
+            draw(cx);
+            cx.simulate_input("Add integration");
+            draw(cx);
+            assert!(cx.debug_bounds("next-reply-hint").is_none());
+            assert_eq!(
+                view.read_with(cx, |view, cx| view.input.read(cx).value().to_string()),
+                "Add integration"
+            );
+            cx.update(|window, cx| {
+                view.update(cx, |view, cx| {
+                    seed_next_reply(view, provider, "Add", "Add coverage.", window, cx)
+                })
+            });
+            draw(cx);
+            cx.simulate_keystrokes("escape");
+            draw(cx);
+            assert!(cx.debug_bounds("next-reply-hint").is_none());
+            cx.update(|window, cx| {
+                view.update(cx, |view, cx| {
+                    seed_next_reply(view, provider, "Add", "Add coverage.", window, cx);
+                    view.session
+                        .update(cx, |session, _| session.state.accepted_prompts += 1);
+                    assert!(
+                        !view.accept_next_reply(window, cx),
+                        "stale acceptance must fail before any render"
+                    );
+                    assert_eq!(view.input.read(cx).value().as_ref(), "Add");
+                })
+            });
+            assert!(!actions
+                .try_iter()
+                .any(|action| matches!(action, Action::Submit { .. } | Action::Prompt(_))));
+        }
+    }
+
+    #[gpui::test]
+    fn next_reply_completion_and_submission_ack_in_one_frame(cx: &mut gpui::TestAppContext) {
+        let (view, cx, _, _) = fixture(cx);
+        cx.update(|window, cx| {
+            view.update(cx, |view, cx| {
+                seed_next_reply(
+                    view,
+                    codex::Provider::Codex,
+                    "Fix draft preservation.",
+                    "Add regression coverage.",
+                    window,
+                    cx,
+                );
+                view.next_reply_seen = None;
+                view.next_reply_request = None;
+                view.submitted = Some("Fix draft preservation.".into());
+                view.submitted_ack = Some(42);
+                view.session.update(cx, |session, _| {
+                    session.state.accepted_submission = Some(42);
+                });
+                view.next_reply_generate = |_, _| Ok(Some("Add regression coverage.".into()));
+            })
+        });
+        draw(cx);
+        view.read_with(cx, |view, cx| {
+            assert!(view.submitted.is_none());
+            assert!(view.input.read(cx).value().is_empty());
+            assert!(
+                view.next_reply_request.is_some(),
+                "coalesced completion must start generation after clearing the submitted draft"
+            );
+        });
+    }
+
+    #[gpui::test]
+    fn next_reply_enter_does_not_submit_empty_ghost_and_selection_wins(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (view, cx, actions, _) = fixture(cx);
+        cx.update(|window, cx| {
+            view.update(cx, |view, cx| {
+                seed_next_reply(
+                    view,
+                    codex::Provider::Codex,
+                    "",
+                    "Add coverage.",
+                    window,
+                    cx,
+                )
+            })
+        });
+        draw(cx);
+        cx.simulate_keystrokes("enter");
+        draw(cx);
+        assert!(!actions
+            .try_iter()
+            .any(|action| matches!(action, Action::Submit { .. } | Action::Prompt(_))));
+        cx.update(|window, cx| {
+            view.update(cx, |view, cx| {
+                seed_next_reply(
+                    view,
+                    codex::Provider::Claude,
+                    "Add",
+                    "Add coverage.",
+                    window,
+                    cx,
+                );
+                view.input
+                    .update(cx, |input, cx| input.set_selected_range(0..3, cx));
+                assert!(!view.accept_next_reply(window, cx));
+                assert_eq!(view.input.read(cx).value().as_ref(), "Add");
+            })
+        });
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[ignore = "opens isolated native X11 next reply fixture"]
+    fn next_reply_native_capture() {
+        use gpui::AppContext as _;
+        struct ReplyQaContainer {
+            view: Entity<CodexView>,
+            width: gpui::Pixels,
+        }
+        impl Render for ReplyQaContainer {
+            fn render(
+                &mut self,
+                _window: &mut Window,
+                _cx: &mut Context<Self>,
+            ) -> impl IntoElement {
+                div()
+                    .flex()
+                    .flex_col()
+                    .w(self.width)
+                    .max_w_full()
+                    .h_full()
+                    .child(self.view.clone())
+            }
+        }
+        let output =
+            std::path::PathBuf::from(std::env::var("GROVE_NEXT_REPLY_CAPTURE_DIR").unwrap());
+        assert!(output.is_absolute());
+        std::fs::create_dir_all(&output).unwrap();
+        // A fresh process per state avoids stale X11 compositor frames after
+        // theme/zoom changes in an inactive QA window.
+        let selected_case = std::env::var("GROVE_NEXT_REPLY_CAPTURE_CASE")
+            .unwrap_or_else(|_| "codex-empty-dark".into());
+        assert!(matches!(
+            selected_case.as_str(),
+            "codex-empty-dark"
+                | "claude-prefix-light"
+                | "codex-narrow-prefix"
+                | "claude-multiline"
+                | "claude-zoom"
+        ));
+        gpui_platform::application().with_assets(crate::assets::Assets).run(move |cx| {
+            gpui_component::init(cx);
+            crate::fonts::register(cx).unwrap();
+            c::sync_component_theme(cx);
+            cx.set_reduce_motion(true);
+            let mut retained = None;
+            let mut retained_container = None;
+            let window = cx.open_window(gpui::WindowOptions {
+                window_bounds: Some(gpui::WindowBounds::Windowed(gpui::Bounds::new(gpui::point(gpui::px(20.), gpui::px(20.)), gpui::size(gpui::px(900.), gpui::px(700.))))),
+                ..Default::default()
+            }, |window, cx| {
+                window.set_window_title("Grove next reply QA");
+                let (handle, _actions) = Handle::channel();
+                let (_updates, receive) = mpsc::channel();
+                let session = cx.new(|cx| CodexSession::from_connection(snapshot(), Connection { handle, updates: receive.into() }, cx));
+                let chat = cx.new(|cx| CodexView::new(session, window, cx));
+                retained = Some(chat.clone());
+                let container = cx.new(|_| ReplyQaContainer { view: chat, width: gpui::px(600.) });
+                retained_container = Some(container.clone());
+                cx.new(|cx| gpui_component::Root::new(container, window, cx).bordered(false))
+            }).unwrap();
+            let view = retained.unwrap();
+            let container = retained_container.unwrap();
+            cx.activate(true);
+            cx.spawn(async move |cx| {
+                for (name, provider, draft, proposal, width, light, rem) in [
+                    ("codex-empty-dark", codex::Provider::Codex, "", "Add regression coverage for draft preservation.", 600., false, 16.),
+                    ("claude-prefix-light", codex::Provider::Claude, "Add regression", "Add regression coverage for draft preservation.", 600., true, 16.),
+                    ("codex-narrow-prefix", codex::Provider::Codex, "Add regression coverage for draft", "Add regression coverage for drafts and verify the original text remains unchanged when switching sessions.", 300., false, 16.),
+                    ("claude-multiline", codex::Provider::Claude, "Add regression coverage.\nThen", "Add regression coverage.\nThen verify draft preservation with both providers before opening a pull request.", 360., true, 16.),
+                    ("claude-zoom", codex::Provider::Claude, "Add regression", "Add regression coverage for draft preservation.", 360., true, 20.),
+                ] {
+                    if name != selected_case { continue; }
+                    cx.update_window(window.into(), |_, window, cx| {
+                        container.update(cx, |container, cx| { container.width = gpui::px(width); cx.notify(); });
+                        window.set_rem_size(gpui::px(rem));
+                        grove_core::theme::set_by_name(if light { c::DEFAULT_LIGHT_THEME } else { c::DEFAULT_DARK_THEME });
+                        c::sync_component_theme(cx);
+                        gpui_component::Theme::global_mut(cx).font_size = gpui::px(rem);
+                        view.update(cx, |view, cx| {
+                            seed_next_reply(view, provider, draft, proposal, window, cx);
+                            view.session.update(cx, |session, _| {
+                                session.state.model = Some(match provider { codex::Provider::Codex => "gpt-6.1-sol", codex::Provider::Claude => "sonnet" }.into());
+                                session.state.effort = Some("low".into());
+                                session.state.access = Some("read-only".into());
+                            });
+                        });
+                        window.refresh();
+                    }).unwrap();
+                    cx.background_executor().timer(std::time::Duration::from_millis(800)).await;
+                    cx.update_window(window.into(), |_, window, _| window.refresh()).unwrap();
+                    cx.background_executor().timer(std::time::Duration::from_millis(200)).await;
+                    assert!(std::process::Command::new("import").args(["-window", "Grove next reply QA"]).arg(output.join(format!("{name}.png"))).status().unwrap().success());
+                }
+                cx.update_window(window.into(), |_, window, _| { window.blur(); window.refresh(); }).unwrap();
+                cx.background_executor().timer(std::time::Duration::from_millis(200)).await;
+                cx.update_window(window.into(), |_, window, _| window.remove_window()).unwrap();
+                drop(view);
+                drop(container);
+                cx.background_executor().timer(std::time::Duration::from_millis(100)).await;
+                cx.update(|cx| cx.quit());
+            }).detach();
+        });
     }
 
     #[cfg(target_os = "linux")]
