@@ -10,6 +10,9 @@ verification records are evidence, not competing specifications.
 | Changing | Read |
 |---|---|
 | Native UI, navigation, controls, themes or interaction | [Design contract](design.md) and the [Grove UI skill](../.agents/skills/grove-ui/SKILL.md) |
+| Native UI implementation details and motion | [Native implementation](ui-implementation.md) |
+| Exploratory UI mocks and selected references | [Mocks and references](ui-mocks.md) |
+| UI acceptance and completion evidence | [UI acceptance](ui-acceptance.md) |
 | Plans, reports or change categories | [Feature behavior](features.md) |
 | GPUI APIs, state, async work or rendering | [Development guidance](development.md) |
 | A measured native/HTML component reference | [Reference workflow](ui-reference.md) |

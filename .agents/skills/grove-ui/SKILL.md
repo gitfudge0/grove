@@ -3,63 +3,51 @@ name: grove-ui
 description: Implement and review Grove native UI, including navigation, forms, menus, settings, transcript/composer, task docks, native plans, and HTML reports, against the shared design contract and affected interaction states.
 ---
 
-# Grove UI implementation
+# Grove UI
 
-Use the [product guidance index](../../../product/README.md) to locate feature
-behavior, development guidance and known verification gaps for the affected area.
+Before implementing, mocking, delegating or reviewing Grove UI, read the
+[product index](../../../product/README.md) and
+[design contract](../../../product/design.md). The contract owns UI invariants;
+current native owners supply exact geometry, colors and component behavior.
+Explicit user direction takes precedence over default guidance.
 
-Read [design contract](../../../product/design.md) before UI implementation or delegation. It owns approved hierarchy, semantics, interaction states, and exceptions; current tokens/theme/components own exact values. Explicit current user direction takes precedence; reconcile it with the contract rather than silently changing product direction.
+## Establish the target and scope
 
-## Establish the contract
+Record these in existing task state, proportionate to the change; settled choices
+need no reconfirmation, separate document or approval:
 
-Record the approved reference/direction, placement, content/exclusions, behavior/visibility, and acceptance checks in the existing task state. Settled decisions need no reconfirmation or separate artifact. Reconcile changed direction with completed and pending work, and propagate it to every worker before dependent work continues. Preserve the selected delivery endpoint and any no-install/stop instruction.
+- Exact screen/component and owning render path. For screenshot-driven work,
+  identify surrounding labels and distinguish similar headers, panels or controls
+  using source and available captures before editing. Ask only if material
+  ambiguity remains after inspection.
+- Selected reference/variant, placement, required content and exclusions.
+- Existing controls, options and interactions to preserve, and requested changes.
+  A visual redesign does not authorize replacing the underlying picker or flow.
+- Observable acceptance outcomes and the evidence needed to establish them.
+- Selected delivery endpoint and any no-install, stop or other user constraint.
 
-Inspect the owning native view plus [tokens](../../../src/views/tokens.rs), [theme](../../../src/theme.rs), [components](../../../src/views/components.rs), and [icons](../../../src/icons.rs). Match a screenshot/mock to these primitives; do not copy CSS values or invent GPUI APIs. Use the contract’s control decision table: complete dense/form action recipes, form/project field wells, question/settings controls, attached validation, selectable readonly values, and shared switches/tooltips/status marks. Do not fork their shape locally. Native vendor inputs inside owned wells require accessible names and the shared reset contract: `.appearance(false)`, `.bordered(false)`, `.focus_bordered(false)`, and `.p_0()`; the well owns fill, border, and validation. Check each helper’s interaction contract: where absent, the owner supplies a stable ID, focus/tab routing, keyboard activation, action handling, and enabled/disabled semantics.
+Research may reveal additional capabilities; it does not expand an approved
+interface. Keep findings separate from authorized display content. Reconcile new
+user direction with completed and pending work, update this task state, and
+propagate it to any workers before dependent work continues.
 
-Use DM Sans for application labels, forms, metadata, native diffs, and script editors. Use JetBrains Mono for terminal/Markdown code and preserve terminal cell metrics. Audit every configured font path, including vendor theme defaults, diagrams, embedded HTML and dynamically inserted markup; authored HTML font choices must normalize to DM Sans or JetBrains Mono while retaining monospace semantics. Keep platform glyph fallback for unsupported Unicode. Check the bundled font asset list and licenses, and remove replaced font assets. Keep existing type roles, semantic colors, stable border/focus treatment, and rem scaling. Prefer an existing recipe before adding a token; one-consumer dimensions are module constants. Preserve fixed trailing/header columns, purposeful selected and popover-anchor fills, transparent inline disclosures, and transient action press state.
+## Load the relevant procedure
 
-## Build from HTML references
+Read only the guides needed for the task. Implementation and review require the
+acceptance guide as well as the relevant implementation/reference procedure.
 
-For an HTML reference that will become native Grove UI, follow the [reference workflow](../../../product/ui-reference.md). Use its typed component document and native design-system export; do not infer dimensions, reconstruct controls from CSS or maintain a parallel palette. Ordinary exploratory HTML is not implementation-ready. Unsupported treatments require an extension in the existing native owner and its adapter/checks, rather than a local approximation.
-
-1. Record the selected direction, fixture content and required states in task state. Validate the document against the current native contract; resolve unsupported properties and glyphs before generation.
-2. Generate and compile the actual Rust composition. Keep application data, actions, focus ownership and provider/session identity in typed native bindings; do not inject source code into the document or fork a recipe's internals.
-3. Author the measured HTML in a new revision directory. Inspect the actual reference and record the selected revision under the task's existing authorization. `init` only bootstraps inputs; `render` requires an existing frozen measured reference. Neither is a CSS approximation path.
-4. Preserve the reference lock, HTML and measured payload. Capture candidates separately and run the read-only artifact check, then `ready`. A candidate must not update its own baseline. Changed design-system dependencies or intentional reference changes need a new explicit revision.
-5. Inspect paired geometry/raster evidence and exercise the affected native interactions. Require the authored semantic audit as well as matching images, so omitted or changed content cannot be mirrored into the reference. Report failed, unsupported and untested cells explicitly; never broaden a tolerance or regenerate the baseline to obtain a pass.
-
-The workflow's supported contexts and certification bounds are part of acceptance. Keep Codex and Claude fixture evidence separate from live provider checks, and identify actual platform coverage. Generated output and a certificate never replace the affected interaction checks below or authorize implementation beyond the current task.
-
-## Review interaction highlights
-
-Tooltips are opt-in, not a default control treatment. Add one only where it supplies needed context, identifies an otherwise ambiguous icon-only action, or exposes information that cannot be shown in place. Do not duplicate visible labels. Preserve accessible names independently, and use the shared tooltip surface when a tooltip is required. Check the owning view and explicit contract before retaining or adding one.
-
-Classify each affected target as an inline disclosure/link, bounded action, navigation or selectable option, popover anchor, field, or static metadata before styling it. Apply the interaction state table in `product/design.md`: expansion is not selection; inline disclosures stay transparent on hover and expansion, while keyboard focus remains independently visible. Keep a fill within the actual target and prevent nested actions from triggering unrelated highlights. Confirm disabled controls reject activation and active pointer feedback, and that release/cancel clears press feedback. Use shared semantic colors and recipes rather than local color or geometry forks.
-
-Inspect rest, pointer hover, keyboard focus, expanded/open, selected, pressed/released, disabled/loading, and relevant combinations in the actual native view. Exercise normal and narrow widths, long labels, light and dark themes, and changed rem zoom as relevant. Check that focus remains visible and unobscured, distinguishable against adjacent colors in every affected theme and selected state, and that visual state is also conveyed semantically. Document measured contrast and real native evidence; source inspection and fixture assertions alone do not establish visual compliance. Report unobserved provider and platform paths explicitly.
-
-## Choose motion deliberately
-
-For every new or changed UI, identify meaningful state changes and select the suitable shared motion before implementation. Use Make room when entering/exiting content displaces neighbors, restrained fades for transient surfaces/replacement, and state transitions for feedback. Cover both entrance and dismissal, retain passive exit content through collapse, and keep keys stable across redraws. Static treatment needs a concrete reason (reduced motion, unchanged content, or immediate input/focus/output/layout/resizing feedback). Check interruption, repeated updates, neighbor movement, and reduced-motion immediate endpoints without scheduled animation frames. Avoid decorative motion.
-
-## Choose the relevant checks
-
-Inspect the actual native rendering against the selected reference at normal and narrower widths, with long names where applicable. Check spacing, type, contrast, glyphs, clipping, and stable columns. Audit every button for a visible catalog icon, including custom controls, grouped preference buttons, button selectors, app-owned HTML actions, and disabled/loading states. Distinguish native radio/checkbox/switch controls and text links by their actual semantics; text-only buttons are violations. For text-and-icon buttons, including directional and custom actions: the icon must precede the label with the shared `SPACE_SM` gap. Measure rendered glyph/label bounds at default and changed rem zoom; disabled and loading states retain their leading slot. Distinguish buttons from non-button field indicators and metadata before moving trailing glyphs. Exercise the states changed by the task rather than every screen on every edit:
-
-| Change | Native acceptance checks |
+| Work | Required guide |
 |---|---|
-| Controls/forms/menus | Rest, hover, keyboard focus, selected/open, invalid, disabled, loading, and release; stable input/dropdown borders, component-owned keyboard focus, and reserved action slots; selectable readonly values; accessible names. |
-| Navigation/checkout/diff | Long titles yield to fixed actions/counts; tree/list/compact treatments remain distinct; narrow Checkout disclosure supports focus/Escape; loading stays in its row; destination and checkout identity remain correct. |
-| Tasks/composer/transcript | Expand/collapse, browse and compaction preserve preferences; minimap stays pane-anchored; session switches retain ownership; response Copy includes collapsed prose; hover/focus controls do not shift layout; rewind returns the selected message to the composer without sending, saved-draft swaps preserve text/images/references, and pending attachment work cannot cross a draft handoff. |
-| Source-attached confirmation | Actual trigger anchor, pane bounds, blocked background/HTML/scroll, contained Tab, Escape/Cancel focus restoration, incoming-update stability, message/thread identity. |
-| Settings | Scroll and category reset, reachable navigation, nested Back/Escape source focus, contained Tab, correct switch meaning. |
-| Native plans/reports/HTML | Plan section above Agents, latest revision per plan, row-to-peek pointer crossing/pinning, keyboard/Escape source focus, complete inline Markdown remains visible while the latest-revision Markdown peek is open, read-only peek and contextual decisions in inline/expanded views, custom answers through the existing composer with saved draft restoration and pending-save locking, workspace navigation retained on expansion, footer outside body scrolling at narrow/wide widths and zoom, explicit decision update versus finalized-revision approval with truthful unavailable/delivery states, exact update/approval payload and revision provenance, inert multiline authored text, linked HTML/return and external links, integrated-report theme/zoom, and motion updates without lost input/document state. |
-| Motion/keyboard routing | Native reduced-motion static endpoints without scheduled animation frames; HTML CSS/Web Animation suppression and cooperating scripts; type spaces into affected inputs; relevant shortcuts route to the owner. |
+| Native controls, layout, typography, interaction states or motion | [Native implementation](../../../product/ui-implementation.md) |
+| Exploratory mock creation/revision or implementation of a selected HTML reference | [Mocks and references](../../../product/ui-mocks.md); measured-reference work also uses its linked reference workflow |
+| Native implementation, review, verification or completion claims | [UI acceptance](../../../product/ui-acceptance.md), including the relevant surface checks and Codex/Claude evidence boundaries |
 
-For shared questions, approvals, tasks, subagents, or transcript behavior, name **Codex and Claude** in acceptance checks. Report each as verified, unsupported, or untested with the method or reason. Fixtures do not establish live provider-boundary behavior. Cover affected macOS/Linux/Windows paths when platform behavior changes; do not infer unobserved parity.
+For GPUI mechanics, use the pinned-source procedure in
+[development guidance](../../../product/development.md). Delivery follows
+[AGENTS.md](../../../AGENTS.md) and the task's explicit endpoint and constraints.
+Documentation/skill-only changes need neither build nor installation.
 
-## Verify and maintain
-
-Run relevant code checks and the conformance suite as required by [AGENTS.md](../../../AGENTS.md). A passing source check or worker claim cannot establish native UI correctness. Record the exact build/worktree observed, screenshot/interaction evidence, and passed, failed, or unobserved checks. Correct observed drift; if native inspection is blocked, state the blocker and unobserved checks without claiming verification. An isolated QA app may be used before the final installation; documentation/skill-only changes require neither build nor installation.
-
-Update `product/design.md` when an approved change adds or changes an invariant, and update this skill when its procedure or checks need to change. Restoring an already documented rule needs no redundant guidance edit. Keep rules semantic.
+Update the design contract only when an approved change alters an invariant.
+Update the owning procedure when its workflow or checks change; correcting a
+conformance violation does not require a new rule or exemption. Keep Claude's
+discovery entry forwarding here rather than duplicating procedures.
