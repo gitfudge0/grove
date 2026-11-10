@@ -1,11 +1,11 @@
 {
   "schema_version": 1,
   "design_system": "grove",
-  "contract_hash": "ba56a20e480dbc3d8f9d77c846ec58a644b1673c16211d9052bce4487a8f81eb",
+  "contract_hash": "b56f80797cfd80d8a74a2fe750a12b679e2bbd1fff9ce7cf311b78d0b0a0befa",
   "owners": {
     "build.rs": "817461b07a7d2e32f2c18329cbbf2314cb70ca97ff7a44a7c7cafd9b00deca00",
-    "native-engine": "02fcc9ff063cd2323e9487345ef9e657b77085f6ef1e083bc47604fda84c3ece",
-    "product/design.md": "8636546aba280f5e9cc62defd47e870c21379f4b6c1c0bc6aee6fae0a1b6103f",
+    "native-engine": "3138b358d52eaed8fc06434da71d3e114913c0a6f5b84dc887d5b24530202752",
+    "product/design.md": "bd8c3e587346cba303fce9038744741a5accd73eedfd3d6dab6ef355faea128e",
     "reference/compose": "04cd53d2ec55676cf3a356b4d353a6aa7cbd9bd4ba741b872098c6aff7bd07e6",
     "reference/contract": "be75d072404fec0184e3eecb813313a9059eb8b814a765e4ece33d0fe4286703",
     "reference/generate": "de581c807f193a786f63ad89dfc569b537791c8cbf7a8891bc2ac39869aba6fd",
@@ -21,16 +21,16 @@
     "resolved/src/views/tokens.rs": "26d9ffc0ad225335c8ca4a530017645733f5715a066974c074d31313b1684a12",
     "rust-toolchain": "819ed8387d66fc0d1c5a49a089ed161192ae699e99881b0675779e50d1f01c81",
     "src/fonts.rs": "99b2b6638e715a5c70eb9912cf98d6cfc3cb7f955c56de787008394ed9deab49",
-    "src/icons.rs": "3f501b8038dad8fbf472a13abdabbef2865b53ce7fa27908195c8aae6d8608a0",
-    "src/theme.rs": "125d011bcdca6cbd5915a898ff42879d1863a58d1f244dd5cfa8403742442773",
-    "src/views/components.rs": "176de9a04e5f7a5c9115b073d7e81060206bd80b960e43e51370c9547dba63c4",
-    "src/views/tokens.rs": "5df4a0612ab5cc8e2e0411d6ade4fce22ab9dceed9163165b9d454b857854792",
+    "src/icons.rs": "65cb3f037880c137ec038bfaf46cca640e3ffe6f786a2f317c8b829a3ca57ad7",
+    "src/theme.rs": "1be79c69fb0fb1d42e608549f082a364f2653739b4e10760217014ac360ec293",
+    "src/views/components.rs": "7ec5902ca7ff5e61430d2313c67c4cac9c5794a15afb91e21daf5043202be4d5",
+    "src/views/tokens.rs": "3259ea4882b22e439ac2b9fdca0e0f4897c652fc657d5fc8f15c2e38399274c0",
     "vendor/button": "1d5c4d36bc2737e7a6e34f30e862fa57878ac3b2507465099d1a17aed2e78749",
     "vendor/button_icon": "c06691783cc32da565c3caf88cd895840225e44b952403c16e92427509df3758",
     "vendor/icon": "5eff4a7bf6e088c290f796da09511943a172d26b9851924e331a0a7adf1a671a",
     "vendor/spinner": "2382b14913ad80f0493b03e92047b876fe80eabf2aa2182230eaa39273f0dfef",
     "vendor/styled": "7dc2d4bef4bdbf980f18d40f1a1c3149e391771da8e86ceda97d4b028fdfde60",
-    "workspace-manifest": "58a19e56d6c21f18e22fec9e60b6b16f9496177caccca3a5a65289910433d000"
+    "workspace-manifest": "a056201f149cc69ec7612c08d55f1fcc3f2fd615f4522b7f15d1a593d173d87b"
   },
   "fixture": {
     "viewport": {
