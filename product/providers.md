@@ -101,3 +101,20 @@ without repeated category queries. Idle time and redraws alone do not poll full
 counting. Errors/timeouts stay nonfatal; manual Refresh can retry. Category
 aggregation is presentation-only: original provider categories and child counts
 remain retained without fabricated attribution.
+
+## Suggested next replies
+
+Selected native conversation views can request one transient next-user-reply
+candidate after a newly observed successful completed response. These isolated,
+structured requests use `gpt-6-luna` for Codex and `haiku` for Claude regardless of
+the main session model, through existing CLI authentication. They consume provider
+usage but never enter the main conversation or perform repository actions.
+
+Input context is bounded to the latest user request and final assistant response;
+commentary, tools and reasoning are excluded. Codex jobs ignore user config and
+rules, disable hooks and integrations, and use a private cwd and read-only sandbox.
+Claude jobs disable tools, hooks, slash commands and session persistence. Model
+requests time out after 15 seconds; unavailable models/authentication, malformed
+output and cancellation leave normal typing usable without a user-facing error.
+Stale results are discarded and process cancellation follows the owning view.
+Candidates are not persisted, and typing only matches the fixed candidate locally.

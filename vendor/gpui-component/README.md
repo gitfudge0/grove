@@ -240,3 +240,9 @@ Applied to `ui/src` (source, not manifests):
     Input Escape unmarks active IME text and consumes that press, matching its
     existing completion/menu dismissal behavior. A containing view’s Escape
     shortcut only receives a later unhandled press.
+
+- **Whole-reply preview:** `ui/src/input/state.rs` and `element.rs` expose a
+  display-only full-reply proposal, paint its suffix from the actual shaped caret,
+  wrap remaining rows using native text metrics and reserve auto-grow/scroll space.
+  The proposal does not enter the editable buffer, selection, clipboard or undo
+  history. Explicit acceptance uses a separated undo group via `history.rs`.

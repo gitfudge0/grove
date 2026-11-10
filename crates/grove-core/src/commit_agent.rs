@@ -394,49 +394,80 @@ pub(crate) fn generate_json(
     schema_text: &str,
     cancel: &CommitControl,
 ) -> Result<serde_json::Value, String> {
+    generate_json_impl(provider, prompt, schema_text, cancel, MODEL_TIMEOUT, false)
+}
+
+/// The same isolated, lightweight transport with a caller-specific latency budget.
+pub(crate) fn generate_json_with_timeout(
+    provider: Provider,
+    prompt: &str,
+    schema_text: &str,
+    cancel: &CommitControl,
+    timeout: Duration,
+) -> Result<serde_json::Value, String> {
+    generate_json_impl(provider, prompt, schema_text, cancel, timeout, true)
+}
+
+fn generate_json_impl(
+    provider: Provider,
+    prompt: &str,
+    schema_text: &str,
+    cancel: &CommitControl,
+    timeout: Duration,
+    strict: bool,
+) -> Result<serde_json::Value, String> {
     // An empty private cwd avoids loading checkout instruction files or exposing repository tools.
     let temporary = tempfile::tempdir().map_err(|_| "Could not prepare commit assistant")?;
     let text = match provider {
         Provider::Codex => {
-            let discovery = [
-                "--config",
-                "features.plugins=false",
-                "--config",
-                "features.apps=false",
-                "mcp",
-                "list",
-                "--json",
-            ]
-            .into_iter()
-            .map(str::to_owned)
-            .collect::<Vec<_>>();
-            let output = launch(provider, &discovery, temporary.path(), "", Duration::from_secs(10), cancel)
+            let servers = if strict {
+                Vec::new()
+            } else {
+                let discovery = [
+                    "--config",
+                    "features.plugins=false",
+                    "--config",
+                    "features.apps=false",
+                    "mcp",
+                    "list",
+                    "--json",
+                ]
+                .into_iter()
+                .map(str::to_owned)
+                .collect::<Vec<_>>();
+                let output = launch(provider, &discovery, temporary.path(), "", Duration::from_secs(10), cancel)
                 .map_err(|_| if cancel.canceled() { "Commit canceled" } else { "Could not safely inspect Codex integrations. Check your Codex configuration and retry" })?;
-            let servers = enabled_servers(&output)?;
+                enabled_servers(&output)?
+            };
             let schema = temporary.path().join("schema.json");
             let output = temporary.path().join("message.json");
             fs_err::write(&schema, schema_text).map_err(|_| "Could not prepare commit schema")?;
-            launch(
-                provider,
-                &codex_args(&schema, &output, &servers),
-                temporary.path(),
-                prompt,
-                MODEL_TIMEOUT,
-                cancel,
-            )?;
+            let mut args = codex_args(&schema, &output, &servers);
+            if strict {
+                args.insert(0, "--no-daemon".into());
+                args.splice(
+                    2..2,
+                    ["--strict-config", "--ignore-user-config", "--ignore-rules"]
+                        .map(str::to_owned),
+                );
+                for feature in ["hooks", "browser_use", "computer_use", "code_mode_host"] {
+                    let index = args.len() - 1;
+                    args.splice(index..index, ["--disable".into(), feature.into()]);
+                }
+            }
+            launch(provider, &args, temporary.path(), prompt, timeout, cancel)?;
             let file = fs_err::File::open(&output).map_err(|_| {
                 "Codex did not return a commit message. Retry after checking provider access"
             })?;
             read_bounded(file)?
         }
-        Provider::Claude => launch(
-            provider,
-            &claude_args_with_schema(schema_text),
-            temporary.path(),
-            prompt,
-            MODEL_TIMEOUT,
-            cancel,
-        )?,
+        Provider::Claude => {
+            let mut args = claude_args_with_schema(schema_text);
+            if strict {
+                args.push("--safe-mode".into());
+            }
+            launch(provider, &args, temporary.path(), prompt, timeout, cancel)?
+        }
     };
     let value: serde_json::Value = serde_json::from_str(&text)
         .map_err(|_| "Commit assistant returned invalid structured output")?;
