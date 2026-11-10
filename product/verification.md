@@ -36,6 +36,18 @@ remain untested.
 
 ## Session context panel
 
+Model-selection label correction: Codex identity now follows the composer
+override/configured model rather than the model saved with occupancy. The
+focused regression covers Terra-to-Sol selection, configured-model reset,
+saved-measurement fallback, unchanged occupancy/metadata, and preservation of
+Claude's measured model identity. Four panel tests and all 33 UI conformance
+checks passed on Linux. The isolated native capture test passed; Codex Dark
+and Claude Light with increased zoom were visually inspected using saved-session
+fixtures. Those captures establish card rendering, not a live model switch.
+Live Codex and Claude provider switching and native picker interaction remain
+untested for this correction; macOS and Windows were not exercised. No local
+installation was performed, following the explicitly invoked shipping skill.
+
 The simplified variant-C card shows occupancy for Codex and up to five used
 category bars for Claude: Messages, System prompt, Tools & MCP instructions,
 Memory files, and Skills & agents. Category percentages, nested details,

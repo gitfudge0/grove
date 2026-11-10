@@ -537,6 +537,10 @@ The existing composer meter remains compact. Data and refresh actions belong to
 the selected provider session; switching sessions must never reuse another
 session’s measurement.
 
+Codex’s model identity follows the composer’s selected model, falling back to
+the configured model and then the saved measurement when unresolved. Selecting
+a model does not relabel or recalculate the stored occupancy measurement.
+
 Claude’s “What uses context” summary contains up to five top-level rows in this
 order: Messages, System prompt, Tools & MCP instructions, Memory files, and
 Skills & agents. Tools combines reported system-tool definitions, MCP-tool
