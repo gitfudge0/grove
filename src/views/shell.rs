@@ -2876,7 +2876,7 @@ mod tests {
         cx.simulate_click(project.center(), gpui::Modifiers::default());
         draw(cx);
         let menu = cx
-            .debug_bounds("project-menu-0")
+            .debug_bounds("projects-manage-0")
             .expect("project menu")
             .center();
         cx.simulate_mouse_down(menu, MouseButton::Left, gpui::Modifiers::default());

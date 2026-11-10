@@ -21372,16 +21372,48 @@ mod tests {
     #[ignore = "opens isolated native X11 next reply fixture"]
     fn next_reply_native_capture() {
         use gpui::AppContext as _;
+        struct ReplyQaContainer {
+            view: Entity<CodexView>,
+            width: gpui::Pixels,
+        }
+        impl Render for ReplyQaContainer {
+            fn render(
+                &mut self,
+                _window: &mut Window,
+                _cx: &mut Context<Self>,
+            ) -> impl IntoElement {
+                div()
+                    .flex()
+                    .flex_col()
+                    .w(self.width)
+                    .max_w_full()
+                    .h_full()
+                    .child(self.view.clone())
+            }
+        }
         let output =
             std::path::PathBuf::from(std::env::var("GROVE_NEXT_REPLY_CAPTURE_DIR").unwrap());
         assert!(output.is_absolute());
         std::fs::create_dir_all(&output).unwrap();
+        // A fresh process per state avoids stale X11 compositor frames after
+        // theme/zoom changes in an inactive QA window.
+        let selected_case = std::env::var("GROVE_NEXT_REPLY_CAPTURE_CASE")
+            .unwrap_or_else(|_| "codex-empty-dark".into());
+        assert!(matches!(
+            selected_case.as_str(),
+            "codex-empty-dark"
+                | "claude-prefix-light"
+                | "codex-narrow-prefix"
+                | "claude-multiline"
+                | "claude-zoom"
+        ));
         gpui_platform::application().with_assets(crate::assets::Assets).run(move |cx| {
             gpui_component::init(cx);
             crate::fonts::register(cx).unwrap();
             c::sync_component_theme(cx);
             cx.set_reduce_motion(true);
             let mut retained = None;
+            let mut retained_container = None;
             let window = cx.open_window(gpui::WindowOptions {
                 window_bounds: Some(gpui::WindowBounds::Windowed(gpui::Bounds::new(gpui::point(gpui::px(20.), gpui::px(20.)), gpui::size(gpui::px(900.), gpui::px(700.))))),
                 ..Default::default()
@@ -21392,21 +21424,36 @@ mod tests {
                 let session = cx.new(|cx| CodexSession::from_connection(snapshot(), Connection { handle, updates: receive.into() }, cx));
                 let chat = cx.new(|cx| CodexView::new(session, window, cx));
                 retained = Some(chat.clone());
-                cx.new(|cx| gpui_component::Root::new(chat, window, cx).bordered(false))
+                let container = cx.new(|_| ReplyQaContainer { view: chat, width: gpui::px(600.) });
+                retained_container = Some(container.clone());
+                cx.new(|cx| gpui_component::Root::new(container, window, cx).bordered(false))
             }).unwrap();
             let view = retained.unwrap();
+            let container = retained_container.unwrap();
+            cx.activate(true);
             cx.spawn(async move |cx| {
-                for (name, provider, draft, proposal, width, light) in [
-                    ("codex-empty-dark", codex::Provider::Codex, "", "Add regression coverage for draft preservation.", 900., false),
-                    ("claude-prefix-light", codex::Provider::Claude, "Add regression", "Add regression coverage for draft preservation.", 900., true),
-                    ("codex-narrow-prefix", codex::Provider::Codex, "Add regression coverage for draft preserv", "Add regression coverage for draft preservation and verify the original draft remains unchanged when switching sessions.", 420., false),
-                    ("claude-multiline", codex::Provider::Claude, "Add regression coverage.\nThen", "Add regression coverage.\nThen verify draft preservation with both providers before opening a pull request.", 480., true),
+                for (name, provider, draft, proposal, width, light, rem) in [
+                    ("codex-empty-dark", codex::Provider::Codex, "", "Add regression coverage for draft preservation.", 600., false, 16.),
+                    ("claude-prefix-light", codex::Provider::Claude, "Add regression", "Add regression coverage for draft preservation.", 600., true, 16.),
+                    ("codex-narrow-prefix", codex::Provider::Codex, "Add regression coverage for draft preserv", "Add regression coverage for draft preservation and verify the original draft remains unchanged when switching sessions.", 300., false, 16.),
+                    ("claude-multiline", codex::Provider::Claude, "Add regression coverage.\nThen", "Add regression coverage.\nThen verify draft preservation with both providers before opening a pull request.", 360., true, 16.),
+                    ("claude-zoom", codex::Provider::Claude, "Add regression", "Add regression coverage for draft preservation.", 360., true, 20.),
                 ] {
+                    if name != selected_case { continue; }
                     cx.update_window(window.into(), |_, window, cx| {
-                        window.resize(gpui::size(gpui::px(width), gpui::px(700.)));
+                        container.update(cx, |container, cx| { container.width = gpui::px(width); cx.notify(); });
+                        window.set_rem_size(gpui::px(rem));
                         grove_core::theme::set_by_name(if light { c::DEFAULT_LIGHT_THEME } else { c::DEFAULT_DARK_THEME });
                         c::sync_component_theme(cx);
-                        view.update(cx, |view, cx| seed_next_reply(view, provider, draft, proposal, window, cx));
+                        gpui_component::Theme::global_mut(cx).font_size = gpui::px(rem);
+                        view.update(cx, |view, cx| {
+                            seed_next_reply(view, provider, draft, proposal, window, cx);
+                            view.session.update(cx, |session, _| {
+                                session.state.model = Some(match provider { codex::Provider::Codex => "gpt-6.1-sol", codex::Provider::Claude => "sonnet" }.into());
+                                session.state.effort = Some("low".into());
+                                session.state.access = Some("read-only".into());
+                            });
+                        });
                         window.refresh();
                     }).unwrap();
                     cx.background_executor().timer(std::time::Duration::from_millis(800)).await;
@@ -21414,7 +21461,12 @@ mod tests {
                     cx.background_executor().timer(std::time::Duration::from_millis(200)).await;
                     assert!(std::process::Command::new("import").args(["-window", "Grove next reply QA"]).arg(output.join(format!("{name}.png"))).status().unwrap().success());
                 }
+                cx.update_window(window.into(), |_, window, _| { window.blur(); window.refresh(); }).unwrap();
+                cx.background_executor().timer(std::time::Duration::from_millis(200)).await;
                 cx.update_window(window.into(), |_, window, _| window.remove_window()).unwrap();
+                drop(view);
+                drop(container);
+                cx.background_executor().timer(std::time::Duration::from_millis(100)).await;
                 cx.update(|cx| cx.quit());
             }).detach();
         });

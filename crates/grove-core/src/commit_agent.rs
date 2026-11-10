@@ -238,6 +238,12 @@ fn run(
             unsafe {
                 libc::kill(-(child.id() as i32), libc::SIGKILL);
             }
+            #[cfg(windows)]
+            let _ = Command::new("taskkill")
+                .args(["/PID", &child.id().to_string(), "/T", "/F"])
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status();
             let _ = child.kill();
             let _ = child.wait();
             if cancel.canceled() {
@@ -278,6 +284,12 @@ fn run(
                 unsafe {
                     libc::kill(-(child.id() as i32), libc::SIGKILL);
                 }
+                #[cfg(windows)]
+                let _ = Command::new("taskkill")
+                    .args(["/PID", &child.id().to_string(), "/T", "/F"])
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .status();
                 let _ = child.kill();
                 let _ = child.wait();
                 return Err(
