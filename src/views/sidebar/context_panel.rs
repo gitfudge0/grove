@@ -10,6 +10,25 @@ const REFRESH_W: f32 = 28.;
 /// Quiet measurement provenance, smaller than the category rows.
 const FOOTER_TEXT: f32 = 10.;
 
+fn context_model(state: &provider::Snapshot) -> Option<&str> {
+    let measured = state
+        .saved
+        .context_details
+        .as_ref()
+        .and_then(|d| d.model.as_deref());
+    if state.saved.provider == Provider::Codex {
+        // Usage snapshots retain the thread's original model after a per-turn override.
+        // Identity follows the same selection as the composer; occupancy stays measured.
+        state
+            .model
+            .as_deref()
+            .or(state.resolved_model.as_deref())
+            .or(measured)
+    } else {
+        measured
+    }
+}
+
 #[derive(Default)]
 pub(super) struct ContextPanel {
     observer: Option<(gpui::EntityId, gpui::Subscription)>,
@@ -319,7 +338,7 @@ impl Sidebar {
             ContextMeasurement::Estimate => "Estimated breakdown",
             ContextMeasurement::ProviderUsage => "",
         });
-        let model = details.and_then(|d| d.model.as_deref());
+        let model = context_model(&state);
         let provenance = if (usage.is_some() || details.is_some())
             && (disconnected || !state.context_measurement_live)
         {
@@ -631,6 +650,46 @@ mod tests {
             entries: vec![],
         });
         assert_eq!(summary_categories(&details), vec![("Messages", 0)]);
+    }
+
+    #[test]
+    fn context_model_follows_codex_selection_without_relabeling_claude_measurements() {
+        let mut state = provider::Snapshot::new(SavedSession::empty(
+            "model-switch".into(),
+            Provider::Codex,
+            String::new(),
+            "/tmp".into(),
+        ));
+        state.saved.context = Some(ContextUsage {
+            used: 85000,
+            window: 475000,
+        });
+        state.saved.context_details = Some(ContextDetails {
+            model: Some("gpt-6.1-terra".into()),
+            measured_at: 1,
+            source: ContextMeasurement::ProviderUsage,
+            categories: Vec::new(),
+            accounting: None,
+            auto_compact_enabled: None,
+            auto_compact_threshold: None,
+        });
+        let measurement = state.saved.context_details.clone();
+        let usage = state.saved.context;
+        assert_eq!(context_model(&state), Some("gpt-6.1-terra"));
+        state.resolved_model = Some("gpt-6.1-terra".into());
+        state.model = Some("gpt-6.1-sol".into());
+        assert_eq!(context_model(&state), Some("gpt-6.1-sol"));
+        assert_eq!(state.saved.context_details, measurement);
+        assert_eq!(state.saved.context, usage);
+        state.model = None;
+        state.resolved_model = Some("configured-model".into());
+        assert_eq!(context_model(&state), Some("configured-model"));
+        state.saved.provider = Provider::Claude;
+        state.model = Some("sonnet".into());
+        state.saved.context_details.as_mut().unwrap().model = Some("claude-sonnet-resolved".into());
+        assert_eq!(context_model(&state), Some("claude-sonnet-resolved"));
+        state.saved.context_details = None;
+        assert_eq!(context_model(&state), None);
     }
 
     #[gpui::test]
