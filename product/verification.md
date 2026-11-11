@@ -663,12 +663,13 @@ GUI-environment failures; those are not established as fixed by focused feature
 checks. Formatting, compilation and repository-artifact policy remain delivery
 checks; focused suites do not imply a green full workspace.
 
-Transcript file-link explorer visibility: the shared sidebar routes preserve the
-user's explorer and side-panel choices while opening the file viewer. The Linux
-GPUI regression exercises Codex and Claude session fixtures and the native
-browser-to-transcript event chain with the explorer hidden and shown. Live Codex
-and Claude provider-boundary checks, native pointer/keyboard and screenshot QA,
-and macOS/Windows checks remain untested for this change.
+Transcript file-link explorer visibility: the shared sidebar now opens the owning
+explorer with a file viewer and returns to the side panel when the viewer closes.
+Regression fixtures cover Codex and Claude browser-to-transcript event routing,
+initially hidden/shown explorer states, and nested-file ancestor expansion without
+broadening the root for outside-checkout links. Live Codex and Claude provider
+checks and native pointer/keyboard/screenshot QA remain untested for this change;
+fixture assertions do not establish those outcomes.
 
 ## Built-in prompt customization and richer descriptions
 

@@ -10087,7 +10087,16 @@ for line in sys.stdin:
         fs_err::write(&file, "# Review").unwrap();
         cx.update(|cx| {
             gpui_component::init(cx);
-            cx.set_global(SettingsState::new(grove_core::storage::Store::default()));
+            cx.set_global(SettingsState::new(grove_core::storage::Store {
+                projects: vec![grove_core::storage::Project {
+                    name: "Layout fixture".into(),
+                    path: path.into(),
+                    scripts: grove_core::storage::ProjectScripts::default(),
+                    archived: false,
+                    worktree_dir: None,
+                }],
+                ..Default::default()
+            }));
             cx.set_global(crate::zoom::CurrentPtyDims::default());
             cx.set_global(crate::zoom::ZoomState::new(1.0));
             cx.set_global(crate::theme::ThemeState::new(
@@ -10123,12 +10132,14 @@ for line in sys.stdin:
                     sidebar.codex_views.remove(&id);
                     sidebar.open_activity_link(id, &format!("{}:1", file.display()), window, cx);
                     assert_eq!(sidebar.selected_session(), Some(id));
-                    assert!(!sidebar.files_active);
-                    assert!(sidebar.files_owner.is_none());
+                    // Browser events propagate after this update completes.
                     let view = sidebar.codex_views[&id].read(cx);
                     let browser = view.file_browser.read(cx);
                     assert!(browser.visible);
-                    assert_eq!(browser.target.as_ref().unwrap().path, file);
+                    assert_eq!(
+                        browser.target.as_ref().unwrap().path,
+                        file.canonicalize().unwrap()
+                    );
                     assert_eq!(browser.target.as_ref().unwrap().line, Some(1));
                 }
                 let selection = sidebar.selection.clone();
@@ -10146,11 +10157,14 @@ for line in sys.stdin:
             for id in ids {
                 cx.update(|window, cx| {
                     sidebar.update(cx, |sidebar, cx| {
-                        sidebar.selection = Some(Selection::Session(id));
+                        let browser = sidebar.codex_views[&id].read(cx).file_browser.clone();
+                        // Reset activity-link viewers before exercising a fresh
+                        // open from this session's actual focused transcript.
+                        browser.update(cx, |browser, cx| browser.close(window, cx));
+                        sidebar.navigate_to_session(id, window, cx);
                         sidebar.files_active = active;
                         sidebar.files_owner = sidebar.selection.clone();
                         sidebar.checkout_panel.hidden = true;
-                        let browser = sidebar.codex_views[&id].read(cx).file_browser.clone();
                         browser.update(cx, |browser, cx| {
                             browser.open(
                                 super::super::file_browser::local_target(
@@ -10166,12 +10180,47 @@ for line in sys.stdin:
                 });
                 cx.run_until_parked();
                 sidebar.read_with(cx, |sidebar, _| {
-                    assert_eq!(sidebar.files_active, active);
-                    assert!(sidebar.checkout_panel.hidden);
+                    assert_eq!(sidebar.selected_session(), Some(id));
+                    assert!(sidebar.files_active);
+                    assert!(!sidebar.checkout_panel.hidden);
                     assert_eq!(sidebar.files_owner, Some(Selection::Session(id)));
+                });
+                cx.update(|window, cx| {
+                    let browser = sidebar.read(cx).codex_views[&id]
+                        .read(cx)
+                        .file_browser
+                        .clone();
+                    browser.update(cx, |browser, cx| browser.close(window, cx));
+                });
+                cx.run_until_parked();
+                sidebar.read_with(cx, |sidebar, _| {
+                    assert_eq!(sidebar.selected_session(), Some(id));
+                    assert!(!sidebar.files_active);
+                    assert!(!sidebar.checkout_panel.hidden);
+                    assert!(sidebar.checkout_panel.side_chat_owner.is_none());
                 });
             }
         }
+        // Events from a background session cannot change the visible destination.
+        cx.update(|window, cx| {
+            sidebar.update(cx, |sidebar, cx| {
+                let selected = sidebar.selected_session().unwrap();
+                let other = *sidebar
+                    .codex_views
+                    .keys()
+                    .find(|id| **id != selected)
+                    .unwrap();
+                sidebar.files_active = true;
+                sidebar.checkout_panel.hidden = true;
+                let browser = sidebar.codex_views[&other].read(cx).file_browser.clone();
+                browser.update(cx, |browser, cx| browser.close(window, cx));
+            });
+        });
+        cx.run_until_parked();
+        sidebar.read_with(cx, |sidebar, _| {
+            assert!(sidebar.files_active);
+            assert!(sidebar.checkout_panel.hidden);
+        });
         assert_eq!(
             cx.opened_url().as_deref(),
             Some("https://example.com/report")

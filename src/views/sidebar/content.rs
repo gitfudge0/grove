@@ -731,9 +731,18 @@ impl Sidebar {
                 }
                 CodexViewEvent::ScriptLaunched => this.snippet_launched(id, cx),
                 CodexViewEvent::FileOpened if matches!(this.selection, Some(Selection::Session(selected) | Selection::Home(selected)) if selected == id) => {
-                    // Opening a viewer must preserve the user's panel choices.
+                    this.files_active = true;
+                    this.files_owner = this.selection.clone();
+                    this.checkout_panel.hidden = false;
+                    this.checkout_panel.side_chat_owner = None;
                     this.hide_review();
                     this.dismiss_description();
+                    cx.notify();
+                }
+                CodexViewEvent::FileClosed if matches!(this.selection, Some(Selection::Session(selected) | Selection::Home(selected)) if selected == id) => {
+                    this.files_active = false;
+                    this.checkout_panel.hidden = false;
+                    this.checkout_panel.side_chat_owner = None;
                     cx.notify();
                 }
                 _ => {}

@@ -1248,6 +1248,7 @@ pub(crate) enum CodexViewEvent {
     ForkRequested(usize, bool),
     ScriptLaunched,
     FileOpened,
+    FileClosed,
 }
 impl gpui::EventEmitter<CodexViewEvent> for CodexView {}
 
@@ -1842,9 +1843,14 @@ impl CodexView {
             cx.new(|cx| super::file_browser::FileBrowser::new(cwd.clone(), window, cx));
         subscriptions.push(cx.observe(&file_browser, |_, _, cx| cx.notify()));
         subscriptions.push(cx.subscribe(&file_browser, |this, _, event, cx| {
-            if matches!(event, super::file_browser::FileBrowserEvent::Opened) {
-                this.close_menu(cx);
-                cx.emit(CodexViewEvent::FileOpened);
+            match event {
+                super::file_browser::FileBrowserEvent::Opened => {
+                    this.close_menu(cx);
+                    cx.emit(CodexViewEvent::FileOpened);
+                }
+                super::file_browser::FileBrowserEvent::Closed => {
+                    cx.emit(CodexViewEvent::FileClosed)
+                }
             }
             cx.notify();
         }));
