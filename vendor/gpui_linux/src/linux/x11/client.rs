@@ -42,6 +42,7 @@ use xim::{AttributeName, Client, InputStyle, x11rb::X11rbClient};
 use xkbc::x11::ffi::{XKB_X11_MIN_MAJOR_XKB_VERSION, XKB_X11_MIN_MINOR_XKB_VERSION};
 use xkbcommon::xkb::{self as xkbc, STATE_LAYOUT_EFFECTIVE};
 
+use super::scale::{GPUI_X11_SCALE_FACTOR_ENV, select_scale, valid_scale_factor};
 use super::{
     ButtonOrScroll, ScrollDirection, X11Display, X11WindowStatePtr, XcbAtoms, XimCallbackEvent,
     XimHandler, button_or_scroll_from_event_detail, check_reply,
@@ -77,8 +78,6 @@ pub(crate) const XINPUT_ALL_DEVICES: xinput::DeviceId = 0;
 /// In XInput 2's interface, these are referred to as "master devices", but that
 /// terminology is both archaic and unclear.
 pub(crate) const XINPUT_ALL_DEVICE_GROUPS: xinput::DeviceId = 1;
-
-const GPUI_X11_SCALE_FACTOR_ENV: &str = "GPUI_X11_SCALE_FACTOR";
 
 pub(crate) struct WindowRef {
     window: X11WindowStatePtr,
@@ -2521,85 +2520,33 @@ fn create_invisible_cursor(
     Ok(cursor)
 }
 
-enum DpiMode {
-    Randr,
-    Scale(f32),
-    NotSet,
-}
-
 fn get_scale_factor(
     connection: &XCBConnection,
     resource_database: &Database,
     screen_index: usize,
 ) -> f32 {
-    let env_dpi = std::env::var(GPUI_X11_SCALE_FACTOR_ENV)
+    let explicit = std::env::var(GPUI_X11_SCALE_FACTOR_ENV).ok();
+    let gdk_scale = std::env::var("GDK_SCALE").ok();
+    // Keep the raw resource so malformed desktop values are diagnosed too.
+    // TODO: Use scale factor from XSettings here.
+    let xft_dpi = resource_database
+        .get_value::<String>("Xft.dpi", "Xft.dpi")
         .ok()
-        .map(|var| {
-            if var.to_lowercase() == "randr" {
-                DpiMode::Randr
-            } else if let Ok(scale) = var.parse::<f32>() {
-                if valid_scale_factor(scale) {
-                    DpiMode::Scale(scale)
-                } else {
-                    panic!(
-                        "`{}` must be a positive normal number or `randr`. Got `{}`",
-                        GPUI_X11_SCALE_FACTOR_ENV, var
-                    );
-                }
-            } else if var.is_empty() {
-                DpiMode::NotSet
-            } else {
-                panic!(
-                    "`{}` must be a positive number or `randr`. Got `{}`",
-                    GPUI_X11_SCALE_FACTOR_ENV, var
-                );
-            }
-        })
-        .unwrap_or(DpiMode::NotSet);
-
-    match env_dpi {
-        DpiMode::Scale(scale) => {
-            log::info!(
-                "Using scale factor from {}: {}",
-                GPUI_X11_SCALE_FACTOR_ENV,
-                scale
-            );
-            return scale;
-        }
-        DpiMode::Randr => {
-            if let Some(scale) = get_randr_scale_factor(connection, screen_index) {
-                log::info!(
-                    "Using RandR scale factor from {}=randr: {}",
-                    GPUI_X11_SCALE_FACTOR_ENV,
-                    scale
-                );
-                return scale;
-            }
-            log::warn!("Failed to calculate RandR scale factor, falling back to default");
-            return 1.0;
-        }
-        DpiMode::NotSet => {}
-    }
-
-    // TODO: Use scale factor from XSettings here
-
-    if let Some(dpi) = resource_database
-        .get_value::<f32>("Xft.dpi", "Xft.dpi")
-        .ok()
-        .flatten()
-    {
-        let scale = dpi / 96.0; // base dpi
-        log::info!("Using scale factor from Xft.dpi: {}", scale);
-        return scale;
-    }
-
-    if let Some(scale) = get_randr_scale_factor(connection, screen_index) {
-        log::info!("Using RandR scale factor: {}", scale);
-        return scale;
-    }
-
-    log::info!("Using default scale factor: 1.0");
-    1.0
+        .flatten();
+    let selected = select_scale(
+        explicit.as_deref(),
+        gdk_scale.as_deref(),
+        xft_dpi.as_deref(),
+        || get_randr_scale_factor(connection, screen_index),
+        |warning| log::warn!("{warning}"),
+    )
+    .unwrap_or_else(|error| panic!("{error}"));
+    log::info!(
+        "Using scale factor from {}: {}",
+        selected.source,
+        selected.factor
+    );
+    selected.factor
 }
 
 fn get_randr_scale_factor(connection: &XCBConnection, screen_index: usize) -> Option<f32> {
@@ -2766,11 +2713,6 @@ fn get_dpi_factor((width_px, height_px): (u32, u32), (width_mm, height_mm): (u64
         );
         1.0
     }
-}
-
-#[inline]
-fn valid_scale_factor(scale_factor: f32) -> bool {
-    scale_factor.is_sign_positive() && scale_factor.is_normal()
 }
 
 #[inline]
