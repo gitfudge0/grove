@@ -1263,3 +1263,10 @@ prefixes, and the attached panel's wide/narrow/zoom layout and review action.
 Live Codex and Claude provider-boundary checks remain untested. Native screenshot
 inspection in light/dark themes and changed zoom remains untested on macOS,
 Linux and Windows; automated layout fixtures do not establish pixel appearance.
+
+A macOS `review_` filtered run built successfully and printed 31 passing tests,
+including the new panel-only regression and attached-panel fixture. The existing
+`review_hold_waits_400ms_and_cancels_on_return` timer test then remained stalled
+for more than two minutes; the coordinator terminated the test process. No
+baseline run established whether this stall predates the change. A rerun excluding
+that timer test is pending. All 33 source-conformance checks passed.
