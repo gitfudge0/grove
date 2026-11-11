@@ -502,6 +502,7 @@ impl SettingsPanel {
         };
         if next != current && self.save(cx, |store| store.ui_zoom = Some(next)) {
             cx.update_global::<ZoomState, _>(|state, _| state.zoom = next);
+            crate::platform::text_preferences::sync_component_size(cx);
             cx.refresh_windows();
         }
     }

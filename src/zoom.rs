@@ -7,30 +7,48 @@ pub const ZOOM_MIN: f32 = 0.6;
 pub const ZOOM_MAX: f32 = 2.0;
 pub const ZOOM_STEP: f32 = 0.1;
 
-/// Applied as `set_rem_size(px(REM_BASE * zoom))` once per frame in the root view's render.
+/// Applied as `set_rem_size(px(REM_BASE * zoom * text_scale))` once per frame in the root view's render.
 pub const REM_BASE: f32 = 16.0;
 
 pub struct ZoomState {
     pub zoom: f32,
+    text_scale: f32,
 }
 
 impl gpui::Global for ZoomState {}
 
 impl ZoomState {
     pub fn new(zoom: f32) -> Self {
-        Self { zoom: snap(zoom) }
+        Self {
+            zoom: snap(zoom),
+            text_scale: 1.0,
+        }
+    }
+
+    /// OS text scaling is independent of the persisted, clamped app zoom.
+    pub fn with_text_scale(mut self, factor: f32) -> Self {
+        self.text_scale = if factor.is_finite() && factor > 0.0 {
+            factor
+        } else {
+            1.0
+        };
+        self
+    }
+
+    pub fn effective_scale(&self) -> f32 {
+        self.zoom * self.text_scale
     }
 
     pub fn cell_w(&self) -> f32 {
-        fonts::CELL_W * self.zoom
+        fonts::CELL_W * self.effective_scale()
     }
 
     pub fn cell_h(&self) -> f32 {
-        fonts::CELL_H * self.zoom
+        fonts::CELL_H * self.effective_scale()
     }
 
     pub fn font_size(&self) -> f32 {
-        fonts::FONT_SIZE * self.zoom
+        fonts::FONT_SIZE * self.effective_scale()
     }
 
     /// Returns `(rows, cols)`; degenerate bounds (zero, negative, NaN) clamp to a 1x1 grid — a PTY may never be sized 0.
@@ -38,10 +56,8 @@ impl ZoomState {
         (fit(height_px, self.cell_h()), fit(width_px, self.cell_w()))
     }
 
-    // Exercised only by this module's tests; the live window sets rem size from Zoom at the root.
-    #[allow(dead_code)]
     pub fn rem_size(&self) -> f32 {
-        REM_BASE * self.zoom
+        REM_BASE * self.effective_scale()
     }
 }
 
@@ -180,5 +196,31 @@ mod tests {
     fn constructor_snaps_a_junk_persisted_value() {
         assert_eq!(ZoomState::new(17.3).zoom, ZOOM_MAX);
         assert_eq!(ZoomState::new(0.0).zoom, ZOOM_MIN);
+    }
+}
+
+#[cfg(test)]
+mod text_scale_tests {
+    use super::*;
+    #[test]
+    fn os_scale_is_not_snapped_or_clamped_as_app_zoom() {
+        let state = ZoomState::new(1.5).with_text_scale(0.8182);
+        assert_eq!(state.zoom, 1.5);
+        assert_eq!(state.rem_size(), 16.0 * 1.5 * 0.8182);
+        assert_eq!(state.cell_w(), fonts::CELL_W * state.effective_scale());
+        assert_eq!(
+            state.font_size(),
+            fonts::FONT_SIZE * state.effective_scale()
+        );
+        assert_eq!(
+            ZoomState::new(2.).with_text_scale(1.5).effective_scale(),
+            3.
+        );
+    }
+    #[test]
+    fn invalid_text_scales_fall_back() {
+        for scale in [0., -1., f32::NAN, f32::INFINITY] {
+            assert_eq!(ZoomState::new(1.).with_text_scale(scale).rem_size(), 16.);
+        }
     }
 }

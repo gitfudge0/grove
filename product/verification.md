@@ -1305,3 +1305,33 @@ baseline run established whether this stall predates the change. A rerun excludi
 that timer test passed all 31 remaining review tests. All five core brief tests,
 33 source-conformance checks, formatting and repository-artifact checks passed;
 application and test compilation succeeded.
+
+
+## Linux OS text preferences
+
+The Linux bridge supports `org.gnome.desktop.interface/text-scaling-factor`.
+A private D-Bus/dconf regression test exercises the production GSettings
+subscription at startup, increase/decrease, reset, and absent-schema fallback
+without modifying desktop preferences (`scripts/test-linux-text-preferences.py`).
+Rust checks cover fractional text factors independent of app zoom, consistent
+native rem/component-theme and integrated-report CSS sizes, and removal of the
+GNOME text factor from the Xft display-DPI fallback. Explicit GPUI/GDK display
+scales are unchanged. Manually configured Xft DPI alongside unrelated GNOME
+settings is ambiguous; use an explicit GPUI/GDK display-scale override there.
+
+Linux isolated X11 Dashboard captures at text factors 1.0 → 1.5 → 0.8182
+showed text, containing controls and responsive layout grow and shrink in the
+same 1402×1708 physical window with GDK_SCALE=2. The display was asleep; a
+nondestructive Expose event to the QA window was needed to obtain fresh frames,
+so this does not prove unattended compositor redraw while DPMS is off.
+The QA used a private D-Bus/dconf/config and sent no provider messages.
+
+Actual WebKit DOM sizing after a text preference change, terminal selection
+and pointer alignment, mixed-DPI moves, KDE/XSettings-only preferences and
+Windows/macOS OS text settings require additional verification/support.
+Codex and Claude transport behavior is untested by these platform sizing checks;
+the native/report size fixture does not establish live provider-boundary behavior.
+
+Strict local Clippy was blocked by two existing warnings also reproduced on
+base 1852a77: `semicolon_if_nothing_returned` in codex_view.rs and
+`assigning_clones` in file_browser.rs. No unrelated lint changes were included.

@@ -1774,6 +1774,38 @@ impl gpui::Element for NativeElement {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[gpui::test]
+    fn os_text_scale_keeps_native_and_report_sizes_aligned(cx: &mut gpui::TestAppContext) {
+        struct Fixture;
+        impl Render for Fixture {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                div().text_size(rpx(TEXT_BODY)).child("Text preference")
+            }
+        }
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            cx.set_global(crate::zoom::ZoomState::new(1.2));
+        });
+        let (_, cx) = cx.add_window_view(|_, _| Fixture);
+        let display_scale = cx.update(|window, _| window.scale_factor());
+        for os_scale in [0.8182, 1., 1.5] {
+            cx.update(|window, cx| {
+                let state = crate::zoom::ZoomState::new(1.2).with_text_scale(os_scale);
+                let rem = state.rem_size();
+                cx.set_global(state);
+                crate::platform::text_preferences::sync_component_size(cx);
+                window.set_rem_size(gpui::px(rem));
+                window.draw(cx).clear();
+                let body = f32::from(rpx(TEXT_BODY).to_pixels(window.rem_size()));
+                assert_eq!(body, TEXT_BODY * (rem / crate::zoom::REM_BASE));
+                assert!(report_script(window, false).contains(&format!("--grove-body:{body}px")));
+                assert_eq!(gpui_component::Theme::global(cx).font_size, gpui::px(rem));
+                assert_eq!(window.scale_factor(), display_scale);
+                assert_eq!(cx.global::<crate::zoom::ZoomState>().zoom, 1.2);
+            });
+        }
+    }
+
     #[test]
     fn browser_labels_include_descriptive_transcript_links() {
         assert!(browser_link_label("Open the interactive mock in browser"));

@@ -3181,6 +3181,7 @@ dependencies = [
  "futures",
  "gpui",
  "gpui-component",
+ "gpui_linux",
  "gpui_platform",
  "grove-core",
  "grove-terminal",

@@ -140,7 +140,7 @@ impl Element for TerminalElement {
     ) -> PrepaintState {
         self.bounds_out.set(bounds);
 
-        let zoom = ZoomState::new(self.zoom);
+        let zoom = ZoomState::new(1.0).with_text_scale(self.zoom);
         let cell_w = zoom.cell_w();
         let cell_h = zoom.cell_h();
 
