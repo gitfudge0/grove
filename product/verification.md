@@ -313,6 +313,24 @@ test passed. Dark and light Linux captures were inspected for action placement.
 Live Codex and Claude delivery, native narrow/zoom geometry, long-heading layout,
 and macOS/Windows rendering remain unverified for this change.
 
+## Long plan decision prompts
+
+Decision prompts use their full content width above the Discuss action; the
+compact action yields to the pane width while retaining its complete accessible
+name and discussion target. Nine native plan tests passed (one screenshot test
+ignored in the ordinary run), together with 33 UI conformance checks, formatting
+and repository artifact checks. Codex and Claude native fixtures exercise long
+QA prompt geometry and existing composer behavior; they do not establish live
+provider delivery.
+
+The macOS `views::native_plan::tests::long_decision_native_snapshots` fixture was
+also run explicitly and passed. Inspected light/dark captures at 1000px and
+400px with 16px rem showed readable prompts and bounded Discuss actions for the
+provider fixtures. Captures are under `.grove-artifacts/long-plan-decision/`.
+All 24px rem captures were blank theme backgrounds, so zoom visual coverage
+failed and remains unverified despite the capture test passing. Live Codex and
+Claude delivery and Linux/Windows native layout remain untested for this fix.
+
 ## Claude slash-command payloads
 
 Claude submissions beginning with `/` preserve the command and its arguments

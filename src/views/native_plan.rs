@@ -1031,11 +1031,27 @@ impl NativePlan {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         self.measured_button(
-            transcript_action(id.clone(), format!("Discuss: {section}"), false, window, cx).icon(
-                gpui_component::Icon::default()
-                    .path("icons/edit.svg")
-                    .size(rpx(ICON_SM)),
-            ),
+            transcript_action(id.clone(), format!("Discuss: {section}"), false, window, cx)
+                // Keep the complete accessible name while allowing authored section
+                // titles to yield to the pane width. The prompt remains visible above.
+                .icon_only()
+                .debug_selector({
+                    let id = id.clone();
+                    move || format!("native-plan-{id}")
+                })
+                .min_w_0()
+                .max_w_full()
+                .icon(
+                    gpui_component::Icon::default()
+                        .path("icons/edit.svg")
+                        .size(rpx(ICON_SM)),
+                )
+                .child(
+                    div()
+                        .min_w_0()
+                        .truncate()
+                        .child(format!("Discuss: {section}")),
+                ),
             id,
             measured::Action::Compose(PlanComposerTarget::Discuss { section }),
             true,
@@ -1072,9 +1088,12 @@ impl NativePlan {
             .child(
                 div()
                     .flex()
+                    .flex_col()
+                    .min_w_0()
+                    .w_full()
                     .gap(rpx(SPACE_LG))
                     .items_start()
-                    .child(div().flex_1().min_w_0().child(self.text(
+                    .child(div().w_full().min_w_0().child(self.text(
                         format!("decision-prompt-{id}"),
                         prompt.clone(),
                         window,
@@ -1783,14 +1802,107 @@ mod tests {
         assert!(revision.assets.iter().any(|a| a.mime == "text/html"));
     }
 
+    fn long_decision_fixture(provider: Provider) -> SavedSession {
+        serde_json::from_value(json!({
+            "key":"native-plan-test","provider":provider,"project":"Test","cwd":"/tmp","label":"Test","roots":[],"thread_id":"test-thread","items":[],"draft":"KEEP THIS DRAFT",
+            "rich_plans":{"revisions":[{"message_id":"answer","source":"plan.grove-plan.json","assets":[],"document":{"schema_version":1,"plan_id":"plan","revision_id":"r1","title":"Invitations","markdown":"# Invitations\n\n## Access\nChoose who can invite.","decisions":[{"id":"access","section":"Access","prompt":"QA wrote “When a case date has no tasks... the Tasks and Surveys tab should show No tasks”. Which empty states become the single line?","default":"admin","options":[{"id":"admin","label":"Admins","description":"Limit invitations to admins."}]}]}}]}
+        })).unwrap()
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    #[ignore = "requires macOS Metal renderer; captures native plan layout"]
+    fn long_decision_native_snapshots() {
+        use gpui::AppContext as _;
+        let mut cx = gpui::HeadlessAppContext::with_platform(
+            gpui_platform::current_platform(true).text_system(),
+            std::sync::Arc::new(crate::assets::Assets),
+            gpui_platform::current_headless_renderer,
+        );
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            crate::fonts::register(cx).unwrap();
+            cx.set_reduce_motion(true);
+        });
+        let output = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join(".grove-artifacts/long-plan-decision");
+        std::fs::create_dir_all(&output).unwrap();
+        let previous_theme = grove_core::theme::current().name.clone();
+        for appearance in ["dark", "light"] {
+            cx.update(|cx| {
+                assert!(grove_core::theme::set_by_name(&format!(
+                    "grove-{appearance}"
+                )));
+                c::sync_component_theme(cx);
+            });
+            for (width, rem) in [(1000., 16.), (400., 16.), (400., 24.)] {
+                for provider in [Provider::Codex, Provider::Claude] {
+                    let (handle, _actions) = Handle::channel();
+                    let (_updates, receive) = mpsc::channel();
+                    let window = cx
+                        .open_window(
+                            gpui::size(gpui::px(width), gpui::px(1000.)),
+                            |window, cx| {
+                                window.set_rem_size(gpui::px(rem));
+                                let session = cx.new(|cx| {
+                                    CodexSession::from_connection(
+                                        Snapshot::new(long_decision_fixture(provider)),
+                                        Connection {
+                                            handle,
+                                            updates: receive.into(),
+                                        },
+                                        cx,
+                                    )
+                                });
+                                let html = cx.new(|_| {
+                                    super::super::inline_html::HtmlSession::new(
+                                        "/tmp".into(),
+                                        gpui::ScrollHandle::new(),
+                                    )
+                                });
+                                let plan = cx.new(|cx| {
+                                    NativePlan::new(session, html, "plan".into(), "r1".into(), cx)
+                                });
+                                cx.new(|cx| {
+                                    gpui_component::Root::new(plan, window, cx)
+                                        .bordered(false)
+                                        .bg(c::BG())
+                                })
+                            },
+                        )
+                        .unwrap();
+                    for _ in 0..3 {
+                        cx.advance_clock(std::time::Duration::from_millis(16));
+                        cx.run_until_parked();
+                        cx.update_window(window.into(), |_, window, cx| {
+                            window.simulate_next_frame(cx);
+                            let _ = window.draw(cx);
+                        })
+                        .unwrap();
+                    }
+                    let path =
+                        output.join(format!("{appearance}-{provider:?}-{width:.0}-{rem:.0}.png"));
+                    cx.capture_screenshot(window.into())
+                        .unwrap()
+                        .save(&path)
+                        .unwrap();
+                    eprintln!("Native long decision fixture: {}", path.display());
+                    cx.update_window(window.into(), |_, window, _| window.remove_window())
+                        .unwrap();
+                }
+            }
+        }
+        cx.update(|cx| {
+            assert!(grove_core::theme::set_by_name(&previous_theme));
+            c::sync_component_theme(cx);
+        });
+    }
+
     fn exercise_decision_composer(provider: Provider, cx: &mut gpui::TestAppContext) {
         cx.update(gpui_component::init);
         let (handle, actions) = Handle::channel();
         let (_updates, receive) = mpsc::channel();
-        let saved: SavedSession = serde_json::from_value(json!({
-            "key":"native-plan-test","provider":provider,"project":"Test","cwd":"/tmp","label":"Test","roots":[],"thread_id":"test-thread","items":[],"draft":"KEEP THIS DRAFT",
-            "rich_plans":{"revisions":[{"message_id":"answer","source":"plan.grove-plan.json","assets":[],"document":{"schema_version":1,"plan_id":"plan","revision_id":"r1","title":"Invitations","markdown":"# Invitations\n\n## Access\nChoose who can invite.","decisions":[{"id":"access","section":"Access","prompt":"Who can invite?","default":"admin","options":[{"id":"admin","label":"Admins","description":"Limit invitations to admins."}]}]}}]}
-        })).unwrap();
+        let saved = long_decision_fixture(provider);
         let mut snapshot = Snapshot::new(saved);
         snapshot.status = Status::Idle;
         let mut plan = None;
@@ -1873,6 +1985,34 @@ mod tests {
                 assert!(!Rc::ptr_eq(&replaced, &view.snapshot(cx)));
             });
         });
+        for width in [1000., 400.] {
+            cx.simulate_resize(gpui::size(gpui::px(width), gpui::px(1000.)));
+            cx.run_until_parked();
+            cx.update(|window, cx| {
+                let _ = window.draw(cx);
+            });
+            let prompt = cx.debug_bounds("decision-prompt-access-line-0").unwrap();
+            let decision = cx.debug_bounds("native-plan-decision-access").unwrap();
+            assert!(
+                prompt.size.width > decision.size.width * 0.9,
+                "prompt must retain the decision width: {prompt:?} {decision:?}"
+            );
+            let discuss = cx
+                .debug_bounds("native-plan-decision-discuss-access")
+                .unwrap();
+            assert!(
+                discuss.origin.y >= prompt.bottom(),
+                "discussion action must follow prompt"
+            );
+            assert!(
+                discuss.right() <= decision.right() + gpui::px(1.),
+                "discussion action must fit its decision: {discuss:?} {decision:?}"
+            );
+            assert!(
+                prompt.size.height < gpui::px(300.),
+                "prompt must wrap as prose rather than a character column: {prompt:?}"
+            );
+        }
         assert!(cx.debug_bounds("native-plan-update").is_some());
         assert!(cx.debug_bounds("native-plan-approve").is_none());
         assert!(cx
