@@ -1,7 +1,29 @@
 #[path = "../vendor/gpui_linux/src/linux/x11/scale.rs"]
 mod scale;
 
-use scale::{select_scale, ScaleSelection};
+use scale::ScaleSelection;
+fn select_scale(
+    explicit: Option<&str>,
+    gdk: Option<&str>,
+    xft: Option<&str>,
+    randr: impl FnOnce() -> Option<f32>,
+    warn: impl FnMut(String),
+) -> Result<ScaleSelection, String> {
+    scale::select_scale(explicit, gdk, xft, 1.0, randr, warn)
+}
+
+#[test]
+fn xft_text_factor_is_removed_from_display_scale_only() {
+    for (dpi, text, display) in [("144", 1.5, 1.), ("288", 1.5, 2.), ("120", 1., 1.25)] {
+        let result = scale::select_scale(None, None, Some(dpi), text, no_randr, |_| {}).unwrap();
+        assert_eq!(result.factor, display);
+    }
+    for (explicit, gdk) in [(Some("2"), None), (None, Some("2"))] {
+        let result =
+            scale::select_scale(explicit, gdk, Some("144"), 1.5, no_randr, |_| {}).unwrap();
+        assert_eq!(result.factor, 2.);
+    }
+}
 
 fn no_randr() -> Option<f32> {
     panic!("RandR must not be queried when a scale has already been selected")

@@ -611,3 +611,14 @@ turns, draft handoffs and changed response identity invalidate stale acceptance.
 Historical/read-only transcripts and restored responses do not trigger generation.
 
 File, skill and slash-command completion use case-insensitive fuzzy subsequence matching, so `shipau` finds `ship-pr-auto`. Contiguous and prefix matches rank above scattered matches; empty queries preserve catalog order. Skill completion ranks before applying its existing eight-result limit.
+
+## OS text size
+
+On Linux, Grove reads `org.gnome.desktop.interface text-scaling-factor` at startup
+and listens for GSettings changes. The effective design size is the OS text
+factor multiplied by Grove's saved UI zoom; native text, containing controls,
+terminal cell metrics and integrated HTML report tokens use that same size.
+The OS factor is not persisted as app zoom, snapped to its steps or applied to
+GPUI's display scale. Control geometry grows with text to preserve containment.
+Absent desktop schemas use 1×. Other desktop-specific text preference sources
+and Windows/macOS text accessibility settings are not yet integrated.

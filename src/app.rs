@@ -24,7 +24,10 @@ pub fn boot(cx: &mut gpui::App) {
         cx.background_executor()
             .timer(std::time::Duration::from_millis(16))
             .await;
-        cx.update(crate::platform::inline_html::NativeDocument::pump);
+        cx.update(|cx| {
+            crate::platform::text_preferences::poll(cx);
+            crate::platform::inline_html::NativeDocument::pump(cx);
+        });
     })
     .detach();
 
@@ -108,7 +111,9 @@ pub fn boot(cx: &mut gpui::App) {
         DEFAULT_DARK_THEME.into(),
         DEFAULT_LIGHT_THEME.into(),
     ));
-    cx.set_global(ZoomState::new(zoom));
+    cx.set_global(
+        ZoomState::new(zoom).with_text_scale(crate::platform::text_preferences::initial_scale()),
+    );
     cx.set_global(crate::zoom::CurrentPtyDims::default());
 
     // 9. Must run before `keymap::bindings()`: a modal's Input binding and gpui-component's plain "Input" binding tie-break by registration order, and Grove must win to claim ←/→/Tab back from the caret.
@@ -125,6 +130,7 @@ pub fn boot(cx: &mut gpui::App) {
     );
     // Must follow init: it installs the global this overwrites.
     crate::theme::sync_component_theme(cx);
+    crate::platform::text_preferences::sync_component_size(cx);
 
     cx.bind_keys(crate::keymap::bindings());
 }

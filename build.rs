@@ -22,6 +22,7 @@ fn main() {
     println!("cargo:rerun-if-changed=src/platform/inline_html_keyboard.inc");
     println!("cargo:rerun-if-changed=src/platform/inline_html_accessibility.inc");
     println!("cargo:rerun-if-changed=src/platform/inline_html_linux.c");
+    println!("cargo:rerun-if-changed=src/platform/text_preferences_linux.c");
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("linux") {
         let mut build = cc::Build::new();
         for package in ["webkit2gtk-4.1", "gtk+-3.0", "x11", "xext"] {
@@ -37,6 +38,7 @@ fn main() {
         }
         build
             .file("src/platform/inline_html_linux.c")
+            .file("src/platform/text_preferences_linux.c")
             .compile("grove_inline_html_linux");
         // Native dependencies follow the archive that references their symbols.
         for package in ["webkit2gtk-4.1", "gtk+-3.0", "x11", "xext"] {

@@ -22,6 +22,7 @@ pub(crate) fn select_scale(
     explicit: Option<&str>,
     gdk_scale: Option<&str>,
     xft_dpi: Option<&str>,
+    text_scale: f32,
     randr: impl FnOnce() -> Option<f32>,
     mut warn: impl FnMut(String),
 ) -> Result<ScaleSelection, String> {
@@ -47,7 +48,15 @@ pub(crate) fn select_scale(
         };
     }
 
-    for (source, value, divisor) in [("GDK_SCALE", gdk_scale, 1.0), ("Xft.dpi", xft_dpi, 96.0)] {
+    let text_scale = if valid_scale_factor(text_scale) {
+        text_scale
+    } else {
+        1.0
+    };
+    for (source, value, divisor) in [
+        ("GDK_SCALE", gdk_scale, 1.0),
+        ("Xft.dpi", xft_dpi, 96.0 * text_scale),
+    ] {
         if let Some(value) = value {
             if let Ok(parsed) = value.parse::<f32>() {
                 let factor = parsed / divisor;

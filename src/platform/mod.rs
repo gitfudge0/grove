@@ -6,3 +6,5 @@ pub mod dock;
 pub mod window_chrome;
 
 pub mod inline_html;
+
+pub mod text_preferences;

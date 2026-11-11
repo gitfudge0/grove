@@ -3,7 +3,7 @@
 use gpui::{rems, Rems};
 
 /// A design pixel, expressed in rems so it scales with UI zoom: `px()` is immune to `Window::set_rem_size`, only
-/// `rems()` scales, and the root view sets rem size to `REM_BASE * zoom` once per frame (`workspace::Workspace::render`).
+/// `rems()` scales, and the root view sets rem size to `REM_BASE * app_zoom * os_text_scale` once per frame (`shell::Shell::render`).
 ///
 /// Deliberately **not** used for 1px hairlines, or anything that's physical window/viewport math rather than
 /// element styling (mouse positions, window bounds, the terminal's own cell grid).

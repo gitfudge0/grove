@@ -191,7 +191,7 @@ impl Focusable for TerminalView {
 }
 impl Render for TerminalView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let zoom = cx.global::<ZoomState>().zoom;
+        let zoom = cx.global::<ZoomState>().effective_scale();
         if self.selecting && !self.focus.is_focused(window) {
             self.stop_drag();
         }

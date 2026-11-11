@@ -626,6 +626,7 @@ impl Shell {
         });
         if saved.is_ok() {
             cx.update_global::<crate::zoom::ZoomState, _>(|zoom, _| zoom.zoom = next);
+            crate::platform::text_preferences::sync_component_size(cx);
             cx.refresh_windows();
         }
     }

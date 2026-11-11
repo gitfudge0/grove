@@ -2537,6 +2537,7 @@ fn get_scale_factor(
         explicit.as_deref(),
         gdk_scale.as_deref(),
         xft_dpi.as_deref(),
+        crate::xft_text_scale(),
         || get_randr_scale_factor(connection, screen_index),
         |warning| log::warn!("{warning}"),
     )

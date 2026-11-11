@@ -86,6 +86,7 @@ fn main() {
         }
         std::env::remove_var("WAYLAND_DISPLAY");
         std::env::set_var("GDK_BACKEND", "x11");
+        gpui_linux::set_xft_text_scale(platform::text_preferences::initial_scale());
     }
     logging::init();
     // Before `app::boot` so a panic inside boot is still reported; only the scrubbed location is sent.

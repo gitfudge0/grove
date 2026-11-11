@@ -37,3 +37,9 @@ Run `cargo test --test x11_scale` for selection and validation regressions.
 Selection is startup-only: XSettings-only desktops, runtime scale changes and
 mixed-DPI monitor moves remain unsupported by this patch. Actual compositor-side
 scaling and native/HTML alignment require isolated desktop verification.
+
+Grove supplies the startup GSettings text factor through `set_xft_text_scale`
+before platform creation. Only the Xft.dpi fallback divides out this factor,
+because GNOME publishes text DPI multiplied by its window scale in Xft.dpi.
+Explicit GPUI/GDK overrides and physical RandR estimates remain display-only.
+Runtime text preference changes update application sizing, not display scale.
