@@ -1198,3 +1198,28 @@ repository artifact policy, reference-verifier tests and artifact-tool tests pas
 CI spelling and supply-chain jobs also fail on unchanged baseline inputs; a
 locked dependency has been yanked. No local installation or user-app restart was
 performed.
+
+## Drag-to-Applications macOS disk image (2026-11-11)
+
+The selected installer uses the supplied canopy artwork, composited at 720×440
+with a green curved arrow. The picture lives inside the staged app's Resources,
+so the volume root contains only Grove.app, the Applications symlink and Finder's
+reserved .DS_Store. Packaging copies the input app, adds the picture, then ad-hoc
+signs and strictly verifies that copy; the original input app remains untouched.
+This preserves the existing release pipeline's ad-hoc signing semantics, not
+Developer ID signing or notarization. Non-ad-hoc signed input apps are rejected:
+a future Developer ID pipeline must inject the picture before its signing step.
+
+Local canopy packaging, focused HFS+ auto-open metadata tests, shell syntax,
+artifact policy and whitespace checks passed. Finder close/reopen checks assert
+manual arrangement and both icon positions before image conversion. No app
+installation or release was performed; GitHub-hosted runner packaging remains
+untested. Independent packaging and native Finder inspection of the compressed
+canopy image verified the selected art at the correct scale, the green curved
+arrow, and only two visible items with aligned icons and labels: Grove on the
+left and Applications on the right. No clipping, scrollbars or helper files were
+visible. The mounted app and the original installed input both passed strict
+signature verification; the input contains no added installer background. Root
+contents were limited to .DS_Store, Grove.app and the /Applications symlink.
+Ordinary Finder opening previously mounted the image but required manual volume
+navigation; automatic window opening remains unverified despite its metadata hint.
