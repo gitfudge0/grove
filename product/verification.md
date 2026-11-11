@@ -1269,4 +1269,6 @@ including the new panel-only regression and attached-panel fixture. The existing
 `review_hold_waits_400ms_and_cancels_on_return` timer test then remained stalled
 for more than two minutes; the coordinator terminated the test process. No
 baseline run established whether this stall predates the change. A rerun excluding
-that timer test is pending. All 33 source-conformance checks passed.
+that timer test passed all 31 remaining review tests. All five core brief tests,
+33 source-conformance checks, formatting and repository-artifact checks passed;
+application and test compilation succeeded.
