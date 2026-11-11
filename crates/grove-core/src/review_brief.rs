@@ -17,6 +17,27 @@ pub fn extract(text: &str) -> Option<&str> {
     (!brief.is_empty() && brief.chars().count() <= 2000).then_some(brief)
 }
 
+/// Presentation only: keep provider-authored briefs in the review panel, including
+/// while the block is streaming. The original response remains available to extract.
+pub fn display_text(text: &str) -> String {
+    let mut visible = String::new();
+    let mut rest = text;
+    while let Some(start) = rest.find(START) {
+        visible.push_str(&rest[..start]);
+        let Some(end) = rest[start + START.len()..].find(END) else {
+            return visible.trim_end().to_owned();
+        };
+        rest = &rest[start + START.len() + end + END.len()..];
+    }
+    // A provider delta can end partway through the opening marker.
+    let partial = (1..START.len())
+        .rev()
+        .find(|length| rest.ends_with(&START[..*length]))
+        .unwrap_or(0);
+    visible.push_str(&rest[..rest.len() - partial]);
+    visible.trim_end().to_owned()
+}
+
 pub fn context(review: &SessionReview) -> String {
     format!(
         "{CONTEXT}{}. \
@@ -57,6 +78,35 @@ mod tests {
         assert_eq!(
             serde_json::from_str::<String>(encoded).unwrap(),
             review.summary
+        );
+    }
+
+    #[test]
+    fn presentation_hides_briefs_and_streaming_markers_without_changing_extraction() {
+        let response = "Fixed the issue.\n\n[View diff](change.diff)\n\n<grove-review-summary>Fixed duplication. Live checks pending.</grove-review-summary>";
+        assert_eq!(
+            display_text(response),
+            "Fixed the issue.\n\n[View diff](change.diff)"
+        );
+        assert_eq!(
+            extract(response),
+            Some("Fixed duplication. Live checks pending.")
+        );
+        let marker = response.find(START).unwrap();
+        for end in marker + 1..response.len() {
+            assert_eq!(
+                display_text(&response[..end]),
+                "Fixed the issue.\n\n[View diff](change.diff)"
+            );
+        }
+        assert_eq!(display_text("Ordinary **answer**."), "Ordinary **answer**.");
+        assert_eq!(
+            display_text("<grove-review-summary>Only brief</grove-review-summary>"),
+            ""
+        );
+        assert_eq!(
+            display_text("Before<grove-review-summary>Brief</grove-review-summary> after"),
+            "Before after"
         );
     }
 

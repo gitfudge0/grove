@@ -644,6 +644,16 @@ struct MessageMinimapEntry {
     response: String,
 }
 
+/// Assistant review metadata belongs to the review panel; retain raw saved items.
+fn transcript_item_text(item: &serde_json::Value) -> String {
+    let text = codex::item_text(item);
+    if item["type"] == "agentMessage" {
+        grove_core::review_brief::display_text(&text)
+    } else {
+        text
+    }
+}
+
 fn message_minimap_entries<T: std::borrow::Borrow<serde_json::Value>>(
     items: &[T],
 ) -> Vec<MessageMinimapEntry> {
@@ -661,7 +671,7 @@ fn message_minimap_entries<T: std::borrow::Borrow<serde_json::Value>>(
             let replies: Vec<_> = items[index + 1..end]
                 .iter()
                 .filter(|item| item.borrow()["type"] == "agentMessage")
-                .filter(|item| !codex::item_text(item.borrow()).trim().is_empty())
+                .filter(|item| !transcript_item_text(item.borrow()).trim().is_empty())
                 .collect();
             let response = replies
                 .iter()
@@ -670,7 +680,7 @@ fn message_minimap_entries<T: std::borrow::Borrow<serde_json::Value>>(
                 .or_else(|| replies.last())
                 .map_or_else(
                     || "No response yet".into(),
-                    |item| codex::item_text(item.borrow()),
+                    |item| transcript_item_text(item.borrow()),
                 );
             let prompt = codex::item_text(items[index].borrow());
             MessageMinimapEntry {
@@ -3925,13 +3935,13 @@ impl CodexView {
                 "review",
                 "grove-review",
                 kind,
-                &codex::item_text(item),
+                &transcript_item_text(item),
             )
         } else {
             description_conversation_text(
                 self.description_scope.as_ref(),
                 kind,
-                &codex::item_text(item),
+                &transcript_item_text(item),
             )
         };
         let approval = (kind == "userMessage")
@@ -10681,7 +10691,9 @@ fn response_groups<T: std::borrow::Borrow<serde_json::Value>>(
         let prose = (start..end)
             .filter(|index| {
                 items[*index].borrow()["type"] == "agentMessage"
-                    && !codex::item_text(items[*index].borrow()).trim().is_empty()
+                    && !transcript_item_text(items[*index].borrow())
+                        .trim()
+                        .is_empty()
             })
             .collect::<Vec<_>>();
         if let Some(last) = prose.last() {
@@ -10705,7 +10717,7 @@ fn response_groups<T: std::borrow::Borrow<serde_json::Value>>(
                     .collect(),
                 copy_text: prose
                     .iter()
-                    .map(|index| codex::item_text(items[*index].borrow()))
+                    .map(|index| transcript_item_text(items[*index].borrow()))
                     .collect::<Vec<_>>()
                     .join("\n\n"),
                 received_at: items[*last].borrow()["groveReceivedAt"].as_u64(),
@@ -13843,6 +13855,62 @@ mod tests {
     }
 
     #[test]
+    fn codex_and_claude_review_brief_stays_in_panel_not_transcript_copy_or_minimap() {
+        use super::super::review_summary::ReviewSummary;
+        let answer = "Fixed duplication.\n\n[Evidence](https://example.com)";
+        let brief = "The summary now appears only in its review panel. Live checks pending.";
+        let raw = format!("{answer}\n\n<grove-review-summary>{brief}</grove-review-summary>");
+        for provider in [codex::Provider::Codex, codex::Provider::Claude] {
+            let mut state = snapshot();
+            state.saved.provider = provider;
+            state.saved.items = vec![
+                json!({"type":"userMessage", "content":[{"text":"Remove duplicate summary"}]}),
+                json!({"type":"agentMessage", "phase":"final_answer", "text":raw}),
+            ]
+            .into();
+            state.saved.work_periods = vec![codex::WorkPeriod {
+                start_item: 0,
+                end_item: Some(2),
+                duration_ms: None,
+                subagents: vec![],
+            }];
+            state.saved.session_review.summary = brief.into();
+            state.saved.session_review.pending = Some(codex::ReviewCompletion { id: 1, period: 0 });
+            assert_eq!(
+                transcript_item_text(&state.saved.items[1]),
+                answer,
+                "{provider:?}"
+            );
+            assert_eq!(
+                response_groups(&state.saved.items, None)[0].copy_text,
+                answer,
+                "{provider:?}"
+            );
+            assert_eq!(
+                message_minimap_entries(&state.saved.items)[0].response,
+                answer,
+                "{provider:?}"
+            );
+            assert_eq!(
+                ReviewSummary::from_snapshot(&state).unwrap().text,
+                brief,
+                "{provider:?}"
+            );
+            assert_eq!(
+                codex::item_text(&state.saved.items[1]),
+                raw,
+                "raw response is retained"
+            );
+            let user = json!({"type":"userMessage", "content":[{"text":raw}]});
+            assert_eq!(
+                transcript_item_text(&user),
+                raw,
+                "user-authored text is untouched"
+            );
+        }
+    }
+
+    #[test]
     fn review_summary_uses_current_completion_for_codex_and_claude() {
         use super::super::review_summary::ReviewSummary;
         let artifacts = tempfile::tempdir().unwrap();
@@ -15372,7 +15440,7 @@ mod tests {
                     view.session.update(cx, |session, cx| {
                         session.state.saved.provider = provider;
                         session.state.saved.items = vec![
-                            json!({"id":"result","type":"agentMessage","text":"Completed result"}),
+                            json!({"id":"result","type":"agentMessage","text":"Completed result.\n\n<grove-review-summary>Dedicated panel brief.</grove-review-summary>"}),
                         ]
                         .into();
                         session.state.saved.work_periods = vec![codex::WorkPeriod {
@@ -15382,6 +15450,7 @@ mod tests {
                             subagents: Vec::new(),
                         }];
                         session.state.saved.session_review = codex::SessionReview {
+                            summary: "Dedicated panel brief.".into(),
                             sequence: 7,
                             last_completed_period: Some(0),
                             pending: Some(codex::ReviewCompletion { id: 7, period: 0 }),
@@ -15423,6 +15492,7 @@ mod tests {
             cx.update(|_, cx| {
                 view.update(cx, |view, cx| {
                     view.session.update(cx, |session, cx| {
+                        session.state.saved.session_review.summary.clear();
                         session.state.saved.items =
                             vec![json!({"id":"result","type":"agentMessage","text":""})].into();
                         cx.notify();

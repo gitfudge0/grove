@@ -1251,3 +1251,24 @@ signature verification; the input contains no added installer background. Root
 contents were limited to .DS_Store, Grove.app and the /Applications symlink.
 Ordinary Finder opening previously mounted the image but required manual volume
 navigation; automatic window opening remains unverified despite its metadata hint.
+
+
+## Review brief panel-only presentation (November 2026)
+
+Dedicated review-brief blocks are filtered from assistant transcript prose,
+response Copy and minimap previews while raw responses remain persisted for panel
+extraction. Codex and Claude share this presentation path. Automated fixtures
+cover both provider identities, retained raw text and brief data, streaming
+prefixes, and the attached panel's wide/narrow/zoom layout and review action.
+Live Codex and Claude provider-boundary checks remain untested. Native screenshot
+inspection in light/dark themes and changed zoom remains untested on macOS,
+Linux and Windows; automated layout fixtures do not establish pixel appearance.
+
+A macOS `review_` filtered run built successfully and printed 31 passing tests,
+including the new panel-only regression and attached-panel fixture. The existing
+`review_hold_waits_400ms_and_cancels_on_return` timer test then remained stalled
+for more than two minutes; the coordinator terminated the test process. No
+baseline run established whether this stall predates the change. A rerun excluding
+that timer test passed all 31 remaining review tests. All five core brief tests,
+33 source-conformance checks, formatting and repository-artifact checks passed;
+application and test compilation succeeded.
