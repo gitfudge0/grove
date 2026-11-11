@@ -9351,39 +9351,7 @@ impl CodexView {
                     .collect(),
                 "Files and folders · relative to this worktree",
             ),
-            '$' => (
-                grove_core::describe_skill::completion('$', query)
-                    .into_iter()
-                    .chain(grove_core::review_skill::completion('$', query))
-                    .chain(state.skills.iter().filter_map(|skill| {
-                        let name = skill["name"].as_str()?;
-                        (name != grove_core::describe_skill::NAME
-                            && name != grove_core::review_skill::NAME
-                            && name.to_lowercase().contains(&query.to_lowercase())
-                            && (state.saved.provider != codex::Provider::Claude
-                                || !host_command(name))
-                            && skill["enabled"].as_bool() != Some(false))
-                        .then(|| {
-                            (
-                                format!(
-                                    "{}{name}",
-                                    if state.saved.provider == codex::Provider::Claude {
-                                        "/"
-                                    } else {
-                                        "$"
-                                    }
-                                ),
-                                format!(
-                                    "{name} · {}",
-                                    skill["description"].as_str().unwrap_or("Skill")
-                                ),
-                            )
-                        })
-                    }))
-                    .take(8)
-                    .collect(),
-                "Skills",
-            ),
+            '$' => (skill_choices(state, query), "Skills"),
             '/' => (slash_choices(state, query), "Commands"),
             _ => return None,
         })
@@ -11596,6 +11564,59 @@ fn effective_model(state: &codex::Snapshot) -> Option<&serde_json::Value> {
         })
 }
 
+/// Rank the whole catalog before applying the popup limit, so an early scattered
+/// match cannot hide a later exact or prefix match. Stable sorting preserves the
+/// catalog order for ties and for the empty query.
+fn fuzzy_completion_choices(
+    choices: impl IntoIterator<Item = (String, String)>,
+    query: &str,
+) -> Vec<(String, String)> {
+    let mut matches = choices
+        .into_iter()
+        .filter_map(|choice| {
+            let name = choice.0.trim_start_matches(['/', '$']);
+            crate::launcher::fuzzy_score(query, name, "", "").map(|score| (score, choice))
+        })
+        .collect::<Vec<_>>();
+    matches.sort_by(|(a, _), (b, _)| b.cmp(a));
+    matches.into_iter().map(|(_, choice)| choice).collect()
+}
+
+fn skill_choices(state: &codex::Snapshot, query: &str) -> Vec<(String, String)> {
+    fuzzy_completion_choices(
+        grove_core::describe_skill::completion('$', "")
+            .into_iter()
+            .chain(grove_core::review_skill::completion('$', ""))
+            .chain(state.skills.iter().filter_map(|skill| {
+                let name = skill["name"].as_str()?;
+                (name != grove_core::describe_skill::NAME
+                    && name != grove_core::review_skill::NAME
+                    && (state.saved.provider != codex::Provider::Claude || !host_command(name))
+                    && skill["enabled"].as_bool() != Some(false))
+                .then(|| {
+                    (
+                        format!(
+                            "{}{name}",
+                            if state.saved.provider == codex::Provider::Claude {
+                                "/"
+                            } else {
+                                "$"
+                            }
+                        ),
+                        format!(
+                            "{name} · {}",
+                            skill["description"].as_str().unwrap_or("Skill")
+                        ),
+                    )
+                })
+            })),
+        query,
+    )
+    .into_iter()
+    .take(8)
+    .collect()
+}
+
 /// Host commands first, then (for Claude) the CLI's own commands Grove does not host.
 fn slash_choices(state: &codex::Snapshot, query: &str) -> Vec<(String, String)> {
     let mut choices: Vec<(String, String)> = [
@@ -11613,16 +11634,12 @@ fn slash_choices(state: &codex::Snapshot, query: &str) -> Vec<(String, String)> 
         ("/clear", "Start a new conversation"),
     ]
     .into_iter()
-    .filter(|(command, _)| command[1..].starts_with(query))
     .map(|(command, label)| (command.into(), format!("{command} · {label}")))
     .collect();
     if state.saved.provider == codex::Provider::Claude {
         choices.extend(state.skills.iter().filter_map(|skill| {
             let name = skill["name"].as_str()?;
-            (name.starts_with(query)
-                && !host_command(name)
-                && skill["enabled"].as_bool() != Some(false))
-            .then(|| {
+            (!host_command(name) && skill["enabled"].as_bool() != Some(false)).then(|| {
                 (
                     format!("/{name}"),
                     format!(
@@ -11633,7 +11650,7 @@ fn slash_choices(state: &codex::Snapshot, query: &str) -> Vec<(String, String)> 
             })
         }));
     }
-    choices
+    fuzzy_completion_choices(choices, query)
 }
 
 fn host_command(name: &str) -> bool {
@@ -13883,6 +13900,51 @@ mod tests {
     }
 
     #[test]
+    fn fuzzy_completion_matches_skills_and_commands_for_both_providers() {
+        for provider in [codex::Provider::Codex, codex::Provider::Claude] {
+            let mut state = snapshot();
+            state.saved.provider = provider;
+            state.skills = (0..10)
+                .map(|i| json!({"name":format!("ship-pr-auto-{i}")}))
+                .collect();
+            state.skills.push(json!({"name":"shipau-exact"}));
+            state
+                .skills
+                .push(json!({"name":"shipau-disabled", "enabled":false}));
+            state.skills.push(json!({"name":"review"}));
+            let prefix = if provider == codex::Provider::Claude {
+                "/"
+            } else {
+                "$"
+            };
+            let choices = skill_choices(&state, "ShIpAu");
+            assert_eq!(choices.len(), 8);
+            assert_eq!(choices[0].0, format!("{prefix}shipau-exact"));
+            assert!(choices
+                .iter()
+                .any(|(name, _)| name == &format!("{prefix}ship-pr-auto-0")));
+            assert!(!choices.iter().any(|(name, _)| name.contains("disabled")));
+            assert!(skill_choices(&state, "zzzz").is_empty());
+            assert!(skill_choices(&state, "uapihs").is_empty());
+            assert_eq!(skill_choices(&state, "dscch")[0].0, "$describe-changes");
+            assert_eq!(slash_choices(&state, "CMP")[0].0, "/compact");
+            assert_eq!(slash_choices(&state, "rvw")[0].0, "/review");
+            assert_eq!(
+                slash_choices(&state, "")
+                    .iter()
+                    .filter(|(name, _)| name == "/review")
+                    .count(),
+                1
+            );
+            if provider == codex::Provider::Claude {
+                assert_eq!(slash_choices(&state, "shipau")[0].0, "/shipau-exact");
+            } else {
+                assert!(slash_choices(&state, "shipau").is_empty());
+            }
+        }
+    }
+
+    #[test]
     fn attachment_file_choices_search_nested_worktree_files() {
         let checkout = tempfile::tempdir().unwrap();
         let root = checkout.path();
@@ -13894,6 +13956,8 @@ mod tests {
             .success());
         fs_err::create_dir_all(root.join("src/services/tasks")).unwrap();
         fs_err::write(root.join("src/services/tasks/add_task_service.js"), "").unwrap();
+        fs_err::write(root.join("ship-pr-auto.md"), "").unwrap();
+        assert!(file_choices(root.to_str().unwrap(), "shipau").contains(&"ship-pr-auto.md".into()));
         fs_err::write(root.join(".gitignore"), "ignored/\n").unwrap();
         fs_err::create_dir_all(root.join("ignored")).unwrap();
         fs_err::write(root.join("ignored/add_task.js"), "").unwrap();

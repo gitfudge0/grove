@@ -609,3 +609,5 @@ shaping, wrapping and resolved supporting foreground color.
 Candidates belong to the response and native composer that requested them. New
 turns, draft handoffs and changed response identity invalidate stale acceptance.
 Historical/read-only transcripts and restored responses do not trigger generation.
+
+File, skill and slash-command completion use case-insensitive fuzzy subsequence matching, so `shipau` finds `ship-pr-auto`. Contiguous and prefix matches rank above scattered matches; empty queries preserve catalog order. Skill completion ranks before applying its existing eight-result limit.
