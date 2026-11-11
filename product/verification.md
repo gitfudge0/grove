@@ -1,5 +1,38 @@
 # Verification and known gaps
 
+## OS display scaling
+
+Linux X11 startup selects an explicit `GPUI_X11_SCALE_FACTOR` first (including
+`randr` mode), then valid `GDK_SCALE`, `Xft.dpi / 96`, physical RandR DPI, or 1x.
+Eight selection regressions cover precedence, malformed automatic inputs,
+fractional Xft DPI, explicit override errors and fallback. An isolated mutation
+removing GDK selection made the original mismatch test fail at 2.5 versus 2.
+The existing three X11 file-drop regressions and 33 UI conformance checks passed.
+
+A disposable Linux GPUI probe used a separate app ID, the production native HTML
+bridge, and no provider services or user configuration. On this desktop it logged
+`GDK_SCALE: 2`; X11 image pixels measured matching native and HTML 100-logical-pixel
+markers at 200 physical pixels, then 240 pixels with 1.2 app/rem and HTML zoom.
+Additional environment-controlled runs measured 100/120 pixels at 1x and 125/150
+pixels with an explicit 1.25 override. These exercise the renderer/bridge at
+fractional scale, not a fractional desktop/compositor configuration. Host window
+physical dimensions also matched the reported logical viewport times its scale.
+No HTML bridge change was needed.
+
+macOS keeps AppKit logical points, native backing-scale notifications and WKWebView
+hosting. Windows keeps GPUI's default PerMonitorV2 manifest, effective monitor/window
+DPI, `WM_DPICHANGED`, and WebView2 logical bounds with physical clipping. Those
+pinned-source boundaries were inspected; neither platform's runtime or cross-monitor
+behavior was tested on the Linux host. The X11 fix does not enter those backends.
+
+Full-shell terminal/composer/menu inspection, pointer targeting, scrolling and
+narrow-window clipping remain unverified for this patch. Codex and Claude transcript
+surfaces and live transports were not exercised. The existing native HTML integration
+script requires unavailable Xvfb tooling; the probe above does not replace that full
+interaction suite. XSettings-only desktops, live Linux scale changes, mixed-DPI
+monitor moves and compositor-side double-scaling configurations remain outside
+this startup fix. Do not infer those outcomes from parser tests or marker pixels.
+
 ## Fuzzy composer completion
 
 File, skill and slash-command completion share the existing launcher fuzzy matcher.

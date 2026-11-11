@@ -23,3 +23,17 @@ The dispatcher removes two copied `nightly_coverage` attributes from its
 `ChannelError` forwarding methods. This vendored crate does not define that
 feature; the unsupported annotations fail stable CI with dependency warnings
 denied. Removing them does not change runtime behavior.
+
+X11 startup scale selection preserves `GPUI_X11_SCALE_FACTOR` as the explicit
+override (including `randr` mode). Otherwise it uses a valid `GDK_SCALE`, then
+`Xft.dpi / 96`, then the RandR physical-DPI estimate, finally 1x. Invalid automatic
+values warn and fall through; invalid explicit overrides retain their startup
+error. The selected source and factor are logged. This avoids estimating 2.5x
+from a monitor's physical dimensions when the desktop explicitly requests 2x.
+`GDK_DPI_SCALE` adjusts text and is not a whole-window scale; Grove's app zoom
+also remains independent of display scaling.
+
+Run `cargo test --test x11_scale` for selection and validation regressions.
+Selection is startup-only: XSettings-only desktops, runtime scale changes and
+mixed-DPI monitor moves remain unsupported by this patch. Actual compositor-side
+scaling and native/HTML alignment require isolated desktop verification.
