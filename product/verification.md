@@ -1,5 +1,14 @@
 # Verification and known gaps
 
+## Fuzzy composer completion
+
+File, skill and slash-command completion share the existing launcher fuzzy matcher.
+Codex and Claude catalog fixtures cover case-insensitive subsequences, ranking,
+disabled skill exclusion, host-command deduplication and the skill result limit.
+Live Codex and Claude catalogs and native popup/keyboard interaction for fuzzy
+queries remain untested; source fixtures do not establish provider transport or
+rendered behavior. No app installation or restart is part of this change.
+
 ## Ambient composer focus glow
 
 Spread transitions now use the shared slow interval (220 ms) and easing in both
