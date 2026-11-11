@@ -1,11 +1,11 @@
 {
   "schema_version": 1,
   "design_system": "grove",
-  "contract_hash": "e70d96728896df10500508442384d96b3b56e28b2a6b689a212f8e20b7342363",
+  "contract_hash": "cb5a19f5dec886f7c7d9c6e89fec98ead14075e05cc71422813ca23ade50d717",
   "owners": {
     "build.rs": "817461b07a7d2e32f2c18329cbbf2314cb70ca97ff7a44a7c7cafd9b00deca00",
-    "native-engine": "3138b358d52eaed8fc06434da71d3e114913c0a6f5b84dc887d5b24530202752",
-    "product/design.md": "0a17362b6edecdec2d0b5de5ffc04fd99cc7183f76df18d6d1df11a504226c63",
+    "native-engine": "5893bc08d854ead56ee06b5d4cf445a54bbe7e6769d33ca0c26aba58412af2fe",
+    "product/design.md": "3320bb5a855a5469bb89ecc238b7031c0b2ff2bbf1975e55f6d7a184f43175a2",
     "reference/compose": "04cd53d2ec55676cf3a356b4d353a6aa7cbd9bd4ba741b872098c6aff7bd07e6",
     "reference/contract": "be75d072404fec0184e3eecb813313a9059eb8b814a765e4ece33d0fe4286703",
     "reference/generate": "de581c807f193a786f63ad89dfc569b537791c8cbf7a8891bc2ac39869aba6fd",
@@ -30,7 +30,7 @@
     "vendor/icon": "5eff4a7bf6e088c290f796da09511943a172d26b9851924e331a0a7adf1a671a",
     "vendor/spinner": "2382b14913ad80f0493b03e92047b876fe80eabf2aa2182230eaa39273f0dfef",
     "vendor/styled": "7dc2d4bef4bdbf980f18d40f1a1c3149e391771da8e86ceda97d4b028fdfde60",
-    "workspace-manifest": "a056201f149cc69ec7612c08d55f1fcc3f2fd615f4522b7f15d1a593d173d87b"
+    "workspace-manifest": "b0da53693d36fcb242bc94c8d916d27a71ff8d679d6e1bdeec62ce6c5e1a046e"
   },
   "fixture": {
     "viewport": {
