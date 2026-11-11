@@ -1251,3 +1251,15 @@ signature verification; the input contains no added installer background. Root
 contents were limited to .DS_Store, Grove.app and the /Applications symlink.
 Ordinary Finder opening previously mounted the image but required manual volume
 navigation; automatic window opening remains unverified despite its metadata hint.
+
+
+## Review brief panel-only presentation (November 2026)
+
+Dedicated review-brief blocks are filtered from assistant transcript prose,
+response Copy and minimap previews while raw responses remain persisted for panel
+extraction. Codex and Claude share this presentation path. Automated fixtures
+cover both provider identities, retained raw text and brief data, streaming
+prefixes, and the attached panel's wide/narrow/zoom layout and review action.
+Live Codex and Claude provider-boundary checks remain untested. Native screenshot
+inspection in light/dark themes and changed zoom remains untested on macOS,
+Linux and Windows; automated layout fixtures do not establish pixel appearance.
