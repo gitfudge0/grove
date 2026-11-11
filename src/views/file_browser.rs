@@ -383,9 +383,24 @@ impl FileBrowser {
         })
         .detach();
     }
-    pub fn open(&mut self, target: FileTarget, window: &mut Window, cx: &mut Context<Self>) {
+    pub fn open(&mut self, mut target: FileTarget, window: &mut Window, cx: &mut Context<Self>) {
         if !self.visible {
             self.return_focus = window.focused(cx);
+        }
+        // Reveal checkout files using the same canonical paths as directory rows.
+        // Explicit outside-checkout links never broaden the explorer root.
+        if let Ok(path) = checked_path(&self.root, &target.path) {
+            target.path = path.clone();
+            if let Ok(root) = self.root.canonicalize() {
+                for parent in path
+                    .ancestors()
+                    .skip(1)
+                    .take_while(|p| p.starts_with(&root))
+                {
+                    self.expanded.insert(parent.to_path_buf());
+                    self.load_directory(parent.to_path_buf(), cx);
+                }
+            }
         }
         self.visible = true;
         self.source = target.line.is_some();
@@ -932,6 +947,50 @@ impl Render for FileBrowser {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[gpui::test]
+    fn opening_reveals_nested_checkout_files_without_expanding_outside_root(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        cx.update(gpui_component::init);
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().canonicalize().unwrap();
+        let nested = root.join("src/views");
+        fs_err::create_dir_all(&nested).unwrap();
+        let file = nested.join("example.rs");
+        fs_err::write(&file, "example").unwrap();
+        let outside = tempfile::NamedTempFile::new().unwrap();
+        let (browser, cx) =
+            cx.add_window_view(|window, cx| FileBrowser::new(root.clone(), window, cx));
+        cx.update(|window, cx| {
+            browser.update(cx, |browser, cx| {
+                browser.open(
+                    local_target(file.to_str().unwrap(), &root).unwrap(),
+                    window,
+                    cx,
+                );
+                assert!(browser.expanded.contains(&root.join("src")));
+                assert!(browser.expanded.contains(&nested));
+                assert_eq!(browser.target.as_ref().unwrap().path, file);
+                let expanded = browser.expanded.clone();
+                browser.open(
+                    local_target(outside.path().to_str().unwrap(), &root).unwrap(),
+                    window,
+                    cx,
+                );
+                assert_eq!(browser.expanded, expanded);
+                assert_eq!(browser.root, root);
+            });
+        });
+        cx.run_until_parked();
+        assert!(
+            browser.read_with(cx, |browser, _| browser.directories[&nested]
+                .as_ref()
+                .unwrap()
+                .iter()
+                .any(|entry| entry.path == file))
+        );
+    }
+
     #[gpui::test]
     fn explorer_automatically_refreshes_without_resetting_expansion(cx: &mut gpui::TestAppContext) {
         cx.update(gpui_component::init);
