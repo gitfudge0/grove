@@ -160,6 +160,7 @@ fn main() {
                 window_min_size: Some(size(px(WINDOW_MIN_W), px(WINDOW_MIN_H))),
                 window_background: WindowBackgroundAppearance::Opaque,
                 app_owns_titlebar_drag: true,
+                window_decorations: Some(gpui::WindowDecorations::Client),
                 titlebar: Some(TitlebarOptions {
                     title: None,
                     appears_transparent: true,

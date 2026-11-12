@@ -1,5 +1,40 @@
 # Verification and known gaps
 
+## Platform-specific window controls
+
+Windows/Linux controls occupy the far right of the whole window; the content
+canvas starts below the full-width header so pane actions do not overlap.
+macOS retains leading traffic lights and fullscreen behavior. Policy coverage
+checks all three OS cases, Linux decoration ownership and advertised controls.
+The 44 shell tests passed, including window-edge bounds at 1280/500/320px,
+1x/1.5x zoom, fullscreen transitions, sidebar collapse and keyboard traversal.
+The 33 conformance checks, seven icon tests and two XWayland decoration tests
+passed. Removing XWayland support in an isolated mutation made its regression
+fail. Formatting, repository-artifact policy and the optimized Linux build passed.
+
+An isolated production Linux X11/XWayland app on Omarchy was visually inspected
+in Grove Dark/Light, normal/narrow windows, long workspace names and 1.5x app
+zoom. Controls remained at the window edge above the content toolbar. Rendered
+resting glyph/background contrast was 7.78:1 dark and 5.32:1 light. A real X11
+fullscreen request round-tripped. A synthetic state-only X11 maximize property
+change switched the square to the restore glyph without resizing. Omarchy
+ignored the EWMH maximize request; this is not a maximize-action pass. Portal
+callback startup no longer reproduced the RefCell panic observed before the
+borrow-release correction.
+
+Native pointer injection did not reliably activate the controls. Native
+click/hover/press, keyboard activation, minimize, close cleanup and drag/double-
+click separation therefore remain unverified; GPUI keyboard fixtures and policy
+tests do not replace that evidence. macOS and Windows native behavior is untested
+on the Linux host. Direct Wayland is unsupported by Grove's X11-only Linux
+bootstrap; traditional X11 server decorations were covered by policy tests only.
+Codex and Claude shared session-header GPUI fixtures both passed. Live provider
+boundaries are untested for both; provider transport behavior did not change.
+
+Strict production Clippy remains blocked by two unchanged baseline warnings:
+`semicolon_if_nothing_returned` in `src/views/codex_view.rs:1862` and
+`assigning_clones` in `src/views/file_browser.rs:393`. No lint rule was weakened.
+
 ## OS display scaling
 
 Linux X11 startup selects an explicit `GPUI_X11_SCALE_FACTOR` first (including

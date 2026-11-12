@@ -4,6 +4,7 @@ use super::motion;
 use super::settings_panel::{SettingsPanel, SettingsPanelEvent};
 use super::worktree_launcher::WorktreeLauncherEvent;
 use super::{rpx, tokens::*};
+use crate::platform::window_chrome::{self, ControlPlatform, WindowAction};
 use crate::{
     activity::ActivityState,
     entities::session_registry::SessionId,
@@ -266,6 +267,7 @@ impl Shell {
                 "window-close",
                 "window-minimize",
                 "window-fullscreen",
+                "window-maximize",
                 "sidebar-toggle",
                 "header-grid",
                 "header-settings",
@@ -436,28 +438,78 @@ impl Shell {
             })
     }
 
+    fn window_controls(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let platform = ControlPlatform::current();
+        let decorations = window.window_decorations();
+        // GPUI TestWindow cannot negotiate client decorations. These layout fixtures
+        // exercise the client-owned header; policy tests cover server ownership.
+        #[cfg(test)]
+        let decorations = {
+            let _ = decorations;
+            gpui::Decorations::Client {
+                tiling: Default::default(),
+            }
+        };
+        let mut group = div()
+            .group("traffic-lights")
+            .flex()
+            .flex_shrink_0()
+            .items_center();
+        for action in window_chrome::controls(platform, decorations, window.window_controls()) {
+            let label = action.label(window.is_fullscreen(), window.is_maximized());
+            let handler: fn(&mut Self, &mut Window, &mut Context<Self>) = match action {
+                WindowAction::Close => Self::close_after_codex,
+                WindowAction::Minimize => |_, window, _| window.minimize_window(),
+                WindowAction::Fullscreen => |_, window, cx| {
+                    window.toggle_fullscreen();
+                    cx.notify();
+                },
+                WindowAction::Maximize => |_, window, cx| {
+                    window.zoom_window();
+                    cx.notify();
+                },
+            };
+            let control = self.header_action(action.id(), label, handler, cx);
+            if platform == ControlPlatform::Mac {
+                let (color, glyph) = match action {
+                    WindowAction::Close => (c::WINDOW_CLOSE(), "close"),
+                    WindowAction::Minimize => (c::WINDOW_MINIMIZE(), "minus"),
+                    _ => (c::WINDOW_FULLSCREEN(), "plus"),
+                };
+                group = group.child(
+                    control.w(rpx(TRAFFIC_CONTROL_W)).child(
+                        div()
+                            .size(rpx(TRAFFIC_LIGHT_D))
+                            .rounded_full()
+                            .bg(color)
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child(
+                                icon(glyph, ICON_XS, c::WINDOW_CONTROL_GLYPH())
+                                    .opacity(0.0)
+                                    .group_hover("traffic-lights", |style| style.opacity(1.0)),
+                            ),
+                    ),
+                );
+            } else {
+                let glyph = match action {
+                    WindowAction::Close => "close",
+                    WindowAction::Minimize => "minus",
+                    WindowAction::Maximize if window.is_maximized() => "window-restore",
+                    _ => "window-maximize",
+                };
+                group = group.child(control.child(icon(glyph, ICON_SM, c::FG_DIM())));
+            }
+        }
+        group
+    }
     fn header(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
         let collapsed = self.sidebar.read(cx).navigation_collapsed(window, cx);
-        let fullscreen = window.is_fullscreen();
         let compact = f32::from(window.viewport_size().width)
             / (f32::from(window.rem_size()) / crate::zoom::REM_BASE)
             < 400.0;
-        let traffic = |control: gpui::Stateful<gpui::Div>, color, glyph| {
-            control.w(rpx(TRAFFIC_CONTROL_W)).child(
-                div()
-                    .size(rpx(TRAFFIC_LIGHT_D))
-                    .rounded_full()
-                    .bg(color)
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .child(
-                        icon(glyph, ICON_XS, c::WINDOW_CONTROL_GLYPH())
-                            .opacity(0.0)
-                            .group_hover("traffic-lights", |style| style.opacity(1.0)),
-                    ),
-            )
-        };
+        let mac = ControlPlatform::current() == ControlPlatform::Mac;
         div()
             .id("app-header")
             .relative()
@@ -472,47 +524,8 @@ impl Shell {
             .pr(rpx(SPACE_LG))
             .pt(rpx(APPBAR_TOP_INSET))
             .bg(c::BG_RAIL())
-            .child(
-                div()
-                    .group("traffic-lights")
-                    .flex()
-                    .flex_shrink_0()
-                    .items_center()
-                    .child(traffic(
-                        self.header_action(
-                            "window-close",
-                            "Close window",
-                            Self::close_after_codex,
-                            cx,
-                        ),
-                        c::WINDOW_CLOSE(),
-                        "close",
-                    ))
-                    .child(traffic(
-                        self.header_action(
-                            "window-minimize",
-                            "Minimize window",
-                            |_, window, _| window.minimize_window(),
-                            cx,
-                        ),
-                        c::WINDOW_MINIMIZE(),
-                        "minus",
-                    ))
-                    .child(traffic(
-                        self.header_action(
-                            "window-fullscreen",
-                            if fullscreen {
-                                "Exit full screen"
-                            } else {
-                                "Enter full screen"
-                            },
-                            |_, window, _| window.toggle_fullscreen(),
-                            cx,
-                        ),
-                        c::WINDOW_FULLSCREEN(),
-                        "plus",
-                    )),
-            )
+            .when(mac, |header| header.child(self.window_controls(window, cx)))
+            .when(compact, |header| header.child(div().flex_1()))
             .when(!compact, |header| {
                 header.child(
                     div().flex_1().min_w_0().child(
@@ -564,6 +577,57 @@ impl Shell {
                         }
                     }),
             )
+    }
+
+    fn window_header(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let mac = ControlPlatform::current() == ControlPlatform::Mac;
+        let sidebar_width = self.sidebar.read(cx).animated_sidebar_width(window, cx);
+        let leading_width = if mac {
+            sidebar_width
+        } else {
+            sidebar_width.max(CHROME_CONTROL_H + SPACE_LG * 2.0)
+        };
+        div()
+            .id("window-header")
+            .debug_selector(|| "window-header".into())
+            .absolute()
+            .top_0()
+            .left_0()
+            .h(rpx(APPBAR_TOTAL_H))
+            .flex()
+            .items_center()
+            .bg(c::BG_RAIL())
+            .when(mac, |row| row.w(rpx(leading_width)))
+            .when(!mac, |row| row.w_full())
+            .child(
+                div()
+                    .w(rpx(leading_width))
+                    .flex_shrink_0()
+                    .child(self.header(window, cx)),
+            )
+            .when(!mac, |row| {
+                row.child(
+                    div()
+                        .id("window-header-drag-region")
+                        .flex_1()
+                        .min_w_0()
+                        .h_full()
+                        .on_mouse_down(MouseButton::Left, |event, window, _| {
+                            if event.click_count == 2 {
+                                window.titlebar_double_click();
+                            } else {
+                                window.start_window_move();
+                            }
+                        }),
+                )
+                .child(
+                    div()
+                        .flex_shrink_0()
+                        .pt(rpx(APPBAR_TOP_INSET))
+                        .pr(rpx(SPACE_LG))
+                        .child(self.window_controls(window, cx)),
+                )
+            })
     }
 
     fn close_after_codex(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -1553,6 +1617,7 @@ impl Render for Shell {
             });
             let runtime = self.runtime.clone();
             self.window_observers = Some(vec![
+                cx.observe_window_bounds(window, |_, _, cx| cx.notify()),
                 cx.observe_window_appearance(window, |_, window, cx| {
                     ThemeState::set_system_mode(cx, window.appearance());
                     cx.notify();
@@ -1791,17 +1856,7 @@ impl Render for Shell {
                 this.set_zoom(0.0, window, cx);
             }))
             .child(div().flex_1().min_h_0().child(self.sidebar.clone()))
-            .child(
-                div()
-                    .child(self.header(window, cx))
-                    .absolute()
-                    .top_0()
-                    .left_0()
-                    .w(rpx(self
-                        .sidebar
-                        .read(cx)
-                        .animated_sidebar_width(window, cx))),
-            )
+            .child(self.window_header(window, cx))
             .when(
                 self.runtime
                     .read(cx)
@@ -2294,21 +2349,127 @@ mod tests {
         });
     }
 
+    fn window_toggle_id() -> &'static str {
+        if cfg!(target_os = "macos") {
+            "window-fullscreen"
+        } else {
+            "window-maximize"
+        }
+    }
+    #[gpui::test]
+    fn header_controls_follow_platform_order_without_overlap(cx: &mut gpui::TestAppContext) {
+        cx.update(init_projects);
+        let (shell, cx) = cx.add_window_view(Shell::new);
+        draw(cx);
+        let close = cx.debug_bounds("window-close").unwrap();
+        let minimize = cx.debug_bounds("window-minimize").unwrap();
+        let toggle = cx.debug_bounds(window_toggle_id()).unwrap();
+        let sidebar = cx.debug_bounds("sidebar-toggle").unwrap();
+        let header = cx.debug_bounds("app-header").unwrap();
+        if cfg!(target_os = "macos") {
+            assert!(close.right() <= minimize.left());
+            assert!(minimize.right() <= toggle.left());
+            assert!(toggle.right() <= sidebar.left());
+            assert!(cx.debug_bounds("window-maximize").is_none());
+        } else {
+            assert!(sidebar.right() <= minimize.left());
+            assert!(minimize.right() <= toggle.left());
+            assert!(toggle.right() <= close.left());
+            let window_header = cx.debug_bounds("window-header").unwrap();
+            assert!(close.left() >= header.right());
+            assert!((f32::from(window_header.right() - close.right()) - SPACE_LG).abs() <= 1.);
+            assert_eq!(
+                window_header.right(),
+                cx.update(|window, _| window.viewport_size().width)
+            );
+            assert!(cx.debug_bounds("window-fullscreen").is_none());
+        }
+        let ids: &[&str] = if cfg!(target_os = "macos") {
+            &["window-close", "window-minimize", "window-fullscreen"]
+        } else {
+            &[
+                "sidebar-toggle",
+                "window-minimize",
+                "window-maximize",
+                "window-close",
+            ]
+        };
+        cx.update(|window, cx| {
+            shell.read(cx).header_focus[ids[0]]
+                .clone()
+                .focus(window, cx)
+        });
+        for id in &ids[1..] {
+            cx.simulate_keystrokes("tab");
+            draw(cx);
+            cx.update(|window, cx| {
+                assert!(shell.read(cx).header_focus[id].is_focused(window), "{id}")
+            });
+        }
+        for id in ids[..ids.len() - 1].iter().rev() {
+            cx.simulate_keystrokes("shift-tab");
+            draw(cx);
+            cx.update(|window, cx| {
+                assert!(shell.read(cx).header_focus[id].is_focused(window), "{id}")
+            });
+        }
+    }
     #[gpui::test]
     fn header_controls_support_keyboard_and_restore_settings_source(cx: &mut gpui::TestAppContext) {
         cx.update(init_projects);
         let (shell, cx) = cx.add_window_view(Shell::new);
         draw(cx);
-        cx.update(|window, cx| {
-            let focus = shell.read(cx).header_focus["window-fullscreen"].clone();
-            focus.focus(window, cx);
-        });
-        cx.simulate_keystrokes("enter");
-        draw(cx);
-        cx.update(|window, _| assert!(window.is_fullscreen()));
-        cx.simulate_keystrokes("space");
-        draw(cx);
-        cx.update(|window, _| assert!(!window.is_fullscreen()));
+        // TestWindow implements fullscreen but not minimize/zoom. Exercise the
+        // shared keyboard handler through the sidebar button on other targets;
+        // real maximize/minimize needs native platform evidence.
+        if cfg!(target_os = "macos") {
+            cx.update(|window, cx| {
+                shell.read(cx).header_focus["window-fullscreen"]
+                    .clone()
+                    .focus(window, cx)
+            });
+            cx.simulate_keystrokes("enter");
+            draw(cx);
+            cx.update(|window, _| assert!(window.is_fullscreen()));
+            cx.simulate_keystrokes("space");
+            draw(cx);
+            cx.update(|window, _| assert!(!window.is_fullscreen()));
+        } else {
+            let initial = cx.update(|window, cx| {
+                shell.read(cx).header_focus["sidebar-toggle"]
+                    .clone()
+                    .focus(window, cx);
+                cx.global::<crate::settings::SettingsState>()
+                    .store
+                    .sidebar_collapsed
+            });
+            cx.simulate_keystrokes("enter");
+            draw(cx);
+            cx.update(|_, cx| {
+                assert_eq!(
+                    cx.global::<crate::settings::SettingsState>()
+                        .store
+                        .sidebar_collapsed,
+                    !initial
+                )
+            });
+            // Collapsing navigation deliberately restores content focus.
+            cx.update(|window, cx| {
+                shell.read(cx).header_focus["sidebar-toggle"]
+                    .clone()
+                    .focus(window, cx)
+            });
+            cx.simulate_keystrokes("space");
+            draw(cx);
+            cx.update(|_, cx| {
+                assert_eq!(
+                    cx.global::<crate::settings::SettingsState>()
+                        .store
+                        .sidebar_collapsed,
+                    initial
+                )
+            });
+        }
         let settings = cx.debug_bounds("sidebar-settings").unwrap();
         cx.simulate_mouse_down(
             settings.center(),
@@ -2443,7 +2604,7 @@ mod tests {
             for id in [
                 "window-close",
                 "window-minimize",
-                "window-fullscreen",
+                window_toggle_id(),
                 "sidebar-toggle",
             ] {
                 assert!(cx.debug_bounds(id).is_some(), "{id}");
@@ -2514,7 +2675,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn home_content_uses_full_height_beside_sidebar_window_header(cx: &mut gpui::TestAppContext) {
+    fn home_content_respects_platform_window_header(cx: &mut gpui::TestAppContext) {
         cx.update(init);
         let (_, cx) = cx.add_window_view(Shell::new);
         draw(cx);
@@ -2522,7 +2683,15 @@ mod tests {
         let canvas = cx.debug_bounds("sidebar-canvas").unwrap();
         let header = cx.debug_bounds("app-header").unwrap();
         assert_eq!(rail.top(), header.top());
-        assert_eq!(canvas.top(), header.top());
+        assert_eq!(
+            canvas.top(),
+            if cfg!(target_os = "macos") {
+                header.top()
+            } else {
+                header.bottom()
+            }
+        );
+        assert_eq!(canvas.bottom(), rail.bottom());
         assert!(header.right() <= canvas.left());
         assert_eq!(canvas.left(), rail.right());
         let workspace = cx
@@ -2542,7 +2711,7 @@ mod tests {
         for selector in [
             "window-close",
             "window-minimize",
-            "window-fullscreen",
+            window_toggle_id(),
             "sidebar-toggle",
             "sidebar-settings",
         ] {
@@ -2572,7 +2741,15 @@ mod tests {
         assert!((f32::from(rail.size.width) - expected).abs() <= 1.0);
         assert_eq!(rail.left(), gpui::px(0.));
         assert_eq!(rail.top(), header.top());
-        assert_eq!(canvas.top(), header.top());
+        assert_eq!(
+            canvas.top(),
+            if cfg!(target_os = "macos") {
+                header.top()
+            } else {
+                header.bottom()
+            }
+        );
+        assert_eq!(canvas.bottom(), rail.bottom());
         assert_eq!(canvas.left(), rail.right());
         assert!((f32::from(divider.right() - rail.right())).abs() <= 1.0);
         assert!(divider.left() >= rail.left());
@@ -2765,7 +2942,11 @@ mod tests {
             assert!(settings.top() > header.bottom());
             assert_eq!(
                 cx.debug_bounds("sidebar-canvas").unwrap().top(),
-                header.top()
+                if cfg!(target_os = "macos") {
+                    header.top()
+                } else {
+                    header.bottom()
+                }
             );
         }
     }
@@ -2817,7 +2998,15 @@ mod tests {
                     let settings = cx.debug_bounds("sidebar-settings").unwrap();
                     let grid = cx.debug_bounds("sidebar-grid").unwrap();
                     assert_eq!(rail.top(), header.top());
-                    assert_eq!(canvas.top(), header.top());
+                    assert_eq!(
+                        canvas.top(),
+                        if cfg!(target_os = "macos") {
+                            header.top()
+                        } else {
+                            header.bottom()
+                        }
+                    );
+                    assert_eq!(canvas.bottom(), rail.bottom());
                     assert!(header.right() <= canvas.left());
                     if width / zoom >= 400. {
                         assert!(header.contains(&picker.expect("workspace picker").center()));
@@ -2834,10 +3023,22 @@ mod tests {
                     for selector in [
                         "window-close",
                         "window-minimize",
-                        "window-fullscreen",
+                        window_toggle_id(),
                         "sidebar-toggle",
                     ] {
                         assert!(cx.debug_bounds(selector).is_some(), "{selector}");
+                    }
+                    if !cfg!(target_os = "macos") {
+                        let bar = cx.debug_bounds("window-header").unwrap();
+                        let close = cx.debug_bounds("window-close").unwrap();
+                        let minimize = cx.debug_bounds("window-minimize").unwrap();
+                        let sidebar = cx.debug_bounds("sidebar-toggle").unwrap();
+                        assert_eq!(bar.right(), gpui::px(width));
+                        assert!(
+                            (f32::from(bar.right() - close.right()) - SPACE_LG * zoom).abs() <= 1.
+                        );
+                        assert!(minimize.left() >= sidebar.right());
+                        assert!(canvas.top() >= bar.bottom());
                     }
                     let geometry = (header, rail, canvas, picker, settings, grid);
                     if let Some(prior) = previous {

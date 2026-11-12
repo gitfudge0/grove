@@ -278,7 +278,7 @@ pub struct X11WindowState {
     hidden: bool,
     active: bool,
     hovered: bool,
-    pub(crate) force_render_after_recovery: bool,
+    pub(crate) force_render: bool,
     fullscreen: bool,
     client_side_decorations_supported: bool,
     decorations: WindowDecorations,
@@ -795,7 +795,7 @@ impl X11WindowState {
                 input_handler: None,
                 active: false,
                 hovered: false,
-                force_render_after_recovery: false,
+                force_render: false,
                 fullscreen: false,
                 maximized_vertical: false,
                 maximized_horizontal: false,
@@ -1080,6 +1080,11 @@ impl X11WindowStatePtr {
             .chunks_exact(4)
             .map(|chunk| u32::from_ne_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]));
 
+        let previous_chrome = (
+            state.fullscreen,
+            state.maximized_vertical,
+            state.maximized_horizontal,
+        );
         state.active = false;
         state.fullscreen = false;
         state.maximized_vertical = false;
@@ -1099,6 +1104,16 @@ impl X11WindowStatePtr {
                 state.hidden = true;
             }
         }
+
+        // State-only changes can arrive without ConfigureNotify (for example,
+        // restoring a window already at maximized dimensions). Invalidate cached
+        // caption controls on the next refresh, outside the client borrow.
+        state.force_render |= previous_chrome
+            != (
+                state.fullscreen,
+                state.maximized_vertical,
+                state.maximized_horizontal,
+            );
 
         Ok(())
     }
@@ -1595,7 +1610,11 @@ impl PlatformWindow for X11Window {
     fn is_subpixel_rendering_supported(&self) -> bool {
         // Painting may run inside a callback holding the X11 client borrow.
         // The renderer already owns the immutable capability for this window.
-        self.0.state.borrow().renderer.supports_dual_source_blending()
+        self.0
+            .state
+            .borrow()
+            .renderer
+            .supports_dual_source_blending()
     }
 
     fn minimize(&self) {
@@ -1707,14 +1726,14 @@ impl PlatformWindow for X11Window {
                 }
             }
 
-            inner.force_render_after_recovery = true;
+            inner.force_render = true;
             return;
         }
 
         inner.renderer.draw(scene);
 
         if inner.renderer.needs_redraw() {
-            inner.force_render_after_recovery = true;
+            inner.force_render = true;
         }
     }
 

@@ -43,3 +43,19 @@ before platform creation. Only the Xft.dpi fallback divides out this factor,
 because GNOME publishes text DPI multiplied by its window scale in Xft.dpi.
 Explicit GPUI/GDK overrides and physical RandR estimates remain display-only.
 Runtime text preference changes update application sizing, not display scale.
+
+XWayland client decorations are supported when the server advertises its
+`XWAYLAND` extension, even without the traditional X11 compositor selection or
+GTK shadow hints. Those hints were absent on Omarchy, causing a server-decoration
+fallback with no visible titlebar or window controls. Traditional X11 retains
+its existing compositing/GTK-hint requirements. Run `cargo test --test
+x11_decorations` and inspect the main header on an isolated XWayland app.
+
+X11 fullscreen/maximized state property changes also request a fresh view render
+on the existing refresh loop, including when dimensions do not change. The
+request remains deferred until the client borrow is released, preserving the
+existing GPU recovery redraw path and avoiding reentrant UI rendering.
+
+Portal appearance and button-layout callbacks release the X11 client borrow
+before invoking window callbacks. These callbacks can draw and update the cursor;
+holding the borrow caused a startup RefCell panic in isolated native header QA.
