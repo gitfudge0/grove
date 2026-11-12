@@ -1,3 +1,5 @@
+#[path = "decorations.rs"]
+mod decorations;
 #[path = "file_drop.rs"]
 mod file_drop;
 use anyhow::{Context as _, anyhow};
@@ -385,11 +387,24 @@ impl X11Client {
         let compositor_present = check_compositor_present(&xcb_connection, root);
         let gtk_frame_extents_supported =
             check_gtk_frame_extents_supported(&xcb_connection, &atoms, root);
-        let client_side_decorations_supported = compositor_present && gtk_frame_extents_supported;
-        log::info!(
-            "x11: compositor present: {}, gtk_frame_extents_supported: {}",
+        // XWayland is already composited. It need not publish the X11
+        // compositor selection or GTK shadow hints used by traditional WMs.
+        let xwayland = get_reply(
+            || "Failed to query XWAYLAND extension",
+            xcb_connection.query_extension(b"XWAYLAND"),
+        )
+        .log_with_level(Level::Debug)
+        .is_some_and(|reply| reply.present);
+        let client_side_decorations_supported = decorations::supports_client_decorations(
+            xwayland,
             compositor_present,
-            gtk_frame_extents_supported
+            gtk_frame_extents_supported,
+        );
+        log::info!(
+            "x11: compositor present: {}, gtk_frame_extents_supported: {}, XWayland: {}",
+            compositor_present,
+            gtk_frame_extents_supported,
+            xwayland
         );
 
         let xkb = get_reply(
@@ -488,8 +503,15 @@ impl X11Client {
                 move |event, _, client| match event {
                     XDPEvent::WindowAppearance(appearance) => {
                         client.with_common(|common| common.appearance = appearance);
-                        for window in client.0.borrow_mut().windows.values_mut() {
-                            window.window.set_appearance(appearance);
+                        let windows: Vec<_> = client
+                            .0
+                            .borrow()
+                            .windows
+                            .values()
+                            .map(|window| window.window.clone())
+                            .collect();
+                        for mut window in windows {
+                            window.set_appearance(appearance);
                         }
                     }
                     XDPEvent::ButtonLayout(layout_str) => {
@@ -497,8 +519,15 @@ impl X11Client {
                             .log_err()
                             .unwrap_or_else(WindowButtonLayout::linux_default);
                         client.with_common(|common| common.button_layout = layout);
-                        for window in client.0.borrow_mut().windows.values_mut() {
-                            window.window.set_button_layout();
+                        let windows: Vec<_> = client
+                            .0
+                            .borrow()
+                            .windows
+                            .values()
+                            .map(|window| window.window.clone())
+                            .collect();
+                        for window in windows {
+                            window.set_button_layout();
                         }
                     }
                     XDPEvent::CursorTheme(_) | XDPEvent::CursorSize(_) => {
@@ -1993,9 +2022,8 @@ impl X11ClientState {
                         if let Some(window) = state.windows.get_mut(&x_window) {
                             let expose_event_received = window.expose_event_received;
                             window.expose_event_received = false;
-                            let force_render = std::mem::take(
-                                &mut window.window.state.borrow_mut().force_render_after_recovery,
-                            );
+                            let force_render =
+                                std::mem::take(&mut window.window.state.borrow_mut().force_render);
                             let window = window.window.clone();
                             drop(state);
                             window.refresh(RequestFrameOptions {

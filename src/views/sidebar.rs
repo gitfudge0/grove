@@ -5808,7 +5808,10 @@ impl Render for Sidebar {
                     .relative()
                     .flex_1()
                     .min_w_0()
-                    .h_full()
+                    .when(cfg!(target_os = "macos"), |canvas| canvas.h_full())
+                    .when(!cfg!(target_os = "macos"), |canvas| {
+                        canvas.mt(rpx(APPBAR_TOTAL_H))
+                    })
                     .bg(c::BG())
                     .rounded_tl(rpx(RADIUS_PANEL))
                     .overflow_hidden()

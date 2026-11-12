@@ -181,6 +181,10 @@ fn svg_for(name: &str) -> String {
         "plus" => r#"<path d="M8 3v10M3 8h10"/>"#,
         "reply" => r#"<path d="m6 3-4 4 4 4M2 7h7a5 5 0 0 1 5 5v1"/>"#,
         "copy" => r#"<rect x="5" y="5" width="8" height="8" rx="1"/><path d="M10 5V3H3v7h2"/>"#,
+        "window-maximize" => r#"<rect x="3" y="3" width="10" height="10" rx="1"/>"#,
+        "window-restore" => {
+            r#"<rect x="3" y="5" width="8" height="8" rx="1"/><path d="M5 5V3h8v8h-2"/>"#
+        }
         "minus" => r#"<path d="M3 8h10"/>"#,
         "close" => r#"<path d="M4 4l8 8M12 4l-8 8"/>"#,
         "status-info" => r#"<circle cx="8" cy="8" r="6"/><path d="M8 7v4M8 4.5h.01"/>"#,
@@ -461,6 +465,8 @@ mod tests {
             "terminal",
             "more",
             "trash",
+            "window-maximize",
+            "window-restore",
             "close",
             "check",
             "dot",
