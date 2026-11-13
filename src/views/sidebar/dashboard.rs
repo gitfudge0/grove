@@ -652,6 +652,20 @@ impl Sidebar {
                         return;
                     }
                     match event {
+                        CodexViewEvent::OpenConnections(provider, cwd, args, focus) => {
+                            if let Some(settings) = &this.settings_panel {
+                                settings.update(cx, |panel, cx| {
+                                    panel.request_connections(
+                                        *provider,
+                                        cwd.clone(),
+                                        args.clone(),
+                                        focus.clone(),
+                                        cx,
+                                    );
+                                });
+                            }
+                            cx.notify();
+                        }
                         CodexViewEvent::DashboardSubmit => this.launch_dashboard(window, cx),
                         CodexViewEvent::ReviewChanges(preference, focus) => {
                             this.invoke_review_skill(preference.clone(), focus.clone(), cx);
@@ -809,9 +823,11 @@ impl Sidebar {
             .provider_updates
             .read(cx)
             .is_updating(provider.agent())
+            || grove_core::connections::credentials_busy(provider.agent())
         {
-            self.content_error =
-                Some("This provider is updating. Wait for the update to finish.".into());
+            self.content_error = Some(
+                "This provider is updating or changing credentials. Wait for it to finish.".into(),
+            );
             cx.notify();
             return;
         }

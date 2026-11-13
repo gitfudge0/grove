@@ -714,6 +714,10 @@ impl Sidebar {
         use super::super::codex_view::CodexViewEvent;
         self.observers.push(cx.subscribe(view, move |this, _, event, cx| {
             match event {
+                CodexViewEvent::OpenConnections(provider,cwd,args,focus) => {
+                    if let Some(settings)=&this.settings_panel {settings.update(cx,|panel,cx|panel.request_connections(*provider,cwd.clone(),args.clone(),focus.clone(),cx));}
+                    cx.notify();
+                }
                 CodexViewEvent::ForkRequested(boundary, restore_user) => {
                     let result = this.runtime.update(cx, |runtime, cx| {
                         runtime.fork_session(id, *boundary, *restore_user, cx)

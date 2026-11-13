@@ -43,6 +43,7 @@ impl Session {
         if cancelled.load(Ordering::Acquire) {
             return Err("Side chat stopped.".into());
         }
+        let _provider_use = crate::connections::ProviderUse::acquire(parent.provider)?;
         let question = conversation
             .last()
             .filter(|(role, text)| role == "user" && !text.trim().is_empty())

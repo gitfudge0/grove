@@ -87,6 +87,7 @@ fn runs_agents_in_terminal(store: &Store) -> bool {
 pub enum SettingsPanelEvent {
     Closed,
     OpenHighlights { debug: bool },
+    ConnectionsChanged(grove_core::provider::Provider),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -97,6 +98,7 @@ enum Page {
     Themes,
     Archived,
     Providers,
+    Connections,
 }
 
 /// The reference lists only actions the replacement shell handles. The numbered
@@ -149,6 +151,9 @@ pub struct SettingsPanel {
     _provider_observer: Subscription,
     changelog_markdown: Vec<(String, String, Entity<gpui_component::text::TextViewState>)>,
     provider_details: HashSet<&'static str>,
+    connections: Entity<super::connections_panel::ConnectionsPanel>,
+    connections_pending_focus: bool,
+    _connections_subscription: Subscription,
 }
 
 impl EventEmitter<SettingsPanelEvent> for SettingsPanel {}
@@ -159,8 +164,19 @@ impl SettingsPanel {
         let shell_environment = runtime.read(cx).shell_environment.clone();
         let provider_updates = runtime.read(cx).provider_updates.clone();
         let scroll = ScrollHandle::new();
+        let connections =
+            cx.new(|cx| super::connections_panel::ConnectionsPanel::new(runtime.clone(), cx));
+        let connections_subscription = cx.subscribe(
+            &connections,
+            |_, _, event: &super::connections_panel::ConnectionChanged, cx| {
+                cx.emit(SettingsPanelEvent::ConnectionsChanged(event.0));
+            },
+        );
         Self {
             runtime,
+            connections,
+            _connections_subscription: connections_subscription,
+            connections_pending_focus: false,
             focus: cx.focus_handle(),
             return_focus: None,
             open: false,
@@ -222,6 +238,28 @@ impl SettingsPanel {
         self.open(window, cx);
         self.select_category(Category::Agents, cx);
         self.open_nested(Page::Providers, window, cx);
+    }
+
+    pub(crate) fn request_connections(
+        &mut self,
+        provider: grove_core::provider::Provider,
+        cwd: String,
+        args: Vec<String>,
+        source_focus: Option<FocusHandle>,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.open {
+            self.return_focus = source_focus;
+        }
+        self.open = true;
+        self.category = Category::Agents;
+        self.page = Page::Connections;
+        self.connections_pending_focus = true;
+        self.scroll.set_offset(gpui::Point::default());
+        self.connections.update(cx, |panel, cx| {
+            panel.select_context(provider, cwd, args, cx);
+        });
+        cx.notify();
     }
 
     pub fn open_shortcuts(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -579,6 +617,10 @@ impl SettingsPanel {
                     }),
                 );
             self.archived_panel = Some(panel);
+        }
+        if page == Page::Connections {
+            self.connections
+                .update(cx, |panel, cx| panel.refresh(false, cx));
         }
         if page == Page::Themes {
             if self.theme_search.is_none() {
@@ -1330,6 +1372,12 @@ impl SettingsPanel {
                         .child(crate::icons::icon("arrow-right", ICON_SM, c::FG_DIM()))
                         .child("Provider versions")
                         .on_click(cx.listener(|this, _, window, cx| this.open_nested(Page::Providers, window, cx)))))
+                .child(Self::setting_row("Connections", "Sign in to Codex or Claude and authorize configured MCP servers.",
+                    self.button("settings-connections", "Connections", false, true)
+                        .debug_selector(|| "settings-connections".into())
+                        .child(crate::icons::icon("arrow-right", ICON_SM, c::FG_DIM()))
+                        .child("Connections")
+                        .on_click(cx.listener(|this, _, window, cx| this.open_nested(Page::Connections, window, cx)))))
                 .child(Self::section("Agent access"))
                 .child(Self::setting_row("Yolo mode", "Launch new CLI and native sessions with bypass permissions. When off, agents use their defaults. OpenCode uses its own permissions.", permissions))
                 .child(Self::section("Browser access"))
@@ -1752,6 +1800,10 @@ impl Focusable for SettingsPanel {
 
 impl Render for SettingsPanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if self.connections_pending_focus {
+            self.connections_pending_focus = false;
+            self.focus.focus(window, cx);
+        }
         if self.page == Page::Archived {
             return div()
                 .id("settings-archived-page")
@@ -1769,6 +1821,7 @@ impl Render for SettingsPanel {
             Page::Changelog => "Changelog",
             Page::Themes => "Themes",
             Page::Providers => "Provider versions",
+            Page::Connections => "Connections",
             Page::Archived => "Archived projects",
         };
         let body = match self.page {
@@ -1777,6 +1830,7 @@ impl Render for SettingsPanel {
             Page::Changelog => self.changelog_body(window, cx),
             Page::Themes => self.themes_body(cx),
             Page::Providers => self.providers_body(cx),
+            Page::Connections => div().child(self.connections.clone()),
             Page::Archived => {
                 div().when_some(self.archived_panel.clone(), gpui::ParentElement::child)
             }
@@ -2008,6 +2062,153 @@ mod tests {
         cx.update(|window, cx| {
             let _ = window.draw(cx);
         });
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[ignore = "captures isolated Connections screens with fixture state"]
+    fn connections_review_linux_capture() {
+        let output = std::path::PathBuf::from(
+            std::env::var_os("GROVE_CONNECTIONS_QA_OUTPUT").expect("task-owned capture directory"),
+        );
+        assert!(
+            std::env::var_os("GROVE_CONFIG_DIR").is_some(),
+            "isolated configuration required"
+        );
+        fs_err::create_dir_all(&output).unwrap();
+        gpui_platform::application()
+            .with_assets(crate::assets::Assets)
+            .run(move |cx| {
+                setup(cx);
+                crate::fonts::register(cx).unwrap();
+                cx.set_reduce_motion(true);
+                let mut retained = None;
+                let window = cx
+                    .open_window(
+                        gpui::WindowOptions {
+                            app_id: Some("dev.grove.connections-review-qa".into()),
+                            kind: gpui::WindowKind::PopUp,
+                            window_bounds: Some(gpui::WindowBounds::Windowed(gpui::Bounds::new(
+                                gpui::point(gpui::px(40.), gpui::px(40.)),
+                                gpui::size(gpui::px(900.), gpui::px(900.)),
+                            ))),
+                            ..Default::default()
+                        },
+                        |window, cx| {
+                            window.set_window_title("Grove Connections review QA");
+                            let runtime = cx.new(Runtime::new);
+                            let panel = cx.new(|cx| SettingsPanel::new(runtime, cx));
+                            panel.update(cx, |panel, cx| {
+                                panel.open(window, cx);
+                                panel.category = Category::Agents;
+                                panel.page = Page::Connections;
+                            });
+                            retained = Some(panel.clone());
+                            cx.new(|cx| gpui_component::Root::new(panel, window, cx))
+                        },
+                    )
+                    .unwrap();
+                let panel = retained.unwrap();
+                cx.activate(true);
+                cx.spawn(async move |cx| {
+                    for (theme, rem, width) in [
+                        ("grove-dark", 16., 900.),
+                        ("grove-light", 16., 900.),
+                        ("grove-dark", 24., 500.),
+                    ] {
+                        for scenario in [
+                            "connected",
+                            "signed-out",
+                            "external",
+                            "waiting",
+                            "failed",
+                            "confirm",
+                            "contexts",
+                        ] {
+                            cx.update(|cx| {
+                                grove_core::theme::set_by_name(theme);
+                                c::sync_component_theme(cx);
+                                gpui_component::Theme::global_mut(cx).font_size = gpui::px(rem);
+                            });
+                            cx.update_window(window.into(), |_, window, cx| {
+                                window.resize(gpui::size(gpui::px(width), gpui::px(900.)));
+                                window.set_rem_size(gpui::px(rem));
+                                panel.update(cx, |panel, cx| {
+                                    panel.scroll.set_offset(gpui::Point::default());
+                                    panel.connections.update(cx, |connections, cx| {
+                                        connections.fixture(scenario, window, cx);
+                                    });
+                                    cx.notify();
+                                });
+                                window.refresh();
+                            })
+                            .unwrap();
+                            cx.background_executor()
+                                .timer(std::time::Duration::from_millis(200))
+                                .await;
+                            if let Some(helper) = std::env::var_os("GROVE_QA_EXPOSE_HELPER") {
+                                for _ in 0..3 {
+                                    assert!(std::process::Command::new(&helper)
+                                        .arg("Grove Connections review QA")
+                                        .status()
+                                        .unwrap()
+                                        .success());
+                                    cx.background_executor()
+                                        .timer(std::time::Duration::from_millis(100))
+                                        .await;
+                                }
+                            }
+                            let path = output
+                                .join(format!("connections-{scenario}-{theme}-{rem}-{width}.png"));
+                            assert!(std::process::Command::new("import")
+                                .arg("-window")
+                                .arg("Grove Connections review QA")
+                                .arg(&path)
+                                .status()
+                                .unwrap()
+                                .success());
+                            if scenario == "waiting" || width <= 500. {
+                                cx.update(|cx| {
+                                    panel.update(cx, |panel, cx| {
+                                        panel.scroll.set_offset(gpui::point(
+                                            gpui::px(0.),
+                                            gpui::px(-10000.),
+                                        ));
+                                        cx.notify();
+                                    });
+                                });
+                                cx.background_executor()
+                                    .timer(std::time::Duration::from_millis(100))
+                                    .await;
+                                if let Some(helper) = std::env::var_os("GROVE_QA_EXPOSE_HELPER") {
+                                    for _ in 0..3 {
+                                        assert!(std::process::Command::new(&helper)
+                                            .arg("Grove Connections review QA")
+                                            .status()
+                                            .unwrap()
+                                            .success());
+                                        cx.background_executor()
+                                            .timer(std::time::Duration::from_millis(100))
+                                            .await;
+                                    }
+                                }
+                                let path = output.join(format!(
+                                    "connections-{scenario}-bottom-{theme}-{rem}-{width}.png"
+                                ));
+                                assert!(std::process::Command::new("import")
+                                    .arg("-window")
+                                    .arg("Grove Connections review QA")
+                                    .arg(path)
+                                    .status()
+                                    .unwrap()
+                                    .success());
+                            }
+                        }
+                    }
+                    cx.update(|cx| cx.quit());
+                })
+                .detach();
+            });
     }
 
     #[cfg(target_os = "linux")]
@@ -2274,6 +2475,74 @@ mod tests {
                 })
                 .detach();
             });
+    }
+
+    #[gpui::test]
+    fn connections_auth_completion_restores_owned_focus_without_stealing_other_focus(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        cx.update(setup);
+        let (panel, cx) = cx.add_window_view(|_, cx| {
+            let runtime = cx.new(Runtime::new);
+            SettingsPanel::new(runtime, cx)
+        });
+        cx.update(|window, cx| {
+            panel.update(cx, |panel, cx| {
+                panel.open(window, cx);
+                panel.page = Page::Connections;
+            });
+        });
+        for target in [0, 1, 2] {
+            cx.update(|window, cx| {
+                panel.update(cx, |panel, cx| {
+                    panel.connections.update(cx, |connections, cx| {
+                        connections.fixture("waiting", window, cx);
+                    });
+                });
+            });
+            draw(cx);
+            cx.update(|window, cx| {
+                panel.update(cx, |panel, cx| {
+                    panel.connections.update(cx, |connections, cx| {
+                        let focus = if target == 2 {
+                            connections.fixture_copy_focus()
+                        } else {
+                            connections.fixture_auth_focus(target == 0, cx)
+                        };
+                        focus.focus(window, cx);
+                        connections.fixture_finish(cx);
+                    });
+                });
+            });
+            draw(cx);
+            cx.update(|window, cx| {
+                assert!(panel
+                    .read(cx)
+                    .connections
+                    .read(cx)
+                    .fixture_return_focus()
+                    .is_focused(window));
+            });
+        }
+        cx.update(|window, cx| {
+            panel.update(cx, |panel, cx| {
+                panel.connections.update(cx, |connections, cx| {
+                    connections.fixture("waiting", window, cx);
+                });
+                panel.focus.focus(window, cx);
+            });
+        });
+        draw(cx);
+        cx.update(|_, cx| {
+            panel.update(cx, |panel, cx| {
+                panel.connections.update(
+                    cx,
+                    super::super::connections_panel::ConnectionsPanel::fixture_finish,
+                );
+            });
+        });
+        draw(cx);
+        cx.update(|window, cx| assert!(panel.read(cx).focus.is_focused(window)));
     }
 
     #[gpui::test]

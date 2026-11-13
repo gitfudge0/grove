@@ -166,6 +166,7 @@ fn launch(
     timeout: Duration,
     cancel: &CommitControl,
 ) -> Result<String, String> {
+    let _provider_use = crate::connections::ProviderUse::acquire(provider)?;
     let (program, arguments) = provider.agent().session_invocation(args);
     let mut command = Command::new(program);
     command.args(arguments).current_dir(cwd);

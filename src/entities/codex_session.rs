@@ -601,6 +601,29 @@ impl CodexSession {
         }
     }
     pub fn send(&mut self, action: Action, cx: &mut Context<Self>) {
+        if grove_core::connections::credentials_busy(self.state.saved.provider.agent())
+            && matches!(
+                &action,
+                Action::Prompt(_)
+                    | Action::PromptWithImages { .. }
+                    | Action::PromptInline { .. }
+                    | Action::Submit { .. }
+                    | Action::SubmitWithMode { .. }
+                    | Action::ProjectPrompt { .. }
+                    | Action::ActivityPrompt { .. }
+                    | Action::ResumeQueue
+                    | Action::SteerQueued(_)
+                    | Action::Compact
+                    | Action::Reconnect
+                    | Action::ClearConversation
+                    | Action::ApprovePlan { .. }
+                    | Action::SendPlanResponse { .. }
+            )
+        {
+            self.state.error=Some("Wait for this provider’s authentication action to finish. Your draft is preserved.".into());
+            cx.notify();
+            return;
+        }
         if self.is_deferred() {
             match action {
                 Action::SetTitle(title) => {
@@ -683,6 +706,9 @@ impl CodexSession {
     }
     /// Project actions use the provider's visible queue and leave all composer data intact.
     pub fn project_prompt(&mut self, text: String, cx: &mut Context<Self>) -> Result<u64, String> {
+        if grove_core::connections::credentials_busy(self.state.saved.provider.agent()) {
+            return Err("Wait for this provider’s authentication action to finish.".into());
+        }
         codex::validate_prompt(&text, &[])?;
         if self.state.status == codex::Status::Disconnected
             || (self.state.saved.provider == codex::Provider::Codex
@@ -703,6 +729,9 @@ impl CodexSession {
         expected_turn: Option<String>,
         cx: &mut Context<Self>,
     ) -> Result<u64, String> {
+        if grove_core::connections::credentials_busy(self.state.saved.provider.agent()) {
+            return Err("Wait for this provider’s authentication action to finish.".into());
+        }
         codex::validate_prompt(&text, &[])?;
         if self.is_deferred()
             || self.state.status == codex::Status::Disconnected
@@ -738,6 +767,9 @@ impl CodexSession {
         if mode == codex::SubmissionMode::Send {
             return self.prompt_with_images(text, images, cx);
         }
+        if grove_core::connections::credentials_busy(self.state.saved.provider.agent()) {
+            return Err("Wait for this provider’s authentication action to finish. Your draft is preserved.".into());
+        }
         codex::validate_prompt(&text, &images)?;
         if (self.state.saved.provider == codex::Provider::Codex
             && self.state.saved.thread_id.is_none())
@@ -761,6 +793,9 @@ impl CodexSession {
     }
     /// Start a fresh provider conversation in the existing pane.
     pub fn clear_conversation(&mut self, cx: &mut Context<Self>) -> Result<(), String> {
+        if grove_core::connections::credentials_busy(self.state.saved.provider.agent()) {
+            return Err("Wait for this provider’s authentication action to finish.".into());
+        }
         if self.state.status == codex::Status::Disconnected {
             return Err(codex::CLEAR_DISCONNECTED.into());
         }
@@ -773,6 +808,9 @@ impl CodexSession {
         Ok(())
     }
     pub fn resume_queue(&mut self, cx: &mut Context<Self>) -> Result<(), String> {
+        if grove_core::connections::credentials_busy(self.state.saved.provider.agent()) {
+            return Err("Wait for this provider’s authentication action to finish.".into());
+        }
         if self.state.status == codex::Status::Disconnected {
             return Err("Reconnect before resuming queued inputs".into());
         }
@@ -789,6 +827,9 @@ impl CodexSession {
     }
     /// Host `/compact`. Rejected inline, never sent, while a turn is active.
     pub fn compact(&mut self, cx: &mut Context<Self>) -> Result<(), String> {
+        if grove_core::connections::credentials_busy(self.state.saved.provider.agent()) {
+            return Err("Wait for this provider’s authentication action to finish.".into());
+        }
         if self.state.status == codex::Status::Disconnected {
             return Err(codex::COMPACT_DISCONNECTED.into());
         }
@@ -811,6 +852,9 @@ impl CodexSession {
         tracked: bool,
         cx: &mut Context<Self>,
     ) -> Result<u64, String> {
+        if grove_core::connections::credentials_busy(self.state.saved.provider.agent()) {
+            return Err("Wait for this provider’s authentication action to finish. Your draft is preserved.".into());
+        }
         codex::validate_prompt(&text, &images)?;
         let dashboard_ready = self.dashboard_submission_ready();
         if (self.state.saved.provider == codex::Provider::Codex

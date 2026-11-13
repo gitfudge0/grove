@@ -1329,6 +1329,11 @@ pub(crate) fn next_interaction_epoch() -> u64 {
     EPOCH.fetch_add(1, Ordering::Relaxed)
 }
 impl Snapshot {
+    /// Includes requests accepted locally but not yet acknowledged by the provider.
+    pub fn provider_work_active(&self) -> bool {
+        self.status.busy() || self.turn_id.is_some() || self.compacting || self.compact_requested
+    }
+
     /// Revision of the inputs to a context measurement. UI consumers can coalesce
     /// one optional query per observed revision instead of counting on redraw.
     pub fn context_measurement_revision(&self) -> u64 {

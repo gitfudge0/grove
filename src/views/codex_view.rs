@@ -1255,6 +1255,7 @@ fn snippet_shell_supported(language: &str) -> bool {
 
 pub(crate) enum CodexViewEvent {
     DashboardSubmit,
+    OpenConnections(codex::Provider, String, Vec<String>, Option<FocusHandle>),
     DescribeChanges(grove_core::describe_skill::ScopePreference, FocusHandle),
     ReviewChanges(grove_core::review_skill::ScopePreference, FocusHandle),
     ForkRequested(usize, bool),
@@ -3228,6 +3229,39 @@ impl CodexView {
                     cx.write_to_clipboard(gpui::ClipboardItem::new_string(copy_body.clone()));
                 }),
         );
+        let lower = body.to_ascii_lowercase();
+        if [
+            "sign in",
+            "login",
+            "log in",
+            "not logged",
+            "authentication",
+            "unauthorized",
+            "oauth",
+        ]
+        .iter()
+        .any(|word| lower.contains(word))
+        {
+            let provider = state.saved.provider;
+            let cwd = state.saved.cwd.clone();
+            let args = state.saved.config_args.clone();
+            actions = actions.child(
+                form_action("session-connections", "Manage sign-in", false, window, cx)
+                    .icon(
+                        gpui_component::Icon::default()
+                            .path("icons/external-link.svg")
+                            .size(rpx(ICON_SM)),
+                    )
+                    .on_click(cx.listener(move |_, _, window, cx| {
+                        cx.emit(CodexViewEvent::OpenConnections(
+                            provider,
+                            cwd.clone(),
+                            args.clone(),
+                            window.focused(cx),
+                        ));
+                    })),
+            );
+        }
         if disconnected {
             actions = actions.child(
                 form_action("codex-reconnect", "Reconnect", false, window, cx)
@@ -3724,6 +3758,34 @@ impl CodexView {
                 }
             }
             group = group.child(details);
+        }
+        if mcp {
+            let provider = state.saved.provider;
+            let cwd = state.saved.cwd.clone();
+            let args = state.saved.config_args.clone();
+            group = group.child(
+                super::components::form_action(
+                    ("provider-connections", index),
+                    "Manage connection",
+                    false,
+                    window,
+                    cx,
+                )
+                .icon(
+                    gpui_component::Icon::default()
+                        .path("icons/external-link.svg")
+                        .size(rpx(ICON_SM)),
+                )
+                .debug_selector(move || format!("provider-connections-{index}"))
+                .on_click(cx.listener(move |_, _, window, cx| {
+                    cx.emit(CodexViewEvent::OpenConnections(
+                        provider,
+                        cwd.clone(),
+                        args.clone(),
+                        window.focused(cx),
+                    ));
+                })),
+            );
         }
         group.into_any_element()
     }
