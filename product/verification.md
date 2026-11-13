@@ -1,5 +1,46 @@
 # Verification and known gaps
 
+## Composer startup work reuse (November 2026)
+
+The Dashboard retains worktree rows, reuses matching results for ten seconds and
+joins an existing refresh. Retry and worktree creation force discovery. Draft
+commands wake the UI after enqueue instead of polling every 40ms. Provider input
+scans are shared per scope for five seconds, fingerprint only the selected
+provider's skills and carry their model key through discovery. Model lists expire
+after 24 hours; warm remembered rows stay visible during refresh. Claude shares
+its permission-help probe across matching executable/environment identities.
+
+Linux checks passed 27 focused core cache/probe/wake tests, 66 Dashboard fixtures,
+seven model-picker fixtures and 33 UI conformance tests. Dashboard fixtures cover
+both Codex and Claude draft wake/coalescing, handoff, draft preservation, worktree
+reuse/retry and returning after a workspace-discarded Git result. The new actual
+Git regression initially assumed a parked scheduler meant subprocess completion;
+it now awaits bounded completion notifications and follows real project navigation.
+Two previously documented header-inset tests remain excluded; five Dashboard and
+one picker opt-in fixtures were ignored in the ordinary filtered runs.
+
+**Codex and Claude:** live metadata-only discovery passed cold/warm lookup,
+model-only reuse in a fresh process and explicit refresh, using disposable Grove
+configuration and empty checkouts. Diagnostic handshake counts were one for each
+cold/warm process, zero for restarted model-only lookup and one for forced refresh.
+These checks sent no model prompt and created no conversation state. Probe
+coalescing, expiry and clock rollback were exercised with local automated tests;
+24-hour expiry was not observed by waiting a day against a live provider.
+
+Four fresh isolated Linux X11 captures were inspected: Codex and Claude Ready,
+Codex expanded preparation (activated with native Space without altering the
+draft), and Claude narrow Light error at changed rem zoom. The rendering owners
+were unchanged by subsequent time-unit/lint and request-completion test repairs.
+This is component inspection with synthetic sessions, not a live end-to-end
+composer/send test. macOS/Windows runtime, OS IME/screen-reader interaction and
+comparative CPU/latency benchmarks remain untested. No local installation,
+user-app restart or release was performed.
+
+Filesystem notifications, a single subscription-driven watcher service and full
+composer-metadata persistence remain deferred. Per-session five-second watcher
+timers remain, but matching scopes share their expensive input scans. On a cold
+restart, expired disk model rows are not published before discovery completes.
+
 ## Main page composer preparation
 
 The Dashboard composer shares worktree discovery, provider options, image and

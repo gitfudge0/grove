@@ -12,7 +12,7 @@ use std::{
     process::{Child, ChildStdin, Command, Stdio},
     sync::{
         atomic::{AtomicBool, AtomicU32, Ordering},
-        mpsc, Arc, Mutex,
+        mpsc, Arc, Condvar, Mutex, OnceLock,
     },
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
@@ -742,15 +742,114 @@ fn discover_permission_modes(
     }
     permission_modes_from_help(&help)
 }
-fn available_permission_modes(stopping: &AtomicBool) -> Vec<String> {
-    let (program, args) = crate::agent::Agent::Claude.session_invocation(&["--help".into()]);
-    let mut command = Command::new(program);
-    command.args(args);
-    if let Some(env) = crate::env_path::session_environment() {
-        command.env_clear().envs(env.iter().map(|(k, v)| (k, v)));
-    }
-    discover_permission_modes(command, stopping, Duration::from_secs(2))
+const PERMISSION_HELP_MAX_AGE: Duration = Duration::from_hours(24);
+const PERMISSION_HELP_RETRY: Duration = Duration::from_secs(30);
+
+enum PermissionProbe {
+    Loading,
+    Ready(Vec<String>, Instant),
 }
+#[derive(Default)]
+struct PermissionProbeCache {
+    entries: Mutex<HashMap<String, PermissionProbe>>,
+    changed: Condvar,
+}
+impl PermissionProbeCache {
+    fn get(
+        &self,
+        key: String,
+        stopping: &AtomicBool,
+        load: impl FnOnce() -> Vec<String>,
+    ) -> Vec<String> {
+        let mut entries = self
+            .entries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        loop {
+            if stopping.load(Ordering::SeqCst) {
+                return Vec::new();
+            }
+            match entries.get(&key) {
+                Some(PermissionProbe::Ready(modes, at))
+                    if at.elapsed()
+                        < if modes.is_empty() {
+                            PERMISSION_HELP_RETRY
+                        } else {
+                            PERMISSION_HELP_MAX_AGE
+                        } =>
+                {
+                    return modes.clone()
+                }
+                Some(PermissionProbe::Loading) => {
+                    entries = self
+                        .changed
+                        .wait_timeout(entries, Duration::from_millis(20))
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .0;
+                }
+                _ => break,
+            }
+        }
+        // Bound completed identities without disturbing in-flight owners.
+        if entries.len() >= 16 {
+            entries.retain(|_, value| matches!(value, PermissionProbe::Loading));
+        }
+        entries.insert(key.clone(), PermissionProbe::Loading);
+        drop(entries);
+        let modes = load();
+        let mut entries = self
+            .entries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if stopping.load(Ordering::SeqCst) {
+            entries.remove(&key);
+        } else {
+            entries.insert(key, PermissionProbe::Ready(modes.clone(), Instant::now()));
+        }
+        self.changed.notify_all();
+        modes
+    }
+}
+
+fn permission_probe_key(
+    program: &str,
+    args: &[String],
+    environment: &[(String, String)],
+) -> String {
+    use std::hash::{Hash, Hasher};
+    let mut key = std::collections::hash_map::DefaultHasher::new();
+    program.hash(&mut key);
+    args.hash(&mut key);
+    let mut environment = environment.to_vec();
+    environment.sort();
+    environment.hash(&mut key);
+    // session_invocation can be a shell wrapper; also fingerprint the actual CLI.
+    let (binary, prefix) = crate::agent::Agent::Claude.invocation();
+    for path in std::iter::once(binary).chain(prefix) {
+        path.hash(&mut key);
+        if let Ok(metadata) = fs_err::metadata(path) {
+            metadata.len().hash(&mut key);
+            metadata.modified().ok().hash(&mut key);
+        }
+    }
+    format!("{:016x}", key.finish())
+}
+
+fn available_permission_modes(stopping: &AtomicBool) -> Vec<String> {
+    static CACHE: OnceLock<PermissionProbeCache> = OnceLock::new();
+    let (program, args) = crate::agent::Agent::Claude.session_invocation(&["--help".into()]);
+    let environment = crate::env_path::session_environment()
+        .map_or_else(|| std::env::vars().collect(), |vars| vars.to_vec());
+    let key = permission_probe_key(&program, &args, &environment);
+    CACHE
+        .get_or_init(PermissionProbeCache::default)
+        .get(key, stopping, || {
+            let mut command = Command::new(program);
+            command.args(args).env_clear().envs(environment);
+            discover_permission_modes(command, stopping, Duration::from_secs(2))
+        })
+}
+
 fn permission_mode(access: &str) -> Result<&str, String> {
     match access {
         "read-only" | "plan" => Ok("plan"),
@@ -4269,6 +4368,66 @@ impl Actor {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn permission_probe_reuses_success_and_preserves_cancellation() {
+        let cache = PermissionProbeCache::default();
+        let stopping = AtomicBool::new(false);
+        assert_eq!(
+            cache.get("cli".into(), &stopping, || vec!["plan".into()]),
+            vec!["plan"]
+        );
+        assert_eq!(
+            cache.get("cli".into(), &stopping, || panic!("cached probe spawned")),
+            vec!["plan"]
+        );
+        stopping.store(true, Ordering::SeqCst);
+        assert!(cache
+            .get("cli".into(), &stopping, || panic!("canceled probe spawned"))
+            .is_empty());
+    }
+
+    #[test]
+    fn permission_probe_failure_expires_and_overlapping_calls_join() {
+        let cache = Arc::new(PermissionProbeCache::default());
+        cache.entries.lock().unwrap().insert(
+            "failed".into(),
+            PermissionProbe::Ready(
+                vec![],
+                Instant::now().checked_sub(PERMISSION_HELP_RETRY).unwrap(),
+            ),
+        );
+        assert_eq!(
+            cache.get("failed".into(), &AtomicBool::new(false), || vec![
+                "default".into()
+            ]),
+            vec!["default"]
+        );
+        let (started, receive) = mpsc::channel();
+        let (release, wait) = mpsc::channel();
+        let first = std::thread::spawn({
+            let cache = cache.clone();
+            move || {
+                cache.get("shared".into(), &AtomicBool::new(false), || {
+                    started.send(()).unwrap();
+                    wait.recv().unwrap();
+                    vec!["plan".into()]
+                })
+            }
+        });
+        receive.recv().unwrap();
+        let second = std::thread::spawn({
+            let cache = cache.clone();
+            move || {
+                cache.get("shared".into(), &AtomicBool::new(false), || {
+                    panic!("duplicate probe")
+                })
+            }
+        });
+        release.send(()).unwrap();
+        assert_eq!(first.join().unwrap(), vec!["plan"]);
+        assert_eq!(second.join().unwrap(), vec!["plan"]);
+    }
+
     #[test]
     fn side_chat_profile_uses_normal_auth_without_workflow_guidance() {
         let mut actor = actor();

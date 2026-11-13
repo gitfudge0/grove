@@ -5,6 +5,24 @@ use crate::views::codex_view::{CodexView, CodexViewEvent, CHAT_MAX_W};
 use gpui_component::menu::{PopupMenu, PopupMenuItem};
 
 const NO_PROJECT: usize = usize::MAX;
+const WORKTREE_CACHE_FRESHNESS: std::time::Duration = std::time::Duration::from_secs(10);
+
+#[derive(Default)]
+struct WorktreeDiscovery {
+    scope: Option<(usize, String, u64)>,
+    fetched_at: Option<std::time::Instant>,
+    in_flight: Option<u64>,
+}
+impl WorktreeDiscovery {
+    fn reusable(&self, scope: &(usize, String, u64), generation: u64, has_rows: bool) -> bool {
+        self.scope.as_ref() == Some(scope)
+            && (self.in_flight == Some(generation)
+                || (has_rows
+                    && self
+                        .fetched_at
+                        .is_some_and(|at| at.elapsed() < WORKTREE_CACHE_FRESHNESS)))
+    }
+}
 
 fn dashboard_home_dir() -> String {
     dirs::home_dir()
@@ -48,6 +66,7 @@ pub(crate) struct DestinationTray {
     generation: u64,
     error: Option<String>,
     preserve_on_refresh: bool,
+    worktree_discovery: WorktreeDiscovery,
     project: usize,
     pub(super) path: String,
     popup: Option<Entity<gpui_component::menu::PopupMenu>>,
@@ -98,6 +117,7 @@ impl DestinationTray {
             generation: 0,
             error: None,
             preserve_on_refresh: false,
+            worktree_discovery: WorktreeDiscovery::default(),
             popup: None,
             popup_events: None,
             popup_motion: motion::PopupMotion::default(),
@@ -688,7 +708,9 @@ impl Sidebar {
                             }
                             this.refresh_dashboard_catalog(cx);
                         }
-                        DestinationEvent::RefreshWorktrees => this.refresh_dashboard_worktrees(cx),
+                        DestinationEvent::RefreshWorktrees => {
+                            this.force_refresh_dashboard_worktrees(cx);
+                        }
                         DestinationEvent::NewWorktree => {
                             if let Some(d) = &this.dashboard {
                                 let idx = d.tray.read(cx).project;
@@ -894,6 +916,12 @@ impl Sidebar {
         });
     }
     pub(super) fn refresh_dashboard_worktrees(&mut self, cx: &mut Context<Self>) {
+        self.refresh_dashboard_worktrees_inner(false, cx);
+    }
+    pub(super) fn force_refresh_dashboard_worktrees(&mut self, cx: &mut Context<Self>) {
+        self.refresh_dashboard_worktrees_inner(true, cx);
+    }
+    fn refresh_dashboard_worktrees_inner(&mut self, force: bool, cx: &mut Context<Self>) {
         let Some(d) = &self.dashboard else {
             return;
         };
@@ -909,9 +937,23 @@ impl Sidebar {
         };
         let tray = d.tray.clone();
         let root = project.path;
+        let scope = (idx, root.clone(), self.active_workspace);
+        if !force
+            && tray.read(cx).worktree_discovery.reusable(
+                &scope,
+                tray.read(cx).generation,
+                !tray.read(cx).worktrees.is_empty(),
+            )
+        {
+            return;
+        }
         let generation = tray.update(cx, |t, cx| {
             t.generation = t.generation.wrapping_add(1);
-            let preserve = std::mem::take(&mut t.preserve_on_refresh);
+            let preserve = std::mem::take(&mut t.preserve_on_refresh)
+                || (t.worktree_discovery.scope.as_ref() == Some(&scope) && !t.worktrees.is_empty());
+            t.worktree_discovery.scope = Some(scope);
+            t.worktree_discovery.in_flight = Some(t.generation);
+            t.worktree_discovery.fetched_at = None;
             t.loading = !preserve;
             t.error = None;
             if !preserve {
@@ -931,19 +973,32 @@ impl Sidebar {
                 })
                 .await;
             tray.update(cx, |t, cx| {
+                // A completed request cannot remain joinable after navigation.
+                // Compare its marker first: navigation may invalidate generation
+                // without starting a replacement, but newer requests keep theirs.
+                if t.worktree_discovery.in_flight == Some(generation) {
+                    t.worktree_discovery.in_flight = None;
+                    if t.generation == generation {
+                        t.loading = false;
+                    }
+                    cx.notify();
+                }
+                if t.generation != generation {
+                    return;
+                }
                 let store = &cx.global::<SettingsState>().store;
                 if t.project != idx
-                    || t.generation != generation
                     || store.workspaces.active != workspace
                     || !store
                         .workspace_projects(workspace)
                         .any(|(i, p)| i == idx && p.path == expected_root)
                 {
+                    cx.notify();
                     return;
                 }
-                t.loading = false;
                 match result {
                     Ok(rows) => {
+                        t.worktree_discovery.fetched_at = Some(std::time::Instant::now());
                         runtime.update(cx, |runtime, cx| {
                             let active = runtime.state.read(cx).proj_idx();
                             runtime.tree.update(cx, |tree, cx| {
@@ -1437,6 +1492,165 @@ fn seed_activity_fixture(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn worktree_cache_reuses_only_fresh_matching_results_or_current_inflight() {
+        let scope = (1, "/project".to_owned(), 7);
+        let mut discovery = WorktreeDiscovery {
+            scope: Some(scope.clone()),
+            fetched_at: Some(std::time::Instant::now()),
+            in_flight: None,
+        };
+        assert!(discovery.reusable(&scope, 4, true));
+        assert!(!discovery.reusable(&scope, 4, false));
+        assert!(!discovery.reusable(&(1, "/other".into(), 7), 4, true));
+        assert!(!discovery.reusable(&(1, "/project".into(), 8), 4, true));
+        discovery.fetched_at = Some(
+            std::time::Instant::now()
+                .checked_sub(WORKTREE_CACHE_FRESHNESS)
+                .unwrap(),
+        );
+        assert!(!discovery.reusable(&scope, 4, true));
+        discovery.in_flight = Some(4);
+        assert!(discovery.reusable(&scope, 4, false));
+        assert!(!discovery.reusable(&scope, 5, true));
+        discovery.fetched_at = None;
+        discovery.in_flight = None;
+        assert!(
+            !discovery.reusable(&scope, 4, true),
+            "failures remain retryable"
+        );
+    }
+
+    #[gpui::test]
+    async fn dashboard_revisit_reuses_worktrees_and_retry_forces_refresh(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let repo = tempfile::tempdir().unwrap();
+        assert!(std::process::Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(repo.path())
+            .status()
+            .unwrap()
+            .success());
+        let path = repo.path().to_string_lossy().into_owned();
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            cx.set_global(crate::zoom::CurrentPtyDims::default());
+            let mut store = grove_core::storage::Store::default();
+            store.projects.push(grove_core::storage::Project {
+                name: "Cached worktrees".into(),
+                path: path.clone(),
+                scripts: grove_core::storage::ProjectScripts::default(),
+                archived: false,
+                worktree_dir: None,
+            });
+            store.assign_project_to_active_workspace(&path);
+            cx.set_global(SettingsState::new(store));
+        });
+        let (sidebar, cx) = cx.add_window_view(|window, cx| {
+            let runtime = cx.new(Runtime::new);
+            Sidebar::new(runtime, window, cx)
+        });
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            sidebar.update(cx, |sidebar, cx| {
+                sidebar.open_dashboard(window, cx);
+                let tray = sidebar.dashboard.as_ref().unwrap().tray.clone();
+                // Seed a successful result, then exercise the real navigation
+                // and request boundary synchronously so no clock or CLI timing is needed.
+                tray.update(cx, |tray, _| {
+                    tray.worktrees = vec![(path.clone(), "Main worktree".into())];
+                    tray.worktree_discovery.scope =
+                        Some((0, path.clone(), sidebar.active_workspace));
+                    tray.worktree_discovery.fetched_at = Some(std::time::Instant::now());
+                    tray.worktree_discovery.in_flight = None;
+                    tray.loading = false;
+                });
+                let generation = tray.read(cx).generation;
+                let rows = tray.read(cx).worktrees.clone();
+                sidebar.open_dashboard(window, cx);
+                assert_eq!(
+                    tray.read(cx).generation,
+                    generation,
+                    "fresh revisit must not launch Git"
+                );
+                tray.update(cx, |tray, _| {
+                    tray.worktree_discovery.fetched_at = Some(
+                        std::time::Instant::now()
+                            .checked_sub(WORKTREE_CACHE_FRESHNESS)
+                            .unwrap(),
+                    );
+                });
+                sidebar.open_dashboard(window, cx);
+                let refreshing = tray.read(cx).generation;
+                assert_ne!(refreshing, generation);
+                assert_eq!(tray.read(cx).worktrees, rows);
+                assert!(
+                    !tray.read(cx).loading,
+                    "retained rows remain usable during refresh"
+                );
+                sidebar.open_dashboard(window, cx);
+                assert_eq!(
+                    tray.read(cx).generation,
+                    refreshing,
+                    "concurrent revisit must join refresh"
+                );
+                tray.update(cx, |tray, _| tray.error = Some("retry me".into()));
+                tray.update(cx, DestinationTray::retry_worktrees);
+            });
+        });
+        // Retry is delivered through Sidebar's real subscription. A parked UI
+        // scheduler does not imply the real Git subprocess has finished.
+        cx.run_until_parked();
+        let tray = cx.update(|_, cx| sidebar.read(cx).dashboard.as_ref().unwrap().tray.clone());
+        cx.cx
+            .condition(&tray, |tray, _| tray.worktree_discovery.in_flight.is_none())
+            .await;
+        cx.update(|_, cx| {
+            let tray = &sidebar.read(cx).dashboard.as_ref().unwrap().tray;
+            assert!(tray.read(cx).error.is_none());
+            assert!(tray.read(cx).worktree_discovery.fetched_at.is_some());
+            assert!(!tray.read(cx).worktrees.is_empty());
+        });
+        let (workspace, discarded_generation) = cx.update(|_, cx| {
+            sidebar.update(cx, |sidebar, cx| {
+                let workspace = sidebar.active_workspace;
+                sidebar.force_refresh_dashboard_worktrees(cx);
+                let generation = sidebar.dashboard.as_ref().unwrap().tray.read(cx).generation;
+                // Change the workspace before the actual Git result is delivered.
+                cx.global_mut::<SettingsState>().store.workspaces.active =
+                    workspace.wrapping_add(1);
+                (workspace, generation)
+            })
+        });
+        cx.cx
+            .condition(&tray, |tray, _| tray.worktree_discovery.in_flight.is_none())
+            .await;
+        cx.update(|window, cx| {
+            cx.global_mut::<SettingsState>().store.workspaces.active = workspace;
+            sidebar.update(cx, |sidebar, cx| {
+                let tray = sidebar.dashboard.as_ref().unwrap().tray.clone();
+                assert!(tray.read(cx).worktree_discovery.in_flight.is_none());
+                assert!(tray.read(cx).worktree_discovery.fetched_at.is_none());
+                sidebar.sync(window, cx);
+                assert!(sidebar.open_dashboard_for_project(0, &path, window, cx));
+                assert_ne!(
+                    tray.read(cx).generation,
+                    discarded_generation,
+                    "returning must start a new request after discarding a hidden result"
+                );
+            });
+        });
+        cx.cx
+            .condition(&tray, |tray, _| tray.worktree_discovery.in_flight.is_none())
+            .await;
+        cx.update(|_, cx| {
+            let tray = &sidebar.read(cx).dashboard.as_ref().unwrap().tray;
+            assert!(tray.read(cx).worktree_discovery.fetched_at.is_some());
+            assert!(tray.read(cx).error.is_none());
+        });
+    }
 
     // Exercise the view emitted event through Sidebar's real subscription and runtime.
     // The invalid boundary deliberately stops before any provider process is launched.

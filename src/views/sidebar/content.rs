@@ -385,7 +385,7 @@ impl Sidebar {
                             cx.notify();
                         });
                     }
-                    self.refresh_dashboard_worktrees(cx);
+                    self.force_refresh_dashboard_worktrees(cx);
                     self.refresh_dashboard_catalog(cx);
                 } else {
                     self.select(Selection::Worktree(idx, path.clone()), cx);

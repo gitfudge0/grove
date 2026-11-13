@@ -4,7 +4,7 @@ use std::{
     collections::HashMap,
     hash::{Hash, Hasher},
     sync::{Arc, Condvar, Mutex, OnceLock},
-    time::Instant,
+    time::{Duration, Instant},
 };
 
 const MAX_SCOPES: usize = 32;
@@ -40,6 +40,125 @@ impl Scope {
                 .collect(),
         }
     }
+}
+
+impl Scope {
+    #[cfg(test)]
+    fn saved(&self) -> SavedSession {
+        let mut saved = SavedSession::empty(
+            String::new(),
+            if self.claude {
+                codex::Provider::Claude
+            } else {
+                codex::Provider::Codex
+            },
+            String::new(),
+            self.cwd.clone(),
+        );
+        saved.config_args.clone_from(&self.config_args);
+        saved.native_config_version = self.config_version;
+        saved.roots = self
+            .roots
+            .iter()
+            .map(|path| crate::session_meta::ContextRoot {
+                project: String::new(),
+                wt_path: path.clone(),
+            })
+            .collect();
+        saved
+    }
+}
+
+/// One shared background fingerprint per scope and interval. No session state is retained.
+/// Periodic fallback deliberately remains: it detects symlink targets and new directories
+/// without platform-specific watcher gaps. Retry evicts this memo immediately.
+const REVISION_INTERVAL: Duration = Duration::from_secs(5);
+#[derive(Clone)]
+pub struct DiscoveryInputs {
+    scope: Scope,
+    revision: u64,
+    model_key: Option<crate::model_catalog::Key>,
+    models_require_refresh: bool,
+}
+impl DiscoveryInputs {
+    pub fn revision(&self) -> u64 {
+        self.revision
+    }
+    pub fn models_require_refresh(&self) -> bool {
+        self.models_require_refresh
+    }
+}
+type RevisionEntry = Arc<Mutex<Option<(Instant, DiscoveryInputs)>>>;
+#[derive(Default)]
+struct Revisions(Mutex<HashMap<Scope, RevisionEntry>>);
+impl Revisions {
+    fn get(&self, scope: Scope, scan: impl FnOnce() -> DiscoveryInputs) -> DiscoveryInputs {
+        let entry = {
+            let mut entries = self
+                .0
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if entries.len() >= MAX_SCOPES && !entries.contains_key(&scope) {
+                // Never evict a scan in progress: readers must join its entry.
+                let oldest = entries
+                    .iter()
+                    .filter_map(|(key, entry)| {
+                        let state = entry.try_lock().ok()?;
+                        Some((key.clone(), state.as_ref()?.0))
+                    })
+                    .min_by_key(|(_, at)| *at)
+                    .map(|(key, _)| key);
+                if let Some(oldest) = oldest {
+                    entries.remove(&oldest);
+                }
+            }
+            entries.entry(scope).or_default().clone()
+        };
+        // Serialize only matching scopes; unrelated checkouts never wait for this scan.
+        let mut state = entry
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some((at, inputs)) = &*state {
+            if at.elapsed() < REVISION_INTERVAL {
+                return inputs.clone();
+            }
+        }
+        let inputs = scan();
+        *state = Some((Instant::now(), inputs.clone()));
+        inputs
+    }
+    fn invalidate(&self, scope: &Scope) {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(scope);
+    }
+}
+fn revisions() -> &'static Revisions {
+    static REVISIONS: OnceLock<Revisions> = OnceLock::new();
+    REVISIONS.get_or_init(Revisions::default)
+}
+fn scan_inputs(saved: &SavedSession, args: &[String]) -> DiscoveryInputs {
+    let model_key = crate::model_catalog::Key::new(saved, args);
+    let mut revision = std::collections::hash_map::DefaultHasher::new();
+    provider_skill_revision(saved.provider, &saved.cwd, args, &saved.config_args)
+        .hash(&mut revision);
+    let model_revision = crate::model_catalog::revision_for_key(model_key.as_ref());
+    model_revision
+        .as_ref()
+        .map(|(fingerprint, _)| fingerprint)
+        .hash(&mut revision);
+    let models_require_refresh = model_revision.is_some_and(|(_, stale)| stale);
+    DiscoveryInputs {
+        scope: Scope::new(saved, args),
+        revision: revision.finish(),
+        model_key,
+        models_require_refresh,
+    }
+}
+/// Shared background-only input scan; never call from the foreground UI executor.
+pub fn inputs(saved: &SavedSession, args: &[String]) -> DiscoveryInputs {
+    revisions().get(Scope::new(saved, args), || scan_inputs(saved, args))
 }
 
 enum State {
@@ -87,32 +206,20 @@ impl Cache {
             entries.remove(scope);
         }
     }
+    #[cfg(test)]
     fn discover(
         &self,
         scope: Scope,
         load: impl FnOnce() -> Result<Snapshot, String>,
     ) -> Result<Snapshot, String> {
-        let mut saved = SavedSession::empty(
-            String::new(),
-            if scope.claude {
-                codex::Provider::Claude
-            } else {
-                codex::Provider::Codex
-            },
-            String::new(),
-            scope.cwd.clone(),
-        );
-        saved.config_args.clone_from(&scope.config_args);
-        saved.native_config_version = scope.config_version;
-        saved.roots = scope
-            .roots
-            .iter()
-            .map(|path| crate::session_meta::ContextRoot {
-                project: String::new(),
-                wt_path: path.clone(),
-            })
-            .collect();
-        let skills_revision = revision(&saved, &scope.args);
+        self.discover_at(scope.clone(), revision(&scope.saved(), &scope.args), load)
+    }
+    fn discover_at(
+        &self,
+        scope: Scope,
+        skills_revision: u64,
+        load: impl FnOnce() -> Result<Snapshot, String>,
+    ) -> Result<Snapshot, String> {
         let (entry, owner) = {
             let mut entries = self
                 .0
@@ -213,13 +320,19 @@ pub fn cached(saved: &SavedSession, args: &[String]) -> Option<Snapshot> {
     Some(snapshot)
 }
 pub fn invalidate(saved: &SavedSession, args: &[String]) {
-    cache().invalidate(&Scope::new(saved, args));
+    let scope = Scope::new(saved, args);
+    revisions().invalidate(&scope);
+    cache().invalidate(&scope);
     crate::model_catalog::invalidate(saved, args);
 }
 
 /// The UI can reuse remembered model rows without filesystem work or a provider process.
 pub fn cached_models(saved: &SavedSession, args: &[String]) -> Option<Vec<serde_json::Value>> {
     crate::model_catalog::cached(saved, args)
+}
+/// Whether remembered rows need background refresh while remaining displayable.
+pub fn models_require_refresh(saved: &SavedSession, args: &[String]) -> bool {
+    crate::model_catalog::is_stale(saved, args)
 }
 
 /// Model browsing does not need checkout skills or configured defaults. Disk hydration is
@@ -238,12 +351,26 @@ pub fn discover_models(
 }
 
 /// Background callers join one metadata handshake per scope. Failures remain retryable.
-pub fn discover(mut saved: SavedSession, args: Vec<String>) -> Result<Snapshot, String> {
+pub fn discover(saved: SavedSession, args: Vec<String>) -> Result<Snapshot, String> {
+    let inputs = inputs(&saved, &args);
+    discover_with_inputs(saved, args, inputs)
+}
+/// Reuse the watcher's input snapshot rather than scanning configuration twice.
+pub fn discover_with_inputs(
+    mut saved: SavedSession,
+    args: Vec<String>,
+    inputs: DiscoveryInputs,
+) -> Result<Snapshot, String> {
+    let inputs = if inputs.scope == Scope::new(&saved, &args) {
+        inputs
+    } else {
+        self::inputs(&saved, &args)
+    };
     if !std::path::Path::new(&saved.cwd).is_dir() {
         return Err("The selected checkout is no longer available.".into());
     }
     let scope = Scope::new(&saved, &args);
-    let model_key = crate::model_catalog::Key::new(&saved, &args);
+    let model_key = inputs.model_key;
     let current_models = model_key.as_ref().and_then(crate::model_catalog::load);
     if model_key.is_some() && current_models.is_none() {
         // Another workspace's ready snapshot cannot satisfy a missing/explicitly
@@ -251,7 +378,9 @@ pub fn discover(mut saved: SavedSession, args: Vec<String>) -> Result<Snapshot, 
         cache().invalidate(&scope);
     }
     saved = metadata_request(saved);
-    let mut snapshot = cache().discover(scope, || codex::discover_composer(saved, args))?;
+    let mut snapshot = cache().discover_at(scope, inputs.revision, || {
+        codex::discover_composer(saved, args)
+    })?;
     if let Some(models) = model_key.as_ref().and_then(crate::model_catalog::load) {
         snapshot.models = models;
     }
@@ -261,10 +390,7 @@ pub fn discover(mut saved: SavedSession, args: Vec<String>) -> Result<Snapshot, 
 /// Background revision for all discovery inputs. Unlike model browsing, configured defaults
 /// and skills remain workspace-specific and must be re-read when account/configuration changes.
 pub fn revision(saved: &SavedSession, args: &[String]) -> u64 {
-    let mut revision = std::collections::hash_map::DefaultHasher::new();
-    skill_revision_with_args(&saved.cwd, args, &saved.config_args).hash(&mut revision);
-    crate::model_catalog::revision(saved, args).hash(&mut revision);
-    revision.finish()
+    scan_inputs(saved, args).revision
 }
 
 /// Fingerprint skill sources off the UI thread, following symlinked installations.
@@ -274,6 +400,18 @@ pub fn skill_revision(cwd: &str) -> u64 {
 }
 
 pub fn skill_revision_with_args(cwd: &str, args: &[String], config_args: &[String]) -> u64 {
+    // Legacy callers request the union; provider discovery uses only its own roots.
+    let mut revision = std::collections::hash_map::DefaultHasher::new();
+    provider_skill_revision(codex::Provider::Codex, cwd, args, config_args).hash(&mut revision);
+    provider_skill_revision(codex::Provider::Claude, cwd, args, config_args).hash(&mut revision);
+    revision.finish()
+}
+fn provider_skill_revision(
+    provider: codex::Provider,
+    cwd: &str,
+    args: &[String],
+    config_args: &[String],
+) -> u64 {
     use std::path::PathBuf;
     let mut roots = Vec::new();
     let home = dirs::home_dir().unwrap_or_default();
@@ -284,25 +422,24 @@ pub fn skill_revision_with_args(cwd: &str, args: &[String], config_args: &[Strin
             .and_then(|vars| vars.iter().find(|(k, _)| k == key).map(|(_, v)| v.into()))
             .or_else(|| std::env::var_os(key).map(PathBuf::from))
     };
-    let codex_home = configured("CODEX_HOME").unwrap_or_else(|| home.join(".codex"));
-    roots.extend([
-        codex_home.join("plugins/cache"),
-        codex_home.join("config.toml"),
-    ]);
-    roots.push(
-        configured("CODEX_HOME")
-            .unwrap_or_else(|| home.join(".codex"))
-            .join("skills"),
-    );
+    if provider == codex::Provider::Codex {
+        let codex_home = configured("CODEX_HOME").unwrap_or_else(|| home.join(".codex"));
+        roots.extend([
+            codex_home.join("plugins/cache"),
+            codex_home.join("config.toml"),
+            codex_home.join("skills"),
+        ]);
+    } else {
+        let claude = configured("CLAUDE_CONFIG_DIR").unwrap_or_else(|| home.join(".claude"));
+        roots.extend([
+            claude.join("skills"),
+            claude.join("commands"),
+            claude.join("plugins/cache"),
+            claude.join("plugins/installed_plugins.json"),
+            claude.join("settings.json"),
+        ]);
+    }
     roots.push(home.join(".agents/skills"));
-    let claude = configured("CLAUDE_CONFIG_DIR").unwrap_or_else(|| home.join(".claude"));
-    roots.extend([
-        claude.join("skills"),
-        claude.join("commands"),
-        claude.join("plugins/cache"),
-        claude.join("plugins/installed_plugins.json"),
-        claude.join("settings.json"),
-    ]);
     for options in [args, config_args] {
         for (index, option) in options.iter().enumerate() {
             let plugin = option
@@ -319,13 +456,17 @@ pub fn skill_revision_with_args(cwd: &str, args: &[String], config_args: &[Strin
         }
     }
     for ancestor in std::path::Path::new(cwd).ancestors() {
-        for suffix in [
-            ".codex/skills",
-            ".agents/skills",
-            ".claude/skills",
-            ".claude/commands",
-            ".claude/settings.json",
-        ] {
+        let suffixes: &[&str] = if provider == codex::Provider::Codex {
+            &[".codex/skills", ".agents/skills"]
+        } else {
+            &[
+                ".agents/skills",
+                ".claude/skills",
+                ".claude/commands",
+                ".claude/settings.json",
+            ]
+        };
+        for suffix in suffixes {
             roots.push(ancestor.join(suffix));
         }
     }
@@ -422,6 +563,143 @@ mod tests {
             serde_json::json!({"model":"advertised", "supportedReasoningEfforts":[{"reasoningEffort":"high"}]}),
         ];
         state
+    }
+
+    #[test]
+    fn provider_skill_changes_do_not_invalidate_the_other_provider() {
+        let temp = tempfile::tempdir().unwrap();
+        let cwd = temp.path().to_str().unwrap();
+        let codex_before = provider_skill_revision(codex::Provider::Codex, cwd, &[], &[]);
+        let claude_before = provider_skill_revision(codex::Provider::Claude, cwd, &[], &[]);
+        let skill = temp.path().join(".claude/skills/new/SKILL.md");
+        fs_err::create_dir_all(skill.parent().unwrap()).unwrap();
+        fs_err::write(&skill, "Claude skill").unwrap();
+        assert_eq!(
+            codex_before,
+            provider_skill_revision(codex::Provider::Codex, cwd, &[], &[])
+        );
+        assert_ne!(
+            claude_before,
+            provider_skill_revision(codex::Provider::Claude, cwd, &[], &[])
+        );
+        let claude_after = provider_skill_revision(codex::Provider::Claude, cwd, &[], &[]);
+        let skill = temp.path().join(".codex/skills/new/SKILL.md");
+        fs_err::create_dir_all(skill.parent().unwrap()).unwrap();
+        fs_err::write(&skill, "Codex skill").unwrap();
+        assert_ne!(
+            codex_before,
+            provider_skill_revision(codex::Provider::Codex, cwd, &[], &[])
+        );
+        assert_eq!(
+            claude_after,
+            provider_skill_revision(codex::Provider::Claude, cwd, &[], &[])
+        );
+    }
+
+    #[test]
+    fn shared_revisions_coalesce_readers_expire_and_retry_immediately() {
+        let revisions = Arc::new(Revisions::default());
+        let scope = Scope::new(&saved(), &[]);
+        let scans = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let threads: Vec<_> = (0..8)
+            .map(|_| {
+                let revisions = revisions.clone();
+                let scope = scope.clone();
+                let scans = scans.clone();
+                std::thread::spawn(move || {
+                    revisions
+                        .get(scope.clone(), || {
+                            scans.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                            DiscoveryInputs {
+                                scope,
+                                revision: 1,
+                                model_key: None,
+                                models_require_refresh: false,
+                            }
+                        })
+                        .revision()
+                })
+            })
+            .collect();
+        for thread in threads {
+            assert_eq!(thread.join().unwrap(), 1);
+        }
+        assert_eq!(scans.load(std::sync::atomic::Ordering::SeqCst), 1);
+        revisions
+            .0
+            .lock()
+            .unwrap()
+            .get(&scope)
+            .unwrap()
+            .lock()
+            .unwrap()
+            .as_mut()
+            .unwrap()
+            .0 = Instant::now().checked_sub(REVISION_INTERVAL).unwrap();
+        assert_eq!(
+            revisions
+                .get(scope.clone(), || DiscoveryInputs {
+                    scope: scope.clone(),
+                    revision: 2,
+                    model_key: None,
+                    models_require_refresh: false
+                })
+                .revision(),
+            2
+        );
+        revisions.invalidate(&scope);
+        assert_eq!(
+            revisions
+                .get(scope.clone(), || DiscoveryInputs {
+                    scope,
+                    revision: 3,
+                    model_key: None,
+                    models_require_refresh: false
+                })
+                .revision(),
+            3
+        );
+    }
+
+    #[test]
+    fn unrelated_revision_scopes_do_not_wait_for_slow_scan() {
+        let revisions = Arc::new(Revisions::default());
+        let scope = Scope::new(&saved(), &[]);
+        let mut other = scope.clone();
+        other.cwd = "/other".into();
+        let (started, start) = std::sync::mpsc::channel();
+        let (release, wait) = std::sync::mpsc::channel();
+        let owner = std::thread::spawn({
+            let revisions = revisions.clone();
+            move || {
+                revisions.get(scope.clone(), || {
+                    started.send(()).unwrap();
+                    wait.recv_timeout(Duration::from_secs(5)).unwrap();
+                    DiscoveryInputs {
+                        scope,
+                        revision: 1,
+                        model_key: None,
+                        models_require_refresh: false,
+                    }
+                })
+            }
+        });
+        start.recv_timeout(Duration::from_secs(5)).unwrap();
+        let (finished, finish) = std::sync::mpsc::channel();
+        let follower = std::thread::spawn(move || {
+            revisions.get(other.clone(), || DiscoveryInputs {
+                scope: other,
+                revision: 2,
+                model_key: None,
+                models_require_refresh: false,
+            });
+            finished.send(()).unwrap();
+        });
+        let independent = finish.recv_timeout(Duration::from_secs(2));
+        release.send(()).unwrap();
+        owner.join().unwrap();
+        follower.join().unwrap();
+        assert!(independent.is_ok(), "unrelated scope waited for slow scan");
     }
 
     #[test]

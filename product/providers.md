@@ -20,20 +20,32 @@ Browsing never changes the launch provider or creates a conversation.
 
 Last successful model lists are stored separately from workspace skills and
 configured defaults under `provider-models` in Grove's configuration directory.
-Only model metadata and a versioned fingerprint are persisted, using private
+Only model metadata, its fetch timestamp and a versioned fingerprint are persisted, using private
 atomic writes; credentials, config contents, drafts and transcripts are excluded.
 The fingerprint separates provider/account environment, launch configuration,
 context roots, local provider overrides and executable identity. Ordinary empty
 checkouts can share a catalog; custom configuration keeps conservative isolation.
 Disk loading and fingerprinting run on background/provider threads.
 
-There is no five-minute model or workspace expiration. Source changes invalidate
-workspace metadata through the background watcher; account/configuration changes
-also invalidate the model identity. Codex initialization reuses a known model list
+Model lists require rediscovery after 24 hours (or a backward clock change), while
+remembered rows remain available for display. Source changes invalidate workspace
+metadata through shared, provider-specific background scans at five-second
+intervals; explicit retry bypasses the scan memo. Matching sessions share a scan
+and pass its input fingerprint through discovery rather than scanning twice.
+Account/configuration changes also invalidate the model identity.
+Codex initialization reuses a fresh known model list
 while still reading skills and configured defaults. Claude's required initialize
 response includes models, so a necessary workspace/session handshake still
 receives them. Model-only browsing can reuse either provider without a handshake,
 including after an app restart.
+
+Claude permission-mode discovery shares one `--help` probe per executable and
+environment identity, including concurrent requests from different checkouts.
+Successful probes expire after 24 hours; failed probes retry after 30 seconds.
+Draft command delivery wakes on queued actions rather than polling an idle timer.
+New Session retains its draft and worktree rows, reuses matching worktree discovery
+for ten seconds and joins an existing refresh. Expired rows stay visible during
+background refresh; Retry and successful worktree creation force rediscovery.
 
 **Refresh models** reloads the visible provider scope. Existing rows remain usable
 while refreshing; failure retains them and exposes Retry. Refreshed capabilities
