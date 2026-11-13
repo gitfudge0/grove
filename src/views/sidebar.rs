@@ -5808,7 +5808,7 @@ impl Render for Sidebar {
                     .relative()
                     .flex_1()
                     .min_w_0()
-                    .when(cfg!(target_os = "macos"), |canvas| canvas.h_full())
+                    .when(cfg!(target_os = "macos"), gpui::Styled::h_full)
                     .when(!cfg!(target_os = "macos"), |canvas| {
                         canvas.mt(rpx(APPBAR_TOTAL_H))
                     })

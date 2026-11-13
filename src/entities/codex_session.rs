@@ -133,33 +133,27 @@ impl CodexSession {
             dashboard_title_waiting: None,
             dashboard_launch: None,
         };
-        // The startup dashboard is created before model browsing. Warm the other
-        // provider concurrently; the selected provider is loaded by refresh below.
-        if let Some(settings) = cx.try_global::<crate::settings::SettingsState>() {
-            let mut other = session.state.saved.clone();
-            other.provider = match other.provider {
-                codex::Provider::Codex => codex::Provider::Claude,
-                codex::Provider::Claude => codex::Provider::Codex,
-            };
-            let other_args = other.provider.agent().launch_args_for_backend(
-                true,
-                settings.store.yolo_enabled,
-                settings.store.chrome_enabled.unwrap_or(false),
-            );
-            if std::path::Path::new(&cwd).is_dir() {
-                cx.background_spawn(async move { composer_catalog::discover(other, other_args) })
-                    .detach();
-            }
-        }
         session.refresh_catalog(cwd, args, cx);
         session
     }
     /// Refresh checkout-specific skills/config and provider-advertised models.
     /// A late response cannot replace a newer destination or an activated session.
     pub fn refresh_catalog(&mut self, cwd: String, args: Vec<String>, cx: &mut Context<Self>) {
+        self.refresh_catalog_inner(cwd, args, false, cx);
+    }
+    fn refresh_catalog_inner(
+        &mut self,
+        cwd: String,
+        args: Vec<String>,
+        retry: bool,
+        cx: &mut Context<Self>,
+    ) {
         if !self.is_deferred() {
             return;
         }
+        let mut request = self.state.saved.clone();
+        request.cwd.clone_from(&cwd);
+        let same_scope = self.catalog_scope.as_ref() == Some(&Scope::new(&request, &args));
         self.start_skill_watch(args.clone(), cx);
         self.catalog_generation = self.catalog_generation.wrapping_add(1);
         self.catalog_loading = true;
@@ -171,7 +165,9 @@ impl CodexSession {
         // Skills and resolved defaults belong to a checkout/provider pair. Do
         // not expose the previous destination's configuration during refresh.
         self.state.skills.clear();
-        self.state.models.clear();
+        if !same_scope {
+            self.state.models.clear();
+        }
         self.state.permission_modes.clear();
         self.state.resolved_model = None;
         self.state.resolved_effort = None;
@@ -189,12 +185,20 @@ impl CodexSession {
         let generation = self.catalog_generation;
         let mut saved = self.state.saved.clone();
         saved.cwd = cwd;
-        self.catalog_scope = Some(Scope::new(&saved, &args));
-        if let Some(catalog) = composer_catalog::cached(&saved, &args) {
-            self.complete_catalog(generation, Ok(catalog), cx);
-            return;
+        let scope = Scope::new(&saved, &args);
+        self.catalog_scope = Some(scope);
+        if !retry {
+            if let Some(catalog) = composer_catalog::cached(&saved, &args) {
+                self.complete_catalog(generation, Ok(catalog), cx);
+                return;
+            }
         }
-        let discovery = cx.background_spawn(async move { composer_catalog::discover(saved, args) });
+        let discovery = cx.background_spawn(async move {
+            if retry {
+                composer_catalog::invalidate(&saved, &args);
+            }
+            composer_catalog::discover(saved, args)
+        });
         cx.spawn(async move |this, cx| {
             let result = discovery.await;
             let _ = this.update(cx, |this, cx| {
@@ -203,9 +207,18 @@ impl CodexSession {
         })
         .detach();
     }
+    /// Model refresh changes advertised capabilities without reconfiguring the conversation.
+    pub fn update_models(&mut self, models: Vec<serde_json::Value>, cx: &mut Context<Self>) {
+        self.state.models.clone_from(&models);
+        if self.has_transport {
+            let _ = self.handle.send(Action::UpdateModels(models));
+        } else if self.catalog_selection_error {
+            self.revalidate_catalog_selection();
+        }
+        cx.notify();
+    }
     pub fn retry_catalog(&mut self, args: Vec<String>, cx: &mut Context<Self>) {
-        composer_catalog::invalidate(&self.state.saved, &args);
-        self.refresh_catalog(self.state.saved.cwd.clone(), args, cx);
+        self.refresh_catalog_inner(self.state.saved.cwd.clone(), args, true, cx);
     }
     /// Geometry fixtures must not depend on installed CLIs or an asynchronous handshake.
     #[cfg(test)]
@@ -468,11 +481,7 @@ impl CodexSession {
                 let old = previous.clone();
                 let (revision, catalog) = cx
                     .background_spawn(async move {
-                        let revision = composer_catalog::skill_revision_with_args(
-                            &request.cwd,
-                            &options,
-                            &request.config_args,
-                        );
+                        let revision = composer_catalog::revision(&request, &options);
                         let key = (Scope::new(&request, &options), revision);
                         let catalog = if old.as_ref() != Some(&key) {
                             Some(composer_catalog::discover(request, options))
@@ -486,10 +495,15 @@ impl CodexSession {
                 if let Some(Ok(catalog)) = catalog {
                     if this
                         .update(cx, |this, cx| {
-                            if this.state.saved.cwd != saved.cwd
-                                || this.state.saved.provider != saved.provider
-                            {
+                            if Scope::new(&this.state.saved, &args) != revision.0 {
                                 return;
+                            }
+                            if this.is_deferred() {
+                                this.complete_catalog(this.catalog_generation, Ok(catalog), cx);
+                                return;
+                            }
+                            if this.state.models != catalog.models {
+                                this.update_models(catalog.models, cx);
                             }
                             if this.state.skills != catalog.skills {
                                 this.state.skills.clone_from(&catalog.skills);

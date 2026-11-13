@@ -3600,6 +3600,8 @@ pub(crate) fn prompt_input(text: &str, images: Vec<String>) -> Vec<Value> {
 pub enum Action {
     /// Metadata-only refresh; never reconnects or alters the conversation.
     UpdateSkills(Vec<Value>),
+    /// Replace advertised model metadata without reconnecting or configuring the provider.
+    UpdateModels(Vec<Value>),
     /// Explicitly chosen title; automatic generation must preserve it.
     SetTitle(String),
     /// Regenerate from bounded conversation context and resume automatic naming.

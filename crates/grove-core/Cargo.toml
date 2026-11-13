@@ -13,6 +13,7 @@ chrono = { version = "0.4", default-features = false, features = ["clock"] }
 keyring = { version = "3", features = ["apple-native", "windows-native", "async-secret-service", "async-io", "crypto-rust"] }
 serde = { version = "1", features = ["derive", "rc"] }
 serde_json.workspace = true
+toml = "0.8.23"
 markdown = "1.0.0"
 image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "webp"] }
 base64.workspace = true

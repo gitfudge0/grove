@@ -447,7 +447,7 @@ impl Shell {
         let decorations = {
             let _ = decorations;
             gpui::Decorations::Client {
-                tiling: Default::default(),
+                tiling: gpui::Tiling::default(),
             }
         };
         let mut group = div()
@@ -598,7 +598,7 @@ impl Shell {
             .items_center()
             .bg(c::BG_RAIL())
             .when(mac, |row| row.w(rpx(leading_width)))
-            .when(!mac, |row| row.w_full())
+            .when(!mac, gpui::Styled::w_full)
             .child(
                 div()
                     .w(rpx(leading_width))
@@ -2397,20 +2397,20 @@ mod tests {
         cx.update(|window, cx| {
             shell.read(cx).header_focus[ids[0]]
                 .clone()
-                .focus(window, cx)
+                .focus(window, cx);
         });
         for id in &ids[1..] {
             cx.simulate_keystrokes("tab");
             draw(cx);
             cx.update(|window, cx| {
-                assert!(shell.read(cx).header_focus[id].is_focused(window), "{id}")
+                assert!(shell.read(cx).header_focus[id].is_focused(window), "{id}");
             });
         }
         for id in ids[..ids.len() - 1].iter().rev() {
             cx.simulate_keystrokes("shift-tab");
             draw(cx);
             cx.update(|window, cx| {
-                assert!(shell.read(cx).header_focus[id].is_focused(window), "{id}")
+                assert!(shell.read(cx).header_focus[id].is_focused(window), "{id}");
             });
         }
     }
@@ -2426,7 +2426,7 @@ mod tests {
             cx.update(|window, cx| {
                 shell.read(cx).header_focus["window-fullscreen"]
                     .clone()
-                    .focus(window, cx)
+                    .focus(window, cx);
             });
             cx.simulate_keystrokes("enter");
             draw(cx);
@@ -2451,13 +2451,13 @@ mod tests {
                         .store
                         .sidebar_collapsed,
                     !initial
-                )
+                );
             });
             // Collapsing navigation deliberately restores content focus.
             cx.update(|window, cx| {
                 shell.read(cx).header_focus["sidebar-toggle"]
                     .clone()
-                    .focus(window, cx)
+                    .focus(window, cx);
             });
             cx.simulate_keystrokes("space");
             draw(cx);
@@ -2467,7 +2467,7 @@ mod tests {
                         .store
                         .sidebar_collapsed,
                     initial
-                )
+                );
             });
         }
         let settings = cx.debug_bounds("sidebar-settings").unwrap();

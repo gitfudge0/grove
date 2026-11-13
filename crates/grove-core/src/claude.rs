@@ -268,6 +268,7 @@ pub(crate) fn discover_composer(
     );
     let (mut options, _) = launch_options(&args)?;
     options.push("--no-session-persistence".into());
+    actor.model_catalog_key = crate::model_catalog::Key::new(&actor.state.saved, &args);
     actor.state.permission_modes = available_permission_modes(&stopping);
     actor.process = Some(spawn(&options, &actor.state.saved)?);
     actor.control(json!({"subtype":"initialize","hooks":null}))?;
@@ -1082,6 +1083,7 @@ impl ChildTranscript {
 }
 struct Actor {
     side_chat: bool,
+    model_catalog_key: Option<crate::model_catalog::Key>,
     state: Snapshot,
     args: Vec<String>,
     input: mpsc::Receiver<Action>,
@@ -1184,6 +1186,7 @@ impl Actor {
             .collect();
         Self {
             side_chat: false,
+            model_catalog_key: None,
             state,
             args,
             input,
@@ -1641,6 +1644,9 @@ impl Actor {
             }
             self.initial = initial;
         }
+        self.model_catalog_key = (!self.side_chat)
+            .then(|| crate::model_catalog::Key::new(&self.state.saved, &self.args))
+            .flatten();
         self.state.permission_modes = available_permission_modes(&self.stopping);
         let process = spawn_profile(&args, &self.state.saved, self.side_chat)?;
         tracing::info!(
@@ -2255,6 +2261,7 @@ impl Actor {
                 &action,
                 Action::Submit { .. }
                     | Action::UpdateSkills(_)
+                    | Action::UpdateModels(_)
                     | Action::Prompt(_)
                     | Action::Interrupt
                     | Action::Reconnect
@@ -2277,6 +2284,7 @@ impl Actor {
                 Action::Reconnect
                     | Action::Stop { .. }
                     | Action::UpdateSkills(_)
+                    | Action::UpdateModels(_)
                     | Action::Draft(_)
                     | Action::SetTitle(_)
                     | Action::RegenerateTitle
@@ -2293,6 +2301,7 @@ impl Actor {
                 self.state.mark_reviewed(work_period)?;
             }
             Action::UpdateSkills(skills) => self.state.skills = skills,
+            Action::UpdateModels(models) => self.state.models = models,
             Action::Interaction { epoch, action } => {
                 if epoch != self.state.interaction_epoch {
                     return Err("This interaction belongs to a previous connection".into());
@@ -3456,6 +3465,9 @@ impl Actor {
                     if let Some(models) = data["models"].as_array() {
                         self.state.models=models.iter().map(|m| json!({"model":m["value"],"resolvedModel":m["resolvedModel"],"displayName":m["displayName"],"description":m["description"],"supportsFastMode":m["supportsFastMode"],"supportedReasoningEfforts":m["supportedEffortLevels"].as_array().map(|values| values.iter().map(|v| json!({"reasoningEffort":v})).collect::<Vec<_>>()).unwrap_or_default()})).collect();
                     }
+                    if let Some(key) = &self.model_catalog_key {
+                        crate::model_catalog::remember(key, &self.state.models);
+                    }
                     if self.state.saved.composer.speed == Some(provider::Speed::Fast) {
                         self.reconfigure = true;
                     }
@@ -4389,6 +4401,9 @@ mod tests {
         let skills = vec![json!({"name":"newly-installed","path":"/skills/new/SKILL.md"})];
         actor.action(Action::UpdateSkills(skills.clone())).unwrap();
         assert_eq!(actor.state.skills, skills);
+        let models = vec![json!({"model":"new-catalog-model", "supportsFastMode":true})];
+        actor.action(Action::UpdateModels(models.clone())).unwrap();
+        assert_eq!(actor.state.models, models);
         assert_eq!(
             actor.state.saved.thread_id.as_deref(),
             Some("retained-thread")
