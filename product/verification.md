@@ -1480,3 +1480,36 @@ the native/report size fixture does not establish live provider-boundary behavio
 Strict local Clippy was blocked by two existing warnings also reproduced on
 base 1852a77: `semicolon_if_nothing_returned` in codex_view.rs and
 `assigning_clones` in file_browser.rs. No unrelated lint changes were included.
+
+
+## HTML transcript browser actions
+
+Local HTML transcript links retain their viewer link and expose an independent
+Open in browser action, including when rendered from saved Markdown without an
+automatic preview. Explicit browser labels keep one direct action. Missing targets
+and browser-launch errors are shown beside the owning message/link. Standalone
+custom links use native paragraph layout so long labels wrap to the parent width.
+
+Linux evidence: 29 HTML-related tests, the shared Codex/Claude local-file viewer
+fixture, and 33 conformance tests passed. GPUI renderer/input fixtures cover
+arbitrary/formatted labels, HTML/HTM and case variants, line/fragment references,
+spaces, independent actions for multiple files, fresh-session rendering, mouse
+viewer selection, browser Enter/Space retries, missing targets, and visible launch
+failures using the test backend. The long-label bounds regression failed before
+the standalone-link layout correction and passed after it. Existing fenced HTML
+and integrated-report tests passed.
+
+Inspected isolated native Linux X11 captures of the actual link component in
+Grove Dark at 700 logical-pixel content width and Grove Light at 280. The window
+manager ignored requested window dimensions, so the fixture constrains content
+width directly. Captures confirmed wrapping, leading browser icons, left alignment
+and a single explicit browser action. Sampled full-color link pixels against the
+native background measured 8.33:1 in Dark and 7.08:1 in Light.
+
+Live Codex and Claude provider delivery remain untested: the provider checks above
+use synthetic snapshots, not live transport. Actual OS browser handoff, native
+hover/focus, scrolling/restoration in a live session, and macOS/Windows native
+interactions remain untested; desktop interaction control is unavailable here.
+The original screenshot’s apparently plain label was not reproduced in the
+running application. Its saved response contained a valid HTML link and its file
+existed; the native component fixture renders that label as a functioning link.

@@ -159,8 +159,9 @@ Applied to `ui/src` (source, not manifests):
 12. **App-owned HTML link controls and native surface coordination.**
     `MarkdownExtensions::link_renderer` optionally replaces a resolved link with
     app-owned inline controls. `InlineFlow` measures and paints these elements
-    in the existing text/image flow; ordinary paragraphs and unhandled links
-    retain their original renderer. Grove uses this for separate inline-preview
+    in the existing text/image flow. A standalone custom link stays a native
+    paragraph child so labels/actions wrap to the parent width; ordinary paragraphs
+    and unhandled links retain their original renderer. Grove uses this for separate inline-preview
     and explicit-browser targets, without changing other Markdown links.
     `Button::with_focus_handle` permits Return to restore the exact invoking
     control. `Button::icon_only` retains the label as the accessible name while

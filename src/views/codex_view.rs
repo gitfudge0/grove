@@ -26188,6 +26188,11 @@ mod tests {
                 let link = cx
                     .debug_bounds("transcript-file-link")
                     .expect("all local file extensions use the viewer link");
+                assert_eq!(
+                    cx.debug_bounds("transcript-browser-link").is_some(),
+                    target.starts_with("launch.html"),
+                    "{provider:?}: local HTML retains an independent browser action",
+                );
                 cx.simulate_click(link.center(), gpui::Modifiers::default());
                 cx.run_until_parked();
                 draw(cx);

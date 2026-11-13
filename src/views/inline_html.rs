@@ -526,6 +526,7 @@ pub(super) struct HtmlSession {
     artifacts: HashMap<String, Entity<HtmlArtifact>>,
     extensions: HashMap<String, MarkdownExtensions>,
     file_focus: HashMap<(String, String), FocusHandle>,
+    browser_errors: HashMap<(String, String), String>,
     opened: HashMap<String, Vec<String>>,
     cwd: PathBuf,
     roots: Vec<PathBuf>,
@@ -593,6 +594,7 @@ impl HtmlSession {
             artifacts: HashMap::new(),
             extensions: HashMap::new(),
             file_focus: HashMap::new(),
+            browser_errors: HashMap::new(),
             opened: HashMap::new(),
             cwd,
             roots: Vec::new(),
@@ -619,6 +621,7 @@ impl HtmlSession {
             self.artifacts.clear();
             self.extensions.clear();
             self.file_focus.clear();
+            self.browser_errors.clear();
             self.opened.clear();
             self.auto = AutoOpen::default();
             if cx
@@ -728,60 +731,64 @@ impl HtmlSession {
                         let file = super::file_browser::local_target(target, &session.cwd)?;
                         let browser = browser_link_label(label)
                             && crate::platform::inline_html::browser_supported_path(&file.path);
-                        let owner = cx.entity().downgrade();
-                        let keyboard = owner.clone();
-                        let keyboard_file = file.clone();
-                        let focus = session
-                            .file_focus
-                            .entry((link_owner.clone(), target.to_owned()))
-                            .or_insert_with(|| cx.focus_handle())
-                            .clone();
-                        let mouse_focus = focus.clone();
-                        Some(
-                            super::components::inline_disclosure(
-                                SharedString::from(format!("local-file-{target}")),
-                                label.to_owned(),
-                            )
-                            .debug_selector(|| "transcript-file-link".into())
-                            .track_focus(&focus)
-                            .tab_index(0)
-                            .focus_visible(|s| s.bg(c::BG_HOVER()))
-                            .w_auto()
-                            .h_auto()
-                            .p_0()
-                            .text_color(c::BLUE())
-                            .flex()
-                            .items_center()
-                            .gap(rpx(SPACE_SM))
-                            .when(browser, |link| {
-                                link.child(crate::icons::icon("external-link", ICON_SM, c::BLUE()))
-                            })
-                            .child(label.to_owned())
-                            .on_mouse_down(gpui::MouseButton::Left, move |_, window, cx| {
-                                mouse_focus.focus(window, cx);
-                            })
-                            .on_click(move |_, _, cx| {
-                                let _ = owner.update(cx, |session, cx| {
-                                    session.activate_file_link(file.clone(), browser, cx);
+                        let additional_browser = !browser
+                            && file
+                                .path
+                                .extension()
+                                .and_then(|ext| ext.to_str())
+                                .is_some_and(|ext| {
+                                    ext.eq_ignore_ascii_case("html")
+                                        || ext.eq_ignore_ascii_case("htm")
                                 });
-                                cx.stop_propagation();
-                            })
-                            .on_key_down(move |event: &gpui::KeyDownEvent, window, cx| {
-                                if matches!(event.keystroke.key.as_str(), "enter" | "space")
-                                    && !event.is_held
-                                {
-                                    let _ = keyboard.update(cx, |session, cx| {
-                                        session.activate_file_link(
-                                            keyboard_file.clone(),
-                                            browser,
-                                            cx,
-                                        );
-                                    });
-                                    window.prevent_default();
-                                    cx.stop_propagation();
-                                }
-                            })
-                            .into_any_element(),
+                        let error = session
+                            .browser_errors
+                            .get(&(link_owner.clone(), target.to_owned()))
+                            .cloned();
+                        let primary = session.file_link_control(
+                            &link_owner,
+                            target,
+                            label,
+                            file.clone(),
+                            browser,
+                            cx,
+                        );
+                        if !additional_browser && error.is_none() {
+                            return Some(primary);
+                        }
+                        Some(
+                            div()
+                                .flex()
+                                .flex_col()
+                                .min_w_0()
+                                .max_w_full()
+                                .child(
+                                    div()
+                                        .flex()
+                                        .flex_wrap()
+                                        .items_center()
+                                        .gap(rpx(SPACE_SM))
+                                        .child(primary)
+                                        .when(additional_browser, |row| {
+                                            row.child(session.file_link_control(
+                                                &link_owner,
+                                                target,
+                                                "Open in browser",
+                                                file,
+                                                true,
+                                                cx,
+                                            ))
+                                        }),
+                                )
+                                .when_some(error, |row, error| {
+                                    row.child(
+                                        div()
+                                            .debug_selector(|| "transcript-browser-error".into())
+                                            .text_size(rpx(TEXT_SMALL))
+                                            .text_color(c::RED())
+                                            .child(error),
+                                    )
+                                })
+                                .into_any_element(),
                         )
                     })
                     .ok()
@@ -836,23 +843,129 @@ impl HtmlSession {
         cx.notify();
     }
 
+    fn file_link_control(
+        &mut self,
+        message: &str,
+        target: &str,
+        label: &str,
+        file: super::file_browser::FileTarget,
+        browser: bool,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let owner = cx.entity().downgrade();
+        let keyboard = owner.clone();
+        let keyboard_file = file.clone();
+        let error_key = (message.to_owned(), target.to_owned());
+        let keyboard_error_key = error_key.clone();
+        let action = format!("local-file-{browser}-{target}");
+        let focus = self
+            .file_focus
+            .entry((message.to_owned(), action.clone()))
+            .or_insert_with(|| cx.focus_handle())
+            .clone();
+        let mouse_focus = focus.clone();
+        super::components::inline_disclosure(SharedString::from(action), label.to_owned())
+            .debug_selector(move || {
+                if browser {
+                    "transcript-browser-link"
+                } else {
+                    "transcript-file-link"
+                }
+                .into()
+            })
+            .track_focus(&focus)
+            .tab_index(0)
+            .tab_stop(true)
+            .role(gpui::Role::Link)
+            .focus_visible(|s| s.bg(c::BG_HOVER()))
+            .w_auto()
+            .h_auto()
+            .max_w_full()
+            .min_w_0()
+            .p_0()
+            .text_color(c::STATUS_INFO())
+            .items_center()
+            .justify_start()
+            .gap(rpx(SPACE_SM))
+            .when(browser, |link| {
+                link.child(crate::icons::icon(
+                    "external-link",
+                    ICON_SM,
+                    c::STATUS_INFO(),
+                ))
+            })
+            .child(div().min_w_0().whitespace_normal().child(label.to_owned()))
+            .on_mouse_down(gpui::MouseButton::Left, move |_, window, cx| {
+                mouse_focus.focus(window, cx);
+            })
+            .on_click(move |_, _, cx| {
+                let _ = owner.update(cx, |session, cx| {
+                    session.activate_file_link(file.clone(), browser, error_key.clone(), cx);
+                });
+                cx.stop_propagation();
+            })
+            .on_key_down(move |event: &gpui::KeyDownEvent, window, cx| {
+                if matches!(event.keystroke.key.as_str(), "enter" | "space") && !event.is_held {
+                    let _ = keyboard.update(cx, |session, cx| {
+                        session.activate_file_link(
+                            keyboard_file.clone(),
+                            browser,
+                            keyboard_error_key.clone(),
+                            cx,
+                        );
+                    });
+                    window.prevent_default();
+                    cx.stop_propagation();
+                }
+            })
+            .into_any_element()
+    }
+
     fn activate_file_link(
         &mut self,
         file: super::file_browser::FileTarget,
         browser: bool,
+        error_key: (String, String),
         cx: &mut Context<Self>,
     ) {
         if browser {
-            if let Ok(url) = gpui::http_client::Url::from_file_path(&file.path) {
-                cx.spawn(async move |_, _| {
-                    if let Err(error) =
-                        crate::platform::inline_html::open_in_browser(url.to_string()).await
-                    {
-                        eprintln!("Couldn’t open in browser: {error}");
+            let path = file.path;
+            self.browser_errors.remove(&error_key);
+            let identity = self.identity.clone();
+            let check_path = path.clone();
+            // Missing targets must report a failure even if the OS launcher would
+            // accept the URL. Disk work stays off the foreground/paint thread.
+            let check = cx.background_executor().spawn(async move {
+                match fs_err::metadata(&check_path) {
+                    Ok(metadata) if metadata.is_file() => Ok(()),
+                    Ok(_) => Err("The browser target must be a regular file".to_owned()),
+                    Err(error) => Err(format!("File unavailable: {error}")),
+                }
+            });
+            cx.spawn(async move |this, cx| {
+                let result = match check.await {
+                    Ok(()) => match gpui::http_client::Url::from_file_path(&path) {
+                        Ok(url) => {
+                            crate::platform::inline_html::open_in_browser(url.to_string()).await
+                        }
+                        Err(()) => Err("Invalid document path".to_owned()),
+                    },
+                    Err(error) => Err(error),
+                };
+                let _ = this.update(cx, |session, cx| {
+                    if session.identity != identity {
+                        return;
                     }
-                })
-                .detach();
-            }
+                    if let Err(error) = result {
+                        session
+                            .browser_errors
+                            .insert(error_key, format!("Couldn’t open in browser: {error}"));
+                    }
+                    cx.notify();
+                });
+            })
+            .detach();
+            cx.notify();
         } else {
             cx.emit(OpenLocalFile(file));
         }
@@ -1774,6 +1887,274 @@ impl gpui::Element for NativeElement {
 #[cfg(test)]
 mod tests {
     use super::*;
+    struct LinkFixture {
+        session: Entity<HtmlSession>,
+        text: String,
+        width: Option<gpui::Pixels>,
+        _subscription: gpui::Subscription,
+        opened: Rc<std::cell::RefCell<Vec<PathBuf>>>,
+    }
+    impl Render for LinkFixture {
+        fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            let extensions = self
+                .session
+                .update(cx, |session, cx| session.extensions("saved-message", cx));
+            div()
+                .w_full()
+                .when_some(self.width, |row, width| row.w(width).max_w_full())
+                .bg(c::BG())
+                .text_color(c::FG())
+                .text_size(rpx(TEXT_BODY))
+                .font_family(crate::fonts::UI_FAMILY)
+                .child(
+                    TextView::markdown("html-link-fixture", self.text.clone())
+                        .markdown_extensions(extensions)
+                        .style(super::super::codex_view::markdown_style(window))
+                        .selectable(true),
+                )
+        }
+    }
+    fn link_fixture(
+        cx: &mut gpui::TestAppContext,
+    ) -> (Entity<LinkFixture>, &mut gpui::VisualTestContext) {
+        cx.update(gpui_component::init);
+        cx.add_window_view(|_, cx| {
+            let session =
+                cx.new(|_| HtmlSession::new(std::env::current_dir().unwrap(), ScrollHandle::new()));
+            let opened = Rc::new(std::cell::RefCell::new(Vec::new()));
+            let observed = opened.clone();
+            let subscription = cx.subscribe(&session, move |_, _, event: &OpenLocalFile, _| {
+                observed.borrow_mut().push(event.0.path.clone());
+            });
+            LinkFixture {
+                session,
+                text: String::new(),
+                width: None,
+                _subscription: subscription,
+                opened,
+            }
+        })
+    }
+    fn draw_links(cx: &mut gpui::VisualTestContext) {
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            window.draw(cx).clear();
+        });
+    }
+
+    #[gpui::test]
+    fn html_transcript_links_keep_viewer_and_browser_actions(cx: &mut gpui::TestAppContext) {
+        let (fixture, cx) = link_fixture(cx);
+        let screenshot_link = format!(
+            "[Open interactive mock](<{}>)",
+            std::env::current_dir()
+                .unwrap()
+                .join(".grove-artifacts/composer-suggestions/index.html")
+                .display()
+        );
+        let cases = [
+            (screenshot_link.as_str(), true, true),
+            ("[**Preview**](mock.htm)", true, true),
+            ("[A longer interactive mock label with several words for narrow transcript layout](mock.html)", true, true),
+            ("[A mock with spaces](<mock file.HTML>)", true, true),
+            ("[Line](mock.html:12)", true, true),
+            ("[Fragment](mock.html#L12)", true, true),
+            ("[Open in browser](mock.html)", false, true),
+            ("[**OPEN IN BROWSER**](mock.htm)", false, true),
+            ("[Source](mock.rs)", true, false),
+            ("[External](https://example.com/mock.html)", false, false),
+        ];
+        for width in [800., 280.] {
+            cx.simulate_resize(gpui::size(gpui::px(width), gpui::px(900.)));
+            for (markdown, viewer, browser) in cases {
+                fixture.update(cx, |fixture, cx| {
+                    fixture.text = markdown.into();
+                    cx.notify();
+                });
+                draw_links(cx);
+                assert_eq!(
+                    cx.debug_bounds("transcript-file-link").is_some(),
+                    viewer,
+                    "{markdown}"
+                );
+                assert_eq!(
+                    cx.debug_bounds("transcript-browser-link").is_some(),
+                    browser,
+                    "{markdown}"
+                );
+                if let Some(bounds) = cx.debug_bounds("transcript-file-link") {
+                    assert!(
+                        bounds.right() <= gpui::px(width + 1.),
+                        "viewer overflow: {markdown}: {bounds:?}"
+                    );
+                }
+                if let Some(bounds) = cx.debug_bounds("transcript-browser-link") {
+                    assert!(bounds.size.width > gpui::px(0.));
+                    assert!(
+                        bounds.right() <= gpui::px(width + 1.),
+                        "{markdown}: {bounds:?}"
+                    );
+                }
+            }
+        }
+        fixture.update(cx, |fixture, cx| {
+            fixture.session =
+                cx.new(|_| HtmlSession::new(std::env::current_dir().unwrap(), ScrollHandle::new()));
+            fixture.text = "[First](one.html) and [Second](two.htm)".into();
+            cx.notify();
+        });
+        draw_links(cx);
+        fixture.read_with(cx, |fixture, cx| {
+            let session = fixture.session.read(cx);
+            assert_eq!(
+                session.file_focus.len(),
+                4,
+                "both HTML links have independent viewer/browser controls"
+            );
+            assert!(
+                session.opened.is_empty(),
+                "actions do not depend on an auto preview"
+            );
+        });
+        // A fresh session renders the browser action from saved Markdown alone.
+        fixture.update(cx, |fixture, cx| {
+            fixture.session =
+                cx.new(|_| HtmlSession::new(std::env::current_dir().unwrap(), ScrollHandle::new()));
+            fixture.text = "[Restored](mock.html)".into();
+            cx.notify();
+        });
+        draw_links(cx);
+        assert!(cx.debug_bounds("transcript-browser-link").is_some());
+    }
+
+    #[gpui::test]
+    fn html_transcript_link_activation_and_missing_file_feedback(cx: &mut gpui::TestAppContext) {
+        let (fixture, cx) = link_fixture(cx);
+        let missing = tempfile::tempdir().unwrap().path().join("missing.html");
+        fixture.update(cx, |fixture, cx| {
+            fixture.text = format!("[Mock]({})", missing.display());
+            cx.notify();
+        });
+        draw_links(cx);
+        let viewer = cx.debug_bounds("transcript-file-link").unwrap();
+        let browser = cx.debug_bounds("transcript-browser-link").unwrap();
+        assert!(viewer.right() <= browser.left() || viewer.bottom() <= browser.top());
+        cx.simulate_click(viewer.center(), gpui::Modifiers::default());
+        assert_eq!(
+            fixture.read_with(cx, |fixture, _| fixture.opened.borrow().clone()),
+            vec![missing.clone()]
+        );
+        // Mouse focuses the independent browser action. Repeated keyboard retries
+        // must not invoke the viewer, and missing-file errors remain visible.
+        cx.simulate_click(browser.center(), gpui::Modifiers::default());
+        draw_links(cx);
+        for key in ["enter", "space"] {
+            cx.simulate_keystrokes(key);
+            draw_links(cx);
+            fixture.read_with(cx, |fixture, cx| {
+                assert_eq!(fixture.opened.borrow().len(), 1);
+                assert!(fixture.session.read(cx).browser_errors[&(
+                    "saved-message".into(),
+                    missing.to_string_lossy().into_owned()
+                )]
+                    .contains("File unavailable"));
+            });
+        }
+    }
+    #[gpui::test]
+    fn html_transcript_browser_launch_errors_are_visible(cx: &mut gpui::TestAppContext) {
+        let directory = tempfile::tempdir().unwrap();
+        let file = directory.path().join("preview.html");
+        fs_err::write(&file, "<html>Preview</html>").unwrap();
+        let (fixture, cx) = link_fixture(cx);
+        fixture.update(cx, |fixture, cx| {
+            fixture.text = format!("[Open in browser]({})", file.display());
+            cx.notify();
+        });
+        draw_links(cx);
+        assert!(cx.debug_bounds("transcript-file-link").is_none());
+        let browser = cx.debug_bounds("transcript-browser-link").unwrap();
+        cx.simulate_click(browser.center(), gpui::Modifiers::default());
+        draw_links(cx);
+        assert!(cx.debug_bounds("transcript-browser-error").is_some());
+        fixture.read_with(cx, |fixture, cx| {
+            assert!(fixture.opened.borrow().is_empty());
+            let error = &fixture.session.read(cx).browser_errors
+                [&("saved-message".into(), file.to_string_lossy().into_owned())];
+            assert!(error.starts_with("Couldn’t open in browser:"));
+            assert!(
+                !error.contains("File unavailable"),
+                "the test backend rejects real browser launches"
+            );
+        });
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[ignore = "opens an isolated native X11 HTML link fixture; requires import"]
+    fn html_transcript_links_native_capture() {
+        use gpui::AppContext as _;
+        assert!(std::env::var_os("GROVE_CONFIG_DIR").is_some());
+        let output = PathBuf::from(std::env::var("GROVE_HTML_LINK_CAPTURE_DIR").unwrap());
+        assert!(output.is_absolute());
+        fs_err::create_dir_all(&output).unwrap();
+        let selected_case =
+            std::env::var("GROVE_HTML_LINK_CAPTURE_CASE").unwrap_or_else(|_| "wide-dark".into());
+        assert!(matches!(
+            selected_case.as_str(),
+            "wide-dark" | "narrow-light"
+        ));
+        gpui_platform::application().with_assets(crate::assets::Assets).run(move |cx| {
+            gpui_component::init(cx);
+            crate::fonts::register(cx).unwrap();
+            c::sync_component_theme(cx);
+            cx.set_reduce_motion(true);
+            let mut retained = None;
+            let window = cx.open_window(gpui::WindowOptions {
+                window_bounds: Some(gpui::WindowBounds::Windowed(gpui::Bounds::new(
+                    gpui::point(gpui::px(20.), gpui::px(20.)), gpui::size(gpui::px(840.), gpui::px(540.)),
+                ))), ..Default::default()
+            }, |window, cx| {
+                window.set_window_title("Grove HTML link QA");
+                let session = cx.new(|_| HtmlSession::new(std::env::current_dir().unwrap(), ScrollHandle::new()));
+                let fixture = cx.new(|cx| {
+                    let subscription = cx.subscribe(&session, |_, _, _: &OpenLocalFile, _| {});
+                    LinkFixture { session, text: String::new(), width: None, _subscription: subscription, opened: Rc::default() }
+                });
+                retained = Some(fixture.clone());
+                cx.new(|cx| gpui_component::Root::new(fixture, window, cx).bordered(false))
+            }).unwrap();
+            let fixture = retained.unwrap();
+            cx.activate(true);
+            cx.spawn(async move |cx| {
+                for (name, narrow, light) in [("wide-dark", false, false), ("narrow-light", true, true)] {
+                    if name != selected_case { continue; }
+                    cx.update_window(window.into(), |_, window, cx| {
+                        grove_core::theme::set_by_name(if light { c::DEFAULT_LIGHT_THEME } else { c::DEFAULT_DARK_THEME });
+                        c::sync_component_theme(cx);
+                        window.set_rem_size(gpui::px(16.));
+                        fixture.update(cx, |fixture, cx| {
+                            fixture.width = Some(gpui::px(if narrow { 280. } else { 700. }));
+                            fixture.text = if narrow {
+                                "[A longer interactive mock label with several words for narrow transcript layout](preview.htm)\n\n[Open in browser](preview.html)"
+                            } else {
+                                "[Open interactive mock](.grove-artifacts/composer-suggestions/index.html)\n\nTry typing, clearing the draft, switching with arrows, and accepting with Tab.\n\n[First](one.html) and [Second](two.htm)"
+                            }.into();
+                            cx.notify();
+                        });
+                        window.resize(gpui::size(gpui::px(if narrow { 300. } else { 840. }), gpui::px(540.)));
+                        window.refresh();
+                    }).unwrap();
+                    cx.background_executor().timer(std::time::Duration::from_millis(800)).await;
+                    assert!(std::process::Command::new("import").args(["-window", "Grove HTML link QA"]).arg(output.join(format!("{name}.png"))).status().unwrap().success());
+                }
+                cx.update_window(window.into(), |_, window, _| window.remove_window()).unwrap();
+                drop(fixture);
+                cx.update(|cx| cx.quit());
+            }).detach();
+        });
+    }
+
     #[gpui::test]
     fn os_text_scale_keeps_native_and_report_sizes_aligned(cx: &mut gpui::TestAppContext) {
         struct Fixture;
