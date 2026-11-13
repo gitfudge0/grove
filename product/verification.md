@@ -1289,6 +1289,42 @@ whether these failures predate this layout change. This is not a green suite.
 The final Linux local build/install succeeded; installed and built binaries
 matched by SHA-256. The running application was not restarted.
 
+## Response-based suggestion carousel
+
+The revised shared Codex/Claude composer stores a variable set of short
+response-part follow-ups, hides it for any nonempty draft, and restores its
+selection when the draft is cleared. Candidate generation now returns a bounded
+array; native controls and empty-composer left/right navigation select a reply.
+
+Linux verification passed five core candidate/schema tests, seven generation
+transport tests, eight native composer fixtures, three adjacent file/skill/slash
+Tab-completion fixtures, and all 33 UI source-conformance checks. Codex and Claude
+are **verified through shared native transport fixtures** for typing/clearing,
+Tab/Undo restoration, chevron and arrow wraparound, successful-send retirement,
+empty Enter, stale replies, generation while typing, modifier/menu/marked-text
+priority, single-result disabled controls and shell-owned Shift+Tab traversal.
+An initial bare-fixture Shift+Tab failure was traced to its missing production
+shell traversal handler; the corrected host preserves strict empty-draft/focus
+assertions and passed. This was a test-host correction, not a production fix.
+
+Five fresh isolated Linux X11 captures were inspected in Grove Dark and Light,
+including selected/restored suggestions, 300px conversation width and rem 20.
+They show short ghost replies and category-free pagination, with wrapped hints
+at narrower widths. The compositor retained its window size, so constrained
+conversation content is verified rather than full-window resize behavior. The
+production build, formatting, whitespace, repository artifact policy, 85 strict
+reference-verifier tests and 25 artifact/install/CI tooling tests passed.
+
+**Codex:** live isolated production structured-array generation passed with two
+suggestions (36 and 38 characters). **Claude:** live generation was attempted but
+failed; `claude auth status` reported signed out (`loggedIn: false`). Successful
+live Claude generation remains **untested**. Provider generation and native
+composer fixtures were exercised separately, not as an end-to-end live session.
+Actual OS IME input, screen-reader use, desktop pager hover/focus appearance and
+macOS/Windows runtime behavior remain untested. No local installation or user-app
+restart was performed. Prior single-candidate evidence below describes the old
+behavior, not verification of the carousel.
+
 ## Suggested next replies
 
 Linux verification passed 12 focused core/generation-transport tests and 51

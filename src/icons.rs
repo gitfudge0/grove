@@ -219,6 +219,7 @@ fn svg_for(name: &str) -> String {
         "play" => r#"<path d="M4.5 3.5l8 4.5-8 4.5z"/>"#,
         "chev-down" => r#"<path d="M4 6l4 4 4-4"/>"#,
         "chev-up" => r#"<path d="M4 10l4-4 4 4"/>"#,
+        "chev-left" => r#"<path d="M10 4l-4 4 4 4"/>"#,
         "chev-right" => r#"<path d="M6 4l4 4-4 4"/>"#,
         "stop" => {
             r#"<rect x="4" y="4" width="8" height="8" rx="1" fill="currentColor" stroke="none"/>"#

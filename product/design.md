@@ -592,19 +592,29 @@ for Codex and Claude; intensity follows the active light/dark theme.
 ## Suggested next replies
 
 After a newly completed successful main-agent response, the native Codex and
-Claude composer may show one complete suggested user reply while its actual draft
-is empty. Ghost text remains presentation only: it is never copied, saved, queued
-or submitted as user text until explicitly accepted. Matching exact prefix typing
-keeps the remaining suggestion visible; the first difference or Escape dismisses
-it for that composition. Typing never regenerates the candidate.
+Claude composer may offer a variable number of short suggested user replies.
+Each follows up on a useful part of the received response; suggestions may use
+similar actions for different parts and have no category labels. Generation is
+bounded to six suggestions of at most 120 characters each, ideally 3–8 words.
+Do not pad to a fixed count when fewer useful follow-ups exist.
 
-Tab accepts the whole reply in one undo step, without duplicating a matching
-prefix or sending. Enter sends only actual draft text; an empty ghost reply does
-not enable Send. Existing file, skill and slash completion, menus, selections,
-IME and specialized answer modes retain priority; Shift+Tab retains normal focus
-traversal. A quiet “Tab to use suggested reply · Esc to dismiss” hint explains the
-available action. Preview changes are immediate input feedback, with native font
-shaping, wrapping and resolved supporting foreground color.
+Only an empty actual draft shows the selected reply as ghost text. Typing hides
+it without retiring the suggestions or changing the selection; clearing the draft
+restores it, including when typing began before generation completed. Tab accepts
+the selected reply in one undo step without sending. Acceptance does not retire
+the set: clearing or undoing the accepted draft restores the selected suggestion.
+Sending a message retires the set; empty Enter does not. Escape explicitly dismisses
+it for that composition. Typing never regenerates suggestions.
+
+A compact left chevron, “1 / N” position and right chevron switch between the
+suggestions with wraparound, alongside the quiet Tab/arrow/Escape hint. A single
+suggestion shows “1 / 1” with unavailable chevrons. Unmodified left/right arrows
+switch while the composer is empty; nonempty drafts retain normal caret movement.
+Existing file, skill and slash completion, menus, selections, IME and specialized
+answer modes retain priority; Shift+Tab retains normal focus traversal. Ghost text
+is presentation only: it is never copied, saved, queued or submitted until accepted,
+and an empty ghost reply does not enable Send. Preview and selection changes are
+immediate input feedback, with native font shaping, wrapping and supporting color.
 
 Candidates belong to the response and native composer that requested them. New
 turns, draft handoffs and changed response identity invalidate stale acceptance.
