@@ -38,6 +38,7 @@ use std::{
     sync::Arc,
 };
 
+mod dashboard_status;
 mod history;
 mod measured_slot;
 mod measured_tool;
@@ -1266,7 +1267,12 @@ impl gpui::EventEmitter<CodexViewEvent> for CodexView {}
 pub struct CodexView {
     pub(crate) dashboard_tray: Option<Entity<super::sidebar::dashboard::DestinationTray>>,
     dashboard_pending: bool,
-    dashboard_retry_focus: FocusHandle,
+    dashboard_handoffs: Vec<(gpui::WeakEntity<CodexSession>, Subscription)>,
+    dashboard_status_expanded: bool,
+    dashboard_status_signature: Vec<dashboard_status::Preparation>,
+    dashboard_more_focus: FocusHandle,
+    dashboard_tray_observer: Option<Subscription>,
+    dashboard_retry_focus: [FocusHandle; 2],
     script_runtime: Option<Entity<crate::runtime::Runtime>>,
     preview_child: Option<String>,
     history_readonly: bool,
@@ -2026,7 +2032,12 @@ impl CodexView {
             pending_history_jump: None,
             dashboard_tray: None,
             dashboard_pending: false,
-            dashboard_retry_focus: cx.focus_handle(),
+            dashboard_handoffs: Vec::new(),
+            dashboard_status_expanded: false,
+            dashboard_status_signature: Vec::new(),
+            dashboard_more_focus: cx.focus_handle(),
+            dashboard_tray_observer: None,
+            dashboard_retry_focus: std::array::from_fn(|_| cx.focus_handle()),
             script_runtime: None,
             checkout_context: None,
             subscriptions,
@@ -3122,6 +3133,13 @@ impl CodexView {
         window: &Window,
         cx: &mut Context<Self>,
     ) -> Option<gpui::AnyElement> {
+        // Catalog failures already have an actionable home in the Dashboard slot.
+        if self.dashboard_tray.is_some()
+            && self.session.read(cx).catalog_error.is_some()
+            && self.session.read(cx).catalog_error == state.error
+        {
+            return None;
+        }
         let disconnected = state.status == codex::Status::Disconnected;
         let notice = state.effective_notice();
         if !disconnected && notice.is_some_and(|n| n.kind == codex::SessionNoticeKind::Retrying) {
@@ -4879,6 +4897,7 @@ impl CodexView {
         tray: Entity<super::sidebar::dashboard::DestinationTray>,
         cx: &mut Context<Self>,
     ) {
+        self.dashboard_tray_observer = Some(cx.observe(&tray, |_, _, cx| cx.notify()));
         self.dashboard_tray = Some(tray);
         self.input
             .update(cx, |input, cx| input.set_auto_grow(2, 10, cx));
@@ -4886,6 +4905,8 @@ impl CodexView {
 
     pub(crate) fn launch_dashboard(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.dashboard_tray = None;
+        self.dashboard_tray_observer = None;
+        self.dashboard_handoffs.clear();
         self.input
             .update(cx, |input, cx| input.set_auto_grow(3, 10, cx));
         self.dashboard_pending = true;
@@ -4930,6 +4951,9 @@ impl CodexView {
                 || grove_core::review_skill::is_invocation(self.input.read(cx).value().as_ref()))
                 && self.run_command(window, cx)
             {
+                return;
+            }
+            if self.draft_action_pending(cx) {
                 return;
             }
             let session = self.session.read(cx);
@@ -6840,7 +6864,15 @@ impl Render for CodexView {
         {
             self.interrupt_requested_for_turn = None;
         }
-        let draft_disabled = self.edit_confirmation.is_some()
+        let native_invocation =
+            grove_core::describe_skill::is_invocation(self.input.read(cx).value().as_ref())
+                || grove_core::review_skill::is_invocation(self.input.read(cx).value().as_ref());
+        let dashboard_catalog_blocked = self.dashboard_tray.is_some() && !native_invocation && {
+            let session = self.session.read(cx);
+            session.catalog_loading || session.catalog_error.is_some()
+        };
+        let draft_disabled = dashboard_catalog_blocked
+            || self.edit_confirmation.is_some()
             || self.edit_request_pending
             || state.saved.pending_edit.is_some()
             || state.status == codex::Status::Disconnected
@@ -7201,6 +7233,7 @@ impl Render for CodexView {
             || self.pending_attachment_picker
             || self.edit_request_pending
             || state.saved.pending_edit.is_some();
+        let dashboard_status = self.render_dashboard_status(&state, window, cx);
         let mut surface =
             surface.child(
                 div()
@@ -7239,6 +7272,7 @@ impl Render for CodexView {
                             .when_some(rewind_drafts, gpui::ParentElement::child)
                             .when_some(choices, gpui::ParentElement::child)
                             .when(!self.queue_motion_rows.is_empty(), |rail| rail.child(queued))
+                            .when_some(dashboard_status, gpui::ParentElement::child)
                             .child(div().w_full().flex().flex_col().flex_shrink_0()
                             .children(self.render_reference_preview(composer_attached, window, cx))
                             .child(
@@ -7322,7 +7356,7 @@ impl Render for CodexView {
                                     .text_size(rpx(TEXT_MICRO))
                                     .line_height(gpui::phi())
                                     .text_color(c::FG_DIM())
-                                    .when(!stopping && (self.plan_answer.is_some() || self.submitted.is_some() || editing || busy), |hints| hints.child(super::components::shortcut_hint(if self.plan_answer.as_ref().is_some_and(|answer| answer.saving.is_some()) {
+                                    .when(!stopping && self.dashboard_tray.is_none() && (self.plan_answer.is_some() || self.submitted.is_some() || editing || busy), |hints| hints.child(super::components::shortcut_hint(if self.plan_answer.as_ref().is_some_and(|answer| answer.saving.is_some()) {
                                         "Saving answer…"
                                     } else if self.plan_answer.is_some() {
                                         "Enter to save answer"
@@ -7337,19 +7371,6 @@ impl Render for CodexView {
                                     })))
                             )
                             .when_some(notice_below, gpui::ParentElement::child)
-                            .when(self.dashboard_tray.is_some(), |rail| {
-                                let session = self.session.read(cx);
-                                if session.catalog_loading {
-                                    rail.child(div().text_size(rpx(TEXT_SMALL)).text_color(c::FG_DIM()).child(format!("Loading {} options…", state.saved.provider.label())))
-                                } else if let Some(error) = &session.catalog_error {
-                                    rail.child(div().flex().flex_col().gap(rpx(SPACE_SM))
-                                        .child(div().text_size(rpx(TEXT_SMALL)).text_color(c::FORM_ERROR()).child(error.clone()))
-                                        .child(header_control("dashboard-catalog-retry", "Retry provider options").track_focus(&self.dashboard_retry_focus).focus_visible(|s|s.bg(c::BG_HOVER())).w_auto().tab_index(0).gap(rpx(SPACE_SM))
-                                            .child(crate::icons::icon("refresh",ICON_SM,c::FG_DIM())).child("Retry")
-                                            .on_click(cx.listener(|this,_,_,cx|this.retry_dashboard_catalog(cx)))
-                                            .on_key_down(cx.listener(|this,event:&gpui::KeyDownEvent,_,cx|{if action_key(event){this.retry_dashboard_catalog(cx);cx.stop_propagation();}}))))
-                                } else {rail}
-                            })
                             ,
                     ),
             );
@@ -9304,13 +9325,19 @@ impl CodexView {
                             .child(crate::icons::icon(icon, ICON_SM, c::FG_DIM())),
                     )
                     .when(menu == ComposerMenu::Settings, |button| {
-                        button.max_w_full().min_h(rpx(CHROME_CONTROL_H))
+                        button
+                            .max_w_full()
+                            .min_h(rpx(CHROME_CONTROL_H))
+                            .when(self.dashboard_tray.is_some(), gpui::Styled::h_auto)
                     })
                     .when(menu == ComposerMenu::Access, |button| {
                         button.max_w_full().h_auto().min_h(rpx(CHROME_CONTROL_H))
                     })
                     .child(if menu == ComposerMenu::Settings {
                         full_model_label(gpui::StyledText::new(label))
+                            .when(self.dashboard_tray.is_some(), |label| {
+                                label.min_w_0().flex_shrink_1().whitespace_normal()
+                            })
                             .id(summary_id)
                             .debug_selector(move || summary_id.into())
                     } else {
@@ -16335,7 +16362,7 @@ mod tests {
         });
     }
 
-    fn fixture(
+    pub(super) fn fixture(
         cx: &mut gpui::TestAppContext,
     ) -> (
         Entity<CodexView>,
@@ -16373,7 +16400,7 @@ mod tests {
             let session = cx.new(|cx| CodexSession::from_connection(snapshot(), connection, cx));
             let chat = cx.new(|cx| CodexView::new(session, window, cx));
             chat.update(cx, |view, _| {
-                view.next_reply_generate = |_, _| Ok(Vec::new())
+                view.next_reply_generate = |_, _| Ok(Vec::new());
             });
             view = Some(chat.clone());
             if shell_navigation {
@@ -17695,7 +17722,7 @@ mod tests {
     include!("codex_view/performance.rs");
     include!("codex_view/native_hit_geometry.rs");
 
-    fn draw(cx: &mut gpui::VisualTestContext) {
+    pub(super) fn draw(cx: &mut gpui::VisualTestContext) {
         cx.run_until_parked();
         cx.update(|window, cx| {
             let _ = window.draw(cx);
@@ -21630,7 +21657,7 @@ mod tests {
                 view.update(cx, |view, _| {
                     view.submitted = None;
                     view.submitted_ack = None;
-                })
+                });
             });
         }
     }
@@ -21790,7 +21817,7 @@ mod tests {
                     window,
                     cx,
                 );
-            })
+            });
         });
         draw(cx);
         for id in ["next-reply-previous", "next-reply-next"] {
@@ -21817,7 +21844,7 @@ mod tests {
                         "Check layouts.".into(),
                         "Check keyboard navigation.".into(),
                     ]);
-                })
+                });
             });
             draw(cx);
             cx.simulate_keystrokes("shift-left");
@@ -21827,7 +21854,7 @@ mod tests {
                 Some((1, 2))
             );
             cx.update(|window, cx| {
-                view.update(cx, |view, cx| view.next_reply_focus[0].focus(window, cx))
+                view.update(cx, |view, cx| view.next_reply_focus[0].focus(window, cx));
             });
             draw(cx);
             assert!(
@@ -21841,7 +21868,7 @@ mod tests {
                 Some((2, 2))
             );
             cx.update(|window, cx| {
-                view.update(cx, |view, cx| view.next_reply_focus[1].focus(window, cx))
+                view.update(cx, |view, cx| view.next_reply_focus[1].focus(window, cx));
             });
             draw(cx);
             cx.simulate_keystrokes("enter");
@@ -21867,10 +21894,10 @@ mod tests {
                         !view.input.focus_handle(cx).is_focused(window),
                         "Shift+Tab retains normal focus traversal"
                     );
-                })
+                });
             });
             cx.update(|window, cx| {
-                view.update(cx, |view, cx| view.input.focus_handle(cx).focus(window, cx))
+                view.update(cx, |view, cx| view.input.focus_handle(cx).focus(window, cx));
             });
 
             cx.update(|window, cx| {
@@ -21885,7 +21912,7 @@ mod tests {
                     assert!(!view.move_next_reply(false, window, cx));
                     assert!(!view.accept_next_reply(window, cx));
                     assert_eq!(view.input.read(cx).value().as_ref(), "かな");
-                })
+                });
             });
         }
     }
@@ -21894,7 +21921,6 @@ mod tests {
     #[test]
     #[ignore = "opens isolated native X11 next reply fixture"]
     fn next_reply_native_capture() {
-        assert!(std::env::var_os("GROVE_CONFIG_DIR").is_some());
         use gpui::AppContext as _;
         struct ReplyQaContainer {
             view: Entity<CodexView>,
@@ -21915,6 +21941,7 @@ mod tests {
                     .child(self.view.clone())
             }
         }
+        assert!(std::env::var_os("GROVE_CONFIG_DIR").is_some());
         let output =
             std::path::PathBuf::from(std::env::var("GROVE_NEXT_REPLY_CAPTURE_DIR").unwrap());
         assert!(output.is_absolute());

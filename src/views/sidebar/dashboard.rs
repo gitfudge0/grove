@@ -23,6 +23,7 @@ struct DashboardDefaults {
     composer: grove_core::codex::ComposerSettings,
     config_args: Vec<String>,
     worktrees: Option<Vec<(String, String)>>,
+    handoffs: Vec<Entity<CodexSession>>,
     viewport_height: gpui::Pixels,
 }
 pub(super) struct Dashboard {
@@ -38,6 +39,7 @@ pub(crate) enum DestinationEvent {
     NewWorktree,
     NewProject,
     Home,
+    RefreshWorktrees,
 }
 pub(crate) struct DestinationTray {
     projects: Vec<(usize, String, String)>,
@@ -64,6 +66,24 @@ pub(crate) struct DestinationTray {
 }
 impl EventEmitter<DestinationEvent> for DestinationTray {}
 impl DestinationTray {
+    pub(crate) fn preparation(&self) -> (bool, Option<&str>) {
+        (self.loading, self.error.as_deref())
+    }
+    pub(crate) fn retry_worktrees(&mut self, cx: &mut Context<Self>) {
+        cx.emit(DestinationEvent::RefreshWorktrees);
+    }
+    #[cfg(test)]
+    pub(crate) fn set_preparation_for_test(
+        &mut self,
+        loading: bool,
+        error: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
+        self.generation = self.generation.wrapping_add(1);
+        self.loading = loading;
+        self.error = error;
+        cx.notify();
+    }
     #[cfg(test)]
     pub(crate) fn picker_test_tray(path: String) -> Self {
         Self::new(vec![(0, "Picker fixture".into(), path.clone())], 0, path)
@@ -351,22 +371,6 @@ impl Render for DestinationTray {
                     ),
             );
         }
-        if self.loading {
-            tray = tray.child(
-                div()
-                    .text_size(rpx(TEXT_SMALL))
-                    .text_color(c::FG_DIM())
-                    .child("Loading worktrees…"),
-            );
-        }
-        if let Some(error) = &self.error {
-            tray = tray.child(
-                div()
-                    .text_size(rpx(TEXT_SMALL))
-                    .text_color(c::FORM_ERROR())
-                    .child(error.clone()),
-            );
-        }
         let visible_popup = if let Some(popup) = &self.popup {
             Some((
                 popup.clone(),
@@ -609,7 +613,14 @@ impl Sidebar {
                 tray
             });
             let view = cx.new(|cx| CodexView::new(session.clone(), window, cx));
-            view.update(cx, |view, cx| view.attach_dashboard_tray(tray.clone(), cx));
+            view.update(cx, |view, cx| {
+                view.attach_dashboard_tray(tray.clone(), cx);
+                if let Some(defaults) = &defaults {
+                    for handoff in &defaults.handoffs {
+                        view.track_dashboard_handoff(handoff.clone(), cx);
+                    }
+                }
+            });
             let events = vec![
                 cx.subscribe_in(&view, window, |this, source, event, window, cx| {
                     if !this.dashboard_open
@@ -677,6 +688,7 @@ impl Sidebar {
                             }
                             this.refresh_dashboard_catalog(cx);
                         }
+                        DestinationEvent::RefreshWorktrees => this.refresh_dashboard_worktrees(cx),
                         DestinationEvent::NewWorktree => {
                             if let Some(d) = &this.dashboard {
                                 let idx = d.tray.read(cx).project;
@@ -830,6 +842,11 @@ impl Sidebar {
                 composer: saved.composer.clone(),
                 config_args: saved.config_args.clone(),
                 worktrees,
+                handoffs: {
+                    let mut handoffs = view.read(cx).dashboard_handoff_sessions(cx);
+                    handoffs.push(session.clone());
+                    handoffs
+                },
                 viewport_height: self
                     .dashboard
                     .as_ref()
@@ -1000,7 +1017,8 @@ impl Sidebar {
             measured_height
         } else {
             window.viewport_size().height
-        } * DASHBOARD_COMPOSER_TOP_FRACTION;
+        } * DASHBOARD_COMPOSER_TOP_FRACTION
+            - rpx(CONTROL_H + SPACE_MD).to_pixels(window.rem_size());
         let owner = cx.entity().entity_id();
         let registry = self.runtime.read(cx).registry.read(cx);
         let activity = self.runtime.read(cx).activity.read(cx);
@@ -2212,6 +2230,12 @@ mod tests {
                 crate::entities::codex_session::CodexSession::settle_draft_catalog_for_test,
             );
         });
+        cx.update(|_, cx| {
+            let tray = sidebar.read(cx).dashboard.as_ref().unwrap().tray.clone();
+            tray.update(cx, |tray, cx| {
+                tray.set_preparation_for_test(false, None, cx);
+            });
+        });
         cx.run_until_parked();
         cx.update(|window, cx| {
             let _ = window.draw(cx);
@@ -2440,6 +2464,102 @@ mod tests {
             );
             assert_eq!(worktree.right(), strip.right() - gpui::px(SPACE_2XL + 1.));
         });
+    }
+    #[gpui::test]
+    fn dashboard_status_follows_adopted_codex_and_claude_sessions(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            cx.set_reduce_motion(true);
+            cx.set_global(crate::zoom::CurrentPtyDims::default());
+            cx.set_global(SettingsState::new(grove_core::storage::Store::default()));
+        });
+        let (sidebar, cx) = cx.add_window_view(|window, cx| {
+            let runtime = cx.new(Runtime::new);
+            Sidebar::new(runtime, window, cx)
+        });
+        for provider in [
+            grove_core::codex::Provider::Codex,
+            grove_core::codex::Provider::Claude,
+        ] {
+            let source = cx.update(|window, cx| {
+                sidebar.update(cx, |sidebar, cx| {
+                    sidebar.open_dashboard(window, cx);
+                    let saved = sidebar
+                        .dashboard
+                        .as_ref()
+                        .unwrap()
+                        .session
+                        .read(cx)
+                        .state
+                        .saved
+                        .clone();
+                    let source = cx.new(|cx| {
+                        let mut session = CodexSession::history(saved, cx);
+                        session.state.saved.provider = provider;
+                        session.state.status = grove_core::codex::Status::Starting;
+                        session.begin_dashboard_handoff_for_test();
+                        session
+                    });
+                    let old_view = cx.new(|cx| CodexView::new(source.clone(), window, cx));
+                    sidebar.adopt_dashboard_launch(
+                        NO_PROJECT,
+                        source.clone(),
+                        old_view.clone(),
+                        window,
+                        cx,
+                    );
+                    let dashboard = sidebar.dashboard.as_ref().unwrap();
+                    assert_ne!(dashboard.view, old_view);
+                    assert_ne!(dashboard.session, source);
+                    dashboard.session.update(
+                        cx,
+                        crate::entities::codex_session::CodexSession::settle_draft_catalog_for_test,
+                    );
+                    assert_eq!(
+                        dashboard
+                            .view
+                            .read(cx)
+                            .dashboard_handoff_sessions(cx)
+                            .as_slice(),
+                        std::slice::from_ref(&source)
+                    );
+                    source
+                })
+            });
+            cx.run_until_parked();
+            cx.update(|window, cx| {
+                let _ = window.draw(cx);
+            });
+            assert!(
+                cx.debug_bounds("dashboard-status-entry-0").is_some(),
+                "the replacement Dashboard shows connection progress"
+            );
+            // Clear the actor-owned handoff, without touching the fresh draft.
+            cx.update(|_, cx| {
+                source.update(cx, |session, cx| {
+                    session.cancel_dashboard_title_waiting();
+                    session.state.status = grove_core::codex::Status::Done;
+                    cx.notify();
+                });
+            });
+            cx.run_until_parked();
+            cx.update(|window, cx| {
+                let _ = window.draw(cx);
+            });
+            assert!(
+                cx.debug_bounds("dashboard-status-entry-0").is_none(),
+                "completion removes the observed handoff"
+            );
+            sidebar.read_with(cx, |sidebar, cx| {
+                let dashboard = sidebar.dashboard.as_ref().unwrap();
+                assert!(dashboard.session.read(cx).state.saved.draft.is_empty());
+                assert!(dashboard
+                    .view
+                    .read(cx)
+                    .dashboard_handoff_sessions(cx)
+                    .is_empty());
+            });
+        }
     }
 }
 
