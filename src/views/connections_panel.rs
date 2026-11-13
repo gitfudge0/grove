@@ -23,6 +23,7 @@ impl gpui::EventEmitter<ConnectionChanged> for ConnectionsPanel {}
 pub struct ConnectionsPanel {
     runtime: Entity<Runtime>,
     provider: Provider,
+    account_only: bool,
     cwd: String,
     args: Vec<String>,
     context: Result<ConnectionContext, String>,
@@ -54,6 +55,7 @@ impl ConnectionsPanel {
         Self {
             runtime,
             provider: Provider::Codex,
+            account_only: false,
             cwd,
             args: Vec::new(),
             context,
@@ -87,6 +89,37 @@ impl ConnectionsPanel {
                 }
             }),
         }
+    }
+    pub(super) fn account_panel(
+        runtime: Entity<Runtime>,
+        provider: Provider,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let mut panel = Self::new(runtime, cx);
+        panel.provider = provider;
+        panel.account_only = true;
+        panel
+    }
+    pub(super) fn busy(&self) -> bool {
+        self.job.is_some() || self.checking || self.checking_servers
+    }
+    pub(super) fn summary(&self) -> (StatusKind, &'static str) {
+        if self.checking {
+            return (StatusKind::Working, "Checking sign-in");
+        }
+        match &self.account {
+            Some(Ok(AccountStatus::Connected { .. })) => (StatusKind::Success, "Signed in"),
+            Some(Ok(AccountStatus::SignedOut)) => (StatusKind::NeedsInput, "Signed out"),
+            Some(Ok(AccountStatus::External)) => (StatusKind::Idle, "Managed externally"),
+            Some(Err(_)) => (StatusKind::Unknown, "Could not check sign-in"),
+            None => (StatusKind::Unknown, "Sign-in not checked"),
+        }
+    }
+    pub(super) fn can_login(&self) -> bool {
+        matches!(&self.account, Some(Ok(AccountStatus::SignedOut)))
+    }
+    pub(super) fn login(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.start(ConnectionAction::Login, window, cx);
     }
     pub fn select_context(
         &mut self,
@@ -256,6 +289,10 @@ impl ConnectionsPanel {
         }
     }
     #[cfg(test)]
+    pub(super) fn fixture_confirming(&self) -> bool {
+        self.confirmation.is_some()
+    }
+    #[cfg(test)]
     pub(super) fn fixture_copy_focus(&self) -> gpui::FocusHandle {
         self.auth_focus[3].clone()
     }
@@ -416,6 +453,86 @@ impl ConnectionsPanel {
                     .size(rpx(ICON_SM)),
             )
             .disabled(!enabled)
+            .on_key_down(
+                cx.listener(move |this, event: &gpui::KeyDownEvent, window, cx| {
+                    if !this.account_only
+                        || !enabled
+                        || event.is_held
+                        || !matches!(event.keystroke.key.as_str(), "enter" | "space")
+                        || event.keystroke.modifiers.control
+                        || event.keystroke.modifiers.alt
+                        || event.keystroke.modifiers.platform
+                    {
+                        return;
+                    }
+                    if ![
+                        "Refresh",
+                        "Sign in",
+                        "Sign out",
+                        "Cancel",
+                        "Confirm sign-out",
+                        "Copy sign-in link",
+                        "Open browser",
+                        "Send to provider",
+                    ]
+                    .contains(&label)
+                    {
+                        return;
+                    }
+                    window.prevent_default();
+                    cx.stop_propagation();
+                    match label {
+                        "Refresh" => this.refresh(false, cx),
+                        "Sign in" => this.start(ConnectionAction::Login, window, cx),
+                        "Sign out" => {
+                            this.confirmation = Some(ConnectionAction::Logout);
+                            cx.notify();
+                        }
+                        "Cancel" => {
+                            if let Some(job) = &this.job {
+                                job.cancel();
+                            } else {
+                                this.confirmation = None;
+                                this.account_focus.focus(window, cx);
+                            }
+                            cx.notify();
+                        }
+                        "Confirm sign-out" => {
+                            if let Some(action) = this.confirmation.clone() {
+                                this.start(action, window, cx)
+                            }
+                        }
+                        "Copy sign-in link" => {
+                            if let Some(url) = this
+                                .job_snapshot
+                                .as_ref()
+                                .and_then(|snapshot| snapshot.authorization_url.as_ref())
+                            {
+                                cx.write_to_clipboard(gpui::ClipboardItem::new_string(url.clone()));
+                            }
+                        }
+                        "Open browser" => {
+                            if let Some(url) = this
+                                .job_snapshot
+                                .as_ref()
+                                .and_then(|snapshot| snapshot.authorization_url.as_ref())
+                            {
+                                cx.open_url(url);
+                            }
+                        }
+                        "Send to provider" => {
+                            if let (Some(job), Some(input)) = (&this.job, &this.auth_input) {
+                                let value = input.read(cx).value().to_string();
+                                if let Err(error) = job.respond(value) {
+                                    this.message = Some((StatusKind::Warning, error));
+                                }
+                                input.update(cx, |input, cx| input.set_value("", window, cx));
+                            }
+                        }
+                        _ => {}
+                    }
+                }),
+            )
     }
     fn contexts(&self, cx: &App) -> Vec<(String, Vec<String>)> {
         let mut contexts = vec![(
@@ -557,59 +674,61 @@ impl Render for ConnectionsPanel {
                 })),
             );
         }
-        body = body.child(providers).child(
-            div()
-                .flex()
-                .flex_col()
-                .gap(rpx(SPACE_SM))
-                .child(
-                    div()
-                        .text_size(rpx(TEXT_SMALL))
-                        .text_color(c::FG_DIM())
-                        .child("Connection context"),
-                )
-                .child(div().min_w_0().child(self.cwd.clone()))
-                .child(
-                    components::form_actions().child(
-                        Self::button(
-                            "connections-context",
-                            "Change checkout",
-                            "git-branch",
-                            !busy,
+        if !self.account_only {
+            body = body.child(providers).child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(rpx(SPACE_SM))
+                    .child(
+                        div()
+                            .text_size(rpx(TEXT_SMALL))
+                            .text_color(c::FG_DIM())
+                            .child("Connection context"),
+                    )
+                    .child(div().min_w_0().child(self.cwd.clone()))
+                    .child(
+                        components::form_actions().child(
+                            Self::button(
+                                "connections-context",
+                                "Change checkout",
+                                "git-branch",
+                                !busy,
+                                false,
+                                window,
+                                cx,
+                            )
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.contexts_open = !this.contexts_open;
+                                cx.notify();
+                            })),
+                        ),
+                    ),
+            );
+            if self.contexts_open {
+                let mut rows = div().flex().flex_col().gap(rpx(SPACE_SM));
+                for (index, (cwd, args)) in self.contexts(cx).into_iter().enumerate() {
+                    let label = if args.is_empty() {
+                        format!("{cwd} · Provider defaults")
+                    } else {
+                        format!("{cwd} · Saved session settings {}", index + 1)
+                    };
+                    rows = rows.child(
+                        components::form_action(
+                            ("connections-context", index),
+                            label,
                             false,
                             window,
                             cx,
                         )
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.contexts_open = !this.contexts_open;
-                            cx.notify();
+                        .icon(gpui_component::Icon::default().path("icons/folder.svg"))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.select_context(this.provider, cwd.clone(), args.clone(), cx);
                         })),
-                    ),
-                ),
-        );
-        if self.contexts_open {
-            let mut rows = div().flex().flex_col().gap(rpx(SPACE_SM));
-            for (index, (cwd, args)) in self.contexts(cx).into_iter().enumerate() {
-                let label = if args.is_empty() {
-                    format!("{cwd} · Provider defaults")
-                } else {
-                    format!("{cwd} · Saved session settings {}", index + 1)
-                };
-                rows = rows.child(
-                    components::form_action(
-                        ("connections-context", index),
-                        label,
-                        false,
-                        window,
-                        cx,
-                    )
-                    .icon(gpui_component::Icon::default().path("icons/folder.svg"))
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.select_context(this.provider, cwd.clone(), args.clone(), cx);
-                    })),
-                );
+                    );
+                }
+                body = body.child(rows);
             }
-            body = body.child(rows);
         }
         let mut account = div()
             .flex()
@@ -669,7 +788,7 @@ impl Render for ConnectionsPanel {
                     "Sign in",
                     "external-link",
                     !busy,
-                    true,
+                    false,
                     window,
                     cx,
                 )
@@ -695,7 +814,35 @@ impl Render for ConnectionsPanel {
                 })),
             );
         }
-        body = body.child(account.child(actions));
+        body = body.child(if self.account_only {
+            div()
+                .w_full()
+                .min_w_0()
+                .flex()
+                .flex_wrap()
+                .items_center()
+                .gap(rpx(SPACE_LG))
+                .border_t_1()
+                .border_color(c::BORDER_SOFT())
+                .pt(rpx(SPACE_2XL))
+                .child(
+                    account
+                        .border_t_0()
+                        .pt_0()
+                        .flex_1()
+                        .min_w(rpx(FIELD_LABEL_COL_W)),
+                )
+                .child(
+                    actions
+                        .w_auto()
+                        .max_w_full()
+                        .flex_shrink_1()
+                        .id("provider-account-actions")
+                        .debug_selector(|| "provider-account-actions".into()),
+                )
+        } else {
+            account.child(actions)
+        });
         if let Some(snapshot) = &self.job_snapshot {
             let title = match snapshot.phase {
                 JobPhase::Starting => "Starting provider sign-in",
@@ -863,6 +1010,9 @@ impl Render for ConnectionsPanel {
                             ),
                     ),
             );
+        }
+        if self.account_only {
+            return body;
         }
         let mut servers=div().flex().flex_col().gap(rpx(SPACE_LG)).border_t_1().border_color(c::BORDER_SOFT()).pt(rpx(SPACE_3XL)).child(div().font_weight(FontWeight::MEDIUM).child("Configured MCP servers")).child(div().text_size(rpx(TEXT_SMALL)).text_color(c::FG_DIM()).child("Check the selected provider’s existing servers. This may start approved server processes; it does not approve project servers or edit configuration.")).child(components::form_actions().child(Self::button("connections-servers-refresh",if self.checking_servers{"Checking servers…"}else{"Check servers"},if self.checking_servers{"status-working"}else{"refresh"},!busy,false,window,cx).on_click(cx.listener(|this,_,_,cx|this.refresh(true,cx)))));
         match &self.servers {
