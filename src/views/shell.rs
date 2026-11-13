@@ -182,6 +182,9 @@ impl Shell {
                 window,
                 |this, _, event, window, cx| match event {
                     SettingsPanelEvent::Closed => cx.notify(),
+                    SettingsPanelEvent::ConnectionsChanged(provider) => this
+                        .sidebar
+                        .update(cx, |sidebar, cx| sidebar.credentials_changed(*provider, cx)),
                     SettingsPanelEvent::OpenHighlights { debug } => {
                         this.settings
                             .update(cx, |panel, cx| panel.close(window, cx));

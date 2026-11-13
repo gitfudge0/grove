@@ -207,6 +207,15 @@ impl Sidebar {
         let Some(chat) = self.checkout_panel.side_chats.get_mut(&key) else {
             return;
         };
+        let provider_use = match grove_core::connections::ProviderUse::acquire(parent.provider) {
+            Ok(guard) => guard,
+            Err(error) => {
+                chat.error = Some(error);
+                chat.retryable = false;
+                cx.notify();
+                return;
+            }
+        };
         let question = chat.input.read(cx).value().to_string();
         if chat.busy || question.trim().is_empty() {
             return;
@@ -231,6 +240,7 @@ impl Sidebar {
         cx.spawn(async move |this, cx| {
             let (updates, mut incoming) = futures::channel::mpsc::unbounded();
             let result = cx.background_executor().spawn(async move {
+                let _provider_use = provider_use;
                 let result = match backend.lock() {
                     Ok(mut backend) => {
                         backend.answer(&parent, &cwd, &conversation, &cancel, |text, saved| {

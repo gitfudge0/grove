@@ -623,6 +623,20 @@ impl Sidebar {
     pub(crate) fn set_shell_focus(&mut self, focus: FocusHandle) {
         self.shell_focus = Some(focus);
     }
+    pub(crate) fn credentials_changed(
+        &mut self,
+        provider: grove_core::provider::Provider,
+        cx: &mut Context<Self>,
+    ) {
+        if self
+            .dashboard
+            .as_ref()
+            .is_some_and(|draft| draft.session.read(cx).state.saved.provider == provider)
+        {
+            self.refresh_dashboard_catalog(cx);
+        }
+        cx.notify();
+    }
     pub(crate) fn set_settings_panel(
         &mut self,
         panel: Entity<super::settings_panel::SettingsPanel>,

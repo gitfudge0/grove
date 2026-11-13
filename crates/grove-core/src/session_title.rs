@@ -57,6 +57,7 @@ struct Job {
     started: Instant,
     source: String,
     attempt: u8,
+    _provider_use: crate::connections::ProviderUse,
 }
 impl Drop for Job {
     fn drop(&mut self) {
@@ -307,6 +308,12 @@ impl Generator {
         status: Status,
         stopping: bool,
     ) -> bool {
+        if self.job.is_none()
+            && !stopping
+            && crate::connections::credentials_busy(saved.provider.agent())
+        {
+            return false;
+        }
         let mut changed = false;
         if let Some(origin) = &saved.fork_origin {
             let users = saved
@@ -550,6 +557,7 @@ fn apply(saved: &mut SavedSession, source: &str, attempt: u8, output: &str) -> b
 }
 
 fn launch(provider: Provider, data: &Value, source: String, attempt: u8) -> Result<Job, String> {
+    let provider_use = crate::connections::ProviderUse::acquire(provider)?;
     let directory = tempfile::tempdir().map_err(|error| error.to_string())?;
     let output_path = directory.path().join("title.json");
     let schema_path = directory.path().join("schema.json");
@@ -599,6 +607,7 @@ fn launch(provider: Provider, data: &Value, source: String, attempt: u8) -> Resu
         started: Instant::now(),
         source,
         attempt,
+        _provider_use: provider_use,
     };
     Ok(job)
 }
@@ -873,8 +882,16 @@ mod tests {
                 started: Instant::now(),
                 source: "source".into(),
                 attempt: 1,
+                _provider_use: crate::connections::ProviderUse::named_for_test(
+                    "title-cancel-fixture",
+                )
+                .unwrap(),
             }),
         };
+        assert!(
+            crate::connections::reserve_named_for_test("title-cancel-fixture").is_err(),
+            "credential mutation cannot start during title subprocess"
+        );
         let mut saved = saved(Provider::Codex);
         pending(&mut saved, 1);
         assert!(generator.initial_pending(&saved));
@@ -901,6 +918,10 @@ mod tests {
         assert!(!generator.initial_pending(&saved));
         assert!(generator.job.is_none());
         assert_eq!(unsafe { libc::kill(pid as i32, 0) }, -1);
+        assert!(
+            crate::connections::reserve_named_for_test("title-cancel-fixture").is_ok(),
+            "reaped title job releases credential admission"
+        );
     }
     #[test]
     fn claude_title_arguments_keep_only_the_fixed_contract() {

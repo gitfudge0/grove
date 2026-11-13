@@ -726,6 +726,15 @@ impl NativePlan {
         cx.refresh_windows();
     }
     fn dispatch(&mut self, approve: bool, cx: &mut Context<Self>) {
+        if grove_core::connections::credentials_busy(
+            self.session.read(cx).state.saved.provider.agent(),
+        ) {
+            self.error = Some(
+                "Wait for provider authentication to finish before sending plan actions.".into(),
+            );
+            cx.notify();
+            return;
+        }
         if self.send_pending || self.composer_pending || self.stale(cx) {
             return;
         }

@@ -276,6 +276,37 @@ impl CodexView {
                 )),
             );
         }
+        let lower = entry.label.to_ascii_lowercase();
+        if entry.retry == Some(Retry::Catalog)
+            && [
+                "login",
+                "sign in",
+                "log in",
+                "authentication",
+                "unauthorized",
+                "oauth",
+            ]
+            .iter()
+            .any(|word| lower.contains(word))
+        {
+            let saved = self.session.read(cx).state.saved.clone();
+            label = label.child(
+                header_control("dashboard-sign-in", "Manage provider sign-in")
+                    .tab_index(0)
+                    .w_auto()
+                    .gap(rpx(SPACE_SM))
+                    .child(crate::icons::icon("external-link", ICON_SM, c::FG_DIM()))
+                    .child("Sign in")
+                    .on_click(cx.listener(move |_, _, window, cx| {
+                        cx.emit(CodexViewEvent::OpenConnections(
+                            saved.provider,
+                            saved.cwd.clone(),
+                            saved.config_args.clone(),
+                            window.focused(cx),
+                        ));
+                    })),
+            );
+        }
         label.into_any_element()
     }
     fn retry_dashboard_preparation(&mut self, retry: Retry, cx: &mut Context<Self>) {

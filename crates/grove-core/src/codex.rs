@@ -375,6 +375,7 @@ struct Actor {
     actions: mpsc::Receiver<Action>,
     updates: crate::latest::Sender<Snapshot>,
     process: Option<Process>,
+    provider_use: Option<crate::connections::ProviderUse>,
     pending: HashMap<u64, Request>,
     restore_reservation: Option<crate::checkpoint::RestoreReservation>,
     seq: u64,
@@ -414,6 +415,7 @@ impl Actor {
             actions,
             updates,
             process: None,
+            provider_use: None,
             pending: HashMap::new(),
             restore_reservation: None,
             seq: 0,
@@ -451,6 +453,19 @@ impl Actor {
         self.needs_save = false;
     }
     fn emit(&mut self) {
+        let model_pending = self.pending.values().any(|request| {
+            matches!(
+                request.kind,
+                Pending::Turn { .. }
+                    | Pending::InlineTurn
+                    | Pending::QueuedTurn { .. }
+                    | Pending::Compact
+                    | Pending::AsyncAnswer { .. }
+            )
+        });
+        if self.process.is_none() || (!self.state.provider_work_active() && !model_pending) {
+            self.provider_use.take();
+        }
         if let Some(process) = &self.process {
             process
                 .activity
@@ -469,8 +484,20 @@ impl Actor {
         Ok(())
     }
     fn request(&mut self, method: &str, params: Value, kind: Pending) -> Result<(), String> {
+        let model_request = matches!(method, "turn/start" | "thread/compact/start");
+        if model_request && self.provider_use.is_none() {
+            self.provider_use = Some(crate::connections::ProviderUse::acquire(Provider::Codex)?);
+        }
         self.seq += 1;
-        self.write(&json!({"id":self.seq,"method":method,"params":params}))?;
+        if let Err(error) = self.write(&json!({"id":self.seq,"method":method,"params":params})) {
+            if model_request {
+                self.process.take();
+                self.pid.store(0, Ordering::SeqCst);
+                self.provider_use.take();
+                self.state.status = Status::Disconnected;
+            }
+            return Err(error);
+        }
         self.pending.insert(
             self.seq,
             Request {
@@ -970,6 +997,10 @@ impl Actor {
         images: Vec<String>,
         submission: Option<u64>,
     ) -> Result<(), String> {
+        if crate::connections::credentials_busy(crate::agent::Agent::Codex) {
+            return Err("Wait for Codex authentication to finish before starting a turn.".into());
+        }
+
         if self.state.status.busy()
             || self.state.turn_id.is_some()
             || self.pending.values().any(|r| {
@@ -1079,6 +1110,9 @@ impl Actor {
     /// Ask Codex to compact the current thread. The app-server runs compaction as its own
     /// turn, and starting it during an active turn would interrupt that turn.
     fn compact(&mut self) -> Result<(), String> {
+        if crate::connections::credentials_busy(crate::agent::Agent::Codex) {
+            return Err("Wait for Codex authentication to finish before compacting.".into());
+        }
         if self.process.is_none() || self.state.status == Status::Disconnected {
             return Err(COMPACT_DISCONNECTED.into());
         }
@@ -1115,6 +1149,9 @@ impl Actor {
         Ok(())
     }
     fn dispatch_queue(&mut self) -> Result<(), String> {
+        if crate::connections::credentials_busy(crate::agent::Agent::Codex) {
+            return Ok(());
+        }
         if !self.queue_ready
             || self.queue_paused
             || !self.state.queue_sending.is_empty()
@@ -1219,6 +1256,12 @@ impl Actor {
         approve: bool,
         persist_saved: impl Fn(&SavedSession) -> Result<(), String>,
     ) -> Result<(), String> {
+        if crate::connections::credentials_busy(crate::agent::Agent::Codex) {
+            return Err(
+                "Wait for provider authentication to finish before sending plan actions.".into(),
+            );
+        }
+
         if self.process.is_none() || self.state.saved.thread_id.is_none() {
             return Err("Reconnect before sending plan feedback".into());
         }
@@ -5433,6 +5476,88 @@ mod tests {
         let mut actor = Actor::new(saved(), actions, updates, Vec::new());
         actor.state = state();
         actor
+    }
+    #[test]
+    #[cfg(unix)]
+    fn turn_start_admission_refuses_auth_before_writing() {
+        // Process isolation keeps this actual global reservation from affecting
+        // unrelated concurrently running provider fixture tests.
+        const CHILD: &str = "GROVE_TEST_AUTH_ADMISSION_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            let result = Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "codex::tests::turn_start_admission_refuses_auth_before_writing",
+                    "--exact",
+                    "--nocapture",
+                ])
+                .env(CHILD, "1")
+                .output()
+                .unwrap();
+            assert!(
+                result.status.success(),
+                "{}",
+                String::from_utf8_lossy(&result.stderr)
+            );
+            assert!(
+                String::from_utf8_lossy(&result.stdout).contains("1 passed; 0 failed"),
+                "isolated admission fixture must execute one test"
+            );
+            return;
+        }
+        let reservation = crate::connections::reserve_named_for_test("Codex").unwrap();
+        let mut actor = actor();
+        actor.process = Some(fixture_process());
+        let seq = actor.seq;
+        let pending = actor.pending.len();
+        let result = actor.request(
+            "turn/start",
+            json!({"threadId":"fixture","input":[]}),
+            Pending::InlineTurn,
+        );
+        assert!(result.is_err());
+        assert_eq!(actor.seq, seq);
+        assert_eq!(actor.pending.len(), pending);
+        actor
+            .request(
+                "thread/read",
+                json!({"threadId":"fixture"}),
+                Pending::Compact,
+            )
+            .unwrap();
+        assert_eq!(actor.seq, seq + 1);
+        drop(reservation);
+        actor
+            .request(
+                "turn/start",
+                json!({"threadId":"fixture","input":[]}),
+                Pending::InlineTurn,
+            )
+            .unwrap();
+        assert!(
+            crate::connections::reserve_named_for_test("Codex").is_err(),
+            "admitted model work must block credential changes before its UI snapshot arrives"
+        );
+        actor.state.status = Status::Idle;
+        actor.state.turn_id = None;
+        actor.pending.clear();
+        actor.emit();
+        assert!(
+            crate::connections::reserve_named_for_test("Codex").is_ok(),
+            "authoritative idle releases model admission"
+        );
+        actor
+            .request(
+                "turn/start",
+                json!({"threadId":"fixture","input":[]}),
+                Pending::InlineTurn,
+            )
+            .unwrap();
+        actor.process.take();
+        actor.emit();
+        assert!(
+            crate::connections::reserve_named_for_test("Codex").is_ok(),
+            "owned process cleanup releases model admission"
+        );
     }
     #[test]
     fn native_history_stop_reports_archive_failure_separately_from_process_completion() {

@@ -3225,6 +3225,7 @@ dependencies = [
  "keyring",
  "libc",
  "markdown",
+ "portable-pty",
  "ring",
  "semver",
  "serde",

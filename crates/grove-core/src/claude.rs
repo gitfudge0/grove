@@ -1190,6 +1190,7 @@ struct Actor {
     pid: Arc<AtomicU32>,
     stopping: Arc<AtomicBool>,
     process: Option<Process>,
+    provider_use: Option<crate::connections::ProviderUse>,
     initialized: bool,
     started: Instant,
     first_output: bool,
@@ -1293,6 +1294,7 @@ impl Actor {
             pid,
             stopping,
             process: None,
+            provider_use: None,
             initialized: false,
             started: Instant::now(),
             first_output: false,
@@ -1429,6 +1431,9 @@ impl Actor {
         self.pid.store(0, Ordering::SeqCst);
     }
     fn drain_queue(&mut self) -> bool {
+        if crate::connections::credentials_busy(crate::agent::Agent::Claude) {
+            return false;
+        }
         if self.initialized
             && self.permission_changes.is_empty()
             && self.state.queue_uncertain.is_empty()
@@ -1569,7 +1574,16 @@ impl Actor {
             }
         }
     }
-    fn publish(&self) {
+    fn publish(&mut self) {
+        if self.process.is_none()
+            || (!self.state.provider_work_active()
+                && self.in_flight.is_none()
+                && self.pending_completion.is_none()
+                && !self.compact_pending
+                && (!self.tracks_session_state || self.session_idle))
+        {
+            self.provider_use.take();
+        }
         if let Some(process) = &self.process {
             process
                 .activity
@@ -1628,18 +1642,33 @@ impl Actor {
         self.title_generator.update_pending(&mut self.state, false);
     }
     fn write(&mut self, value: Value) -> Result<(), String> {
-        let process = self
-            .process
-            .as_mut()
-            .ok_or("Claude Code is disconnected; reconnect to continue")?;
-        serde_json::to_writer(&mut process.input, &value).map_err(|e| e.to_string())?;
-        process
-            .input
-            .write_all(b"\n")
-            .and_then(|()| process.input.flush())
-            .map_err(|e| format!("Cannot send to Claude Code: {e}"))?;
-        process.capture.record(true, &value);
-        Ok(())
+        let model_input = value["type"] == "user";
+        if model_input && self.provider_use.is_none() {
+            self.provider_use = Some(crate::connections::ProviderUse::acquire(
+                provider::Provider::Claude,
+            )?);
+        }
+        let result = (|| {
+            let process = self
+                .process
+                .as_mut()
+                .ok_or("Claude Code is disconnected; reconnect to continue")?;
+            serde_json::to_writer(&mut process.input, &value).map_err(|error| error.to_string())?;
+            process
+                .input
+                .write_all(b"\n")
+                .and_then(|()| process.input.flush())
+                .map_err(|error| format!("Cannot send to Claude Code: {error}"))?;
+            process.capture.record(true, &value);
+            Ok(())
+        })();
+        if model_input && result.is_err() {
+            self.process.take();
+            self.pid.store(0, Ordering::SeqCst);
+            self.provider_use.take();
+            self.state.status = Status::Disconnected;
+        }
+        result
     }
     fn refresh_context(&mut self) {
         if self.state.context_query_pending {
@@ -2145,6 +2174,9 @@ impl Actor {
         result
     }
     fn submit_inner(&mut self, id: u64, text: String, images: Vec<String>) -> Result<(), String> {
+        if crate::connections::credentials_busy(crate::agent::Agent::Claude) {
+            return Err("Wait for Claude authentication to finish before starting a turn.".into());
+        }
         self.state.context_revision = self.state.context_revision.wrapping_add(1);
         provider::validate_prompt(&text, &images)?;
         if !self.initialized || self.state.status.busy() || self.deferred.is_some() {
@@ -2324,6 +2356,12 @@ impl Actor {
         approve: bool,
         persist_saved: impl Fn(&SavedSession) -> Result<(), String>,
     ) -> Result<(), String> {
+        if crate::connections::credentials_busy(crate::agent::Agent::Claude) {
+            return Err(
+                "Wait for provider authentication to finish before sending plan actions.".into(),
+            );
+        }
+
         if self.process.is_none() || !self.initialized {
             return Err("Reconnect before sending plan feedback".into());
         }
@@ -4632,6 +4670,66 @@ mod tests {
         }
     }
 
+    #[test]
+    #[cfg(unix)]
+    fn user_message_admission_holds_lease_until_authoritative_idle() {
+        const CHILD: &str = "GROVE_TEST_CLAUDE_AUTH_LEASE_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            let result = Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "claude::tests::user_message_admission_holds_lease_until_authoritative_idle",
+                    "--exact",
+                    "--nocapture",
+                ])
+                .env(CHILD, "1")
+                .output()
+                .unwrap();
+            assert!(
+                result.status.success(),
+                "{}",
+                String::from_utf8_lossy(&result.stderr)
+            );
+            assert!(String::from_utf8_lossy(&result.stdout).contains("1 passed; 0 failed"));
+            return;
+        }
+        let reservation = crate::connections::reserve_named_for_test("Claude Code").unwrap();
+        let mut actor = actor();
+        let mut reader = transport(&mut actor);
+        assert!(actor
+            .write(json!({"type":"user","message":{"content":"blocked"}}))
+            .is_err());
+        drop(reservation);
+        actor
+            .write(json!({"type":"user","message":{"content":"allowed"}}))
+            .unwrap();
+        assert_eq!(read(&mut reader)["message"]["content"], "allowed");
+        assert!(
+            crate::connections::reserve_named_for_test("Claude Code").is_err(),
+            "wire admission blocks auth before any published UI snapshot"
+        );
+        actor.state.status = Status::Done;
+        actor.state.turn_id = None;
+        actor.tracks_session_state = true;
+        actor.session_idle = false;
+        actor.publish();
+        assert!(
+            crate::connections::reserve_named_for_test("Claude Code").is_err(),
+            "a root result does not replace authoritative session idle"
+        );
+        actor.session_idle = true;
+        actor.publish();
+        assert!(crate::connections::reserve_named_for_test("Claude Code").is_ok());
+        actor
+            .write(json!({"type":"user","message":{"content":"another"}}))
+            .unwrap();
+        assert!(crate::connections::reserve_named_for_test("Claude Code").is_err());
+        actor.process.take();
+        actor.publish();
+        assert!(
+            crate::connections::reserve_named_for_test("Claude Code").is_ok(),
+            "reaped process releases admission"
+        );
+    }
     #[test]
     fn native_history_stop_reports_archive_failure_separately_from_process_completion() {
         let mut actor = actor();

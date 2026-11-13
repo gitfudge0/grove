@@ -349,13 +349,15 @@ impl Runtime {
             }
             return false;
         }
-        if self.provider_updates.read(cx).is_updating(agent) {
+        if self.provider_updates.read(cx).is_updating(agent)
+            || grove_core::connections::credentials_busy(agent)
+        {
             if let Some(path) = temp_bundle_path.as_deref() {
                 grove_core::multi_root::cleanup_path(std::path::Path::new(path));
             }
             self.toast.update(cx, |toast, cx| {
                 toast.set_error(
-                    "This provider is updating. Try again after verification completes.",
+                    "This provider is updating or changing credentials. Try again after verification completes.",
                     cx,
                 );
             });
@@ -616,8 +618,9 @@ impl Runtime {
             .provider_updates
             .read(cx)
             .is_updating(saved.provider.agent())
+            || grove_core::connections::credentials_busy(saved.provider.agent())
         {
-            return Err("This provider is updating. Try again when verification finishes.".into());
+            return Err("This provider is updating or changing credentials. Try again when verification finishes.".into());
         }
         if let Some(error) = crate::entities::codex_session::workspace_restore_error(
             &std::iter::once(std::path::PathBuf::from(&saved.cwd))
@@ -669,8 +672,12 @@ impl Runtime {
             .provider_updates
             .read(cx)
             .is_updating(saved.provider.agent())
+            || grove_core::connections::credentials_busy(saved.provider.agent())
         {
-            return Err("This provider is updating. Try again when it finishes.".into());
+            return Err(
+                "This provider is updating or changing credentials. Try again when it finishes."
+                    .into(),
+            );
         }
         if let Some(error) = crate::entities::codex_session::workspace_restore_error(
             &[std::path::PathBuf::from(&saved.cwd)],
@@ -766,10 +773,12 @@ impl Runtime {
             agent,
             ..
         } = launch;
-        if self.provider_updates.read(cx).is_updating(agent) {
+        if self.provider_updates.read(cx).is_updating(agent)
+            || grove_core::connections::credentials_busy(agent)
+        {
             self.toast.update(cx, |toast, cx| {
                 toast.set_error(
-                    "This provider is updating. Try again after verification completes.",
+                    "This provider is updating or changing credentials. Try again after verification completes.",
                     cx,
                 );
             });
@@ -1133,6 +1142,7 @@ impl Runtime {
                 .provider_updates
                 .read(cx)
                 .is_updating(entry.session.agent)
+                || grove_core::connections::credentials_busy(entry.session.agent)
             {
                 continue;
             }
