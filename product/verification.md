@@ -1,5 +1,20 @@
 # Verification and known gaps
 
+## Ten user/agent transcript turns (November 2026)
+
+The default history window and reveal batch are ten turns, counting each user
+message and the following agent response separately. Commentary and tool activity
+stay together within the agent response. Linux checks passed 40 history-filtered
+tests, the full-history measured-slot geometry/focus fixture, 33 UI conformance
+checks, formatting and repository artifact policy. The shared history fixture
+exercised Codex and Claude rendering, pointer/keyboard reveal and collapse,
+minimap navigation, browse preservation, narrow widths and changed rem size.
+Full-history layout fixtures explicitly expand after session initialization.
+
+**Codex and Claude:** verified through synthetic GPUI fixtures only; live provider
+transports and manual native appearance inspection remain untested. No
+platform-specific behavior changed; macOS and Windows were not exercised.
+
 ## Composer startup work reuse (November 2026)
 
 The Dashboard retains worktree rows, reuses matching results for ten seconds and

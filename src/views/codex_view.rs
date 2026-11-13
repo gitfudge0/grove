@@ -5901,7 +5901,8 @@ impl Render for CodexView {
             .py(rpx(SPACE_3XL))
             .gap(rpx(SPACE_20));
         if !self.transcript_only() && (history_start > 0 || self.turn_history.expanded) {
-            let hidden = minimap_entries.partition_point(|entry| entry.item_index < history_start);
+            let hidden = history::history_boundaries(&state.saved.items, minimap_entries)
+                .partition_point(|index| *index < history_start);
             messages = messages.child(self.render_history_disclosure(hidden, cx));
             message_child += 1;
         }
@@ -17693,16 +17694,16 @@ mod tests {
             });
             draw(cx);
             view.read_with(cx, |view, cx| {
-                assert_eq!(view.turn_history.start, 128, "{provider:?}");
+                assert_eq!(view.turn_history.start, 158, "{provider:?}");
                 assert_eq!(
                     view.message_slots.len(),
-                    40,
-                    "only 20 turns get layout slots"
+                    10,
+                    "only 10 user/agent turns get layout slots"
                 );
                 assert_eq!(view.session.read(cx).state.saved.items.len(), 168);
             });
             assert!(cx.debug_bounds("codex-message-anchor-0").is_none());
-            assert!(cx.debug_bounds("codex-message-anchor-128").is_some());
+            assert!(cx.debug_bounds("codex-message-anchor-158").is_some());
             for (width, rem) in [(1000., 16.), (420., 16.), (420., 22.)] {
                 cx.simulate_resize(gpui::size(gpui::px(width), gpui::px(850.)));
                 cx.update(|window, cx| {
@@ -17732,17 +17733,17 @@ mod tests {
             let earlier = cx.debug_bounds("codex-history-earlier").unwrap();
             cx.simulate_click(earlier.center(), gpui::Modifiers::default());
             draw(cx);
-            view.read_with(cx, |view, _| assert_eq!(view.turn_history.start, 88));
+            view.read_with(cx, |view, _| assert_eq!(view.turn_history.start, 148));
             // Keyboard activation uses the same native disclosure and retains focus.
             cx.simulate_keystrokes("enter");
             draw(cx);
-            view.read_with(cx, |view, _| assert_eq!(view.turn_history.start, 48));
+            view.read_with(cx, |view, _| assert_eq!(view.turn_history.start, 138));
             cx.update(|window, cx| {
                 view.update(cx, |view, cx| view.history_latest_focus.focus(window, cx));
             });
             cx.simulate_keystrokes("space");
             draw(cx);
-            view.read_with(cx, |view, _| assert_eq!(view.turn_history.start, 128));
+            view.read_with(cx, |view, _| assert_eq!(view.turn_history.start, 158));
             // The minimap retains hidden source messages and reveals before mapping
             // their item identity to the new physical scroll-child index.
             let marker = cx.debug_bounds("codex-minimap-message-14").unwrap();
@@ -17917,6 +17918,15 @@ mod tests {
                 });
                 cx.notify();
             }));
+            // Initialize session ownership before expanding the full-history fixture.
+            draw(cx);
+            cx.update(|_, cx| {
+                view.update(cx, |view, cx| {
+                    let items = view.session.read(cx).state.saved.items.clone();
+                    view.turn_history.expand_all_for_test(&items);
+                    cx.notify();
+                })
+            });
             for (width, rem) in [(1000., 16.), (420., 16.), (420., 22.)] {
                 cx.simulate_resize(gpui::size(gpui::px(width), gpui::px(800.)));
                 cx.update(|_, cx| gpui_component::Theme::global_mut(cx).font_size = gpui::px(rem));
@@ -18020,6 +18030,15 @@ mod tests {
                 });
                 cx.notify();
             }));
+            // Initialize session ownership before expanding the full-history fixture.
+            draw(cx);
+            cx.update(|_, cx| {
+                view.update(cx, |view, cx| {
+                    let items = view.session.read(cx).state.saved.items.clone();
+                    view.turn_history.expand_all_for_test(&items);
+                    cx.notify();
+                })
+            });
             for (width, rem) in [(1000., 16.), (420., 16.), (420., 22.)] {
                 cx.simulate_resize(gpui::size(gpui::px(width), gpui::px(800.)));
                 cx.update(|_, cx| gpui_component::Theme::global_mut(cx).font_size = gpui::px(rem));

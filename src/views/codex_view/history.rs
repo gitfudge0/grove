@@ -1,7 +1,26 @@
 //! A presentation window over the full, lossless transcript.
 use super::*;
 
-const HISTORY_BATCH_TURNS: usize = 20;
+const HISTORY_BATCH_TURNS: usize = 10;
+
+// Each user message and its following agent response count separately. Keep
+// commentary and tools together with that response rather than counting events.
+pub(super) fn history_boundaries(
+    items: &[codex::TranscriptItem],
+    entries: &[MessageMinimapEntry],
+) -> Vec<usize> {
+    let mut boundaries = Vec::with_capacity(entries.len() * 2);
+    for (index, entry) in entries.iter().enumerate() {
+        boundaries.push(entry.item_index);
+        let end = entries
+            .get(index + 1)
+            .map_or(items.len(), |next| next.item_index);
+        if entry.item_index + 1 < end {
+            boundaries.push(entry.item_index + 1);
+        }
+    }
+    boundaries
+}
 
 #[derive(Default)]
 pub(super) struct TurnHistory {
@@ -18,11 +37,11 @@ impl TurnHistory {
         self.expanded = true;
     }
 
-    fn latest(entries: &[MessageMinimapEntry]) -> usize {
+    fn latest(entries: &[usize]) -> usize {
         if entries.len() <= HISTORY_BATCH_TURNS {
             0
         } else {
-            entries[entries.len() - HISTORY_BATCH_TURNS].item_index
+            entries[entries.len() - HISTORY_BATCH_TURNS]
         }
     }
 
@@ -45,7 +64,8 @@ impl TurnHistory {
         entries: &[MessageMinimapEntry],
         following: bool,
     ) -> usize {
-        let latest = Self::latest(entries);
+        let entries = history_boundaries(items, entries);
+        let latest = Self::latest(&entries);
         if !self.initialized || (following && !self.expanded) {
             self.set_start(latest, items);
         } else if let Some(anchor) = &self.anchor {
@@ -73,11 +93,12 @@ impl TurnHistory {
     }
 
     fn reveal(&mut self, items: &[codex::TranscriptItem], entries: &[MessageMinimapEntry]) {
-        let hidden = entries.partition_point(|entry| entry.item_index < self.start);
+        let entries = history_boundaries(items, entries);
+        let hidden = entries.partition_point(|entry| *entry < self.start);
         let start = hidden
             .checked_sub(HISTORY_BATCH_TURNS)
             .filter(|index| *index > 0)
-            .map_or(0, |index| entries[index].item_index);
+            .map_or(0, |index| entries[index]);
         self.set_start(start, items);
         self.expanded = true;
     }
@@ -129,11 +150,10 @@ impl CodexView {
 
     fn collapse_history(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.turn_history = TurnHistory::default();
-        if self
-            .transcript_cache
-            .as_ref()
-            .is_some_and(|cache| cache.minimap_entries.len() > HISTORY_BATCH_TURNS)
-        {
+        if self.transcript_cache.as_ref().is_some_and(|cache| {
+            history_boundaries(&cache.state.saved.items, &cache.minimap_entries).len()
+                > HISTORY_BATCH_TURNS
+        }) {
             self.history_earlier_focus.focus(window, cx);
         } else {
             self.input.read(cx).focus_handle(cx).focus(window, cx);
@@ -201,7 +221,7 @@ impl CodexView {
             row = row.child(
                 super::super::components::inline_disclosure(
                     "codex-history-latest",
-                    "Collapse to latest 20",
+                    "Collapse to latest 10",
                 )
                 .debug_selector(|| "codex-history-latest".into())
                 .track_focus(&self.history_latest_focus)
@@ -212,7 +232,7 @@ impl CodexView {
                 .tab_index(0)
                 .focus_visible(|style| style.bg(c::BG_HOVER()))
                 .child(crate::icons::icon("chev-up", ICON_SM, c::FG_DIM()))
-                .child("Collapse to latest 20")
+                .child("Collapse to latest 10")
                 .on_click(cx.listener(|this, _, window, cx| this.collapse_history(window, cx)))
                 .on_key_down(cx.listener(
                     |this, event: &gpui::KeyDownEvent, window, cx| {
@@ -251,7 +271,7 @@ mod tests {
         let mut items = items(84);
         let mut entries = message_minimap_entries(&items);
         let mut history = TurnHistory::default();
-        assert_eq!(history.sync(&items, &entries, true), 128);
+        assert_eq!(history.sync(&items, &entries, true), 158);
         let appended = [
             json!({"id":"new-user","type":"userMessage"}).into(),
             json!({"id":"new-answer","type":"agentMessage"}).into(),
@@ -260,29 +280,29 @@ mod tests {
         entries = message_minimap_entries(&items);
         assert_eq!(
             history.sync(&items, &entries, false),
-            128,
+            158,
             "browsing pins the source"
         );
         assert_eq!(
             history.sync(&items, &entries, true),
-            130,
+            160,
             "following advances the cutoff"
         );
         history.reveal(&items, &entries);
-        assert_eq!(history.start, 90);
+        assert_eq!(history.start, 150);
         assert_eq!(
             history.sync(&items, &entries, true),
-            90,
+            150,
             "manual expansion survives follow"
         );
         items.drain(..10);
         entries = message_minimap_entries(&items);
         assert_eq!(
             history.sync(&items, &entries, false),
-            80,
+            140,
             "source survives compaction at a new index"
         );
-        items.truncate(12);
+        items.truncate(8);
         entries = message_minimap_entries(&items);
         assert_eq!(
             history.sync(&items, &entries, false),
@@ -293,6 +313,37 @@ mod tests {
     }
 
     #[test]
+    fn agent_activity_counts_once_and_keeps_tools_with_the_response() {
+        let mut items = items(5);
+        items.push(json!({"id":"next-user","type":"userMessage","text":"Next"}).into());
+        let mut history = TurnHistory::default();
+        assert_eq!(
+            history.sync(&items, &message_minimap_entries(&items), true),
+            1,
+            "eleventh turn hides the first user but retains its answer"
+        );
+        items.push(json!({"id":"tool","type":"commandExecution"}).into());
+        items.push(
+            json!({"id":"comment","type":"agentMessage","phase":"commentary","text":"Working"})
+                .into(),
+        );
+        items.push(
+            json!({"id":"answer","type":"agentMessage","phase":"final_answer","text":"Done"})
+                .into(),
+        );
+        let entries = message_minimap_entries(&items);
+        assert_eq!(history_boundaries(&items, &entries).len(), 12);
+        assert_eq!(history.sync(&items, &entries, true), 2);
+        assert_eq!(
+            history_boundaries(&items, &entries).last(),
+            Some(&11),
+            "the agent boundary includes its preceding tool activity"
+        );
+        history.reveal(&items, &entries);
+        assert_eq!(history.start, 0);
+    }
+
+    #[test]
     fn legacy_rows_without_ids_reconcile_the_boundary_after_compaction() {
         let mut items: Vec<codex::TranscriptItem> = (0..84)
             .map(|turn| json!({"type":"userMessage", "text":format!("Request {turn}")}).into())
@@ -300,20 +351,20 @@ mod tests {
         let mut history = TurnHistory::default();
         assert_eq!(
             history.sync(&items, &message_minimap_entries(&items), true),
-            64
+            74
         );
         history.reveal(&items, &message_minimap_entries(&items));
         items.drain(..10);
         assert_eq!(
             history.sync(&items, &message_minimap_entries(&items), false),
-            34
+            54
         );
-        assert_eq!(items[history.start]["text"], "Request 44");
+        assert_eq!(items[history.start]["text"], "Request 64");
     }
 
     #[test]
     fn short_and_exact_batch_histories_keep_their_preamble() {
-        for count in [0, 1, 20, 21, 40, 41] {
+        for count in [0, 1, 5, 6, 10, 11] {
             let mut items = items(count);
             items.insert(
                 0,
@@ -322,7 +373,7 @@ mod tests {
             let entries = message_minimap_entries(&items);
             let mut history = TurnHistory::default();
             let start = history.sync(&items, &entries, true);
-            assert_eq!(start, if count <= 20 { 0 } else { (count - 20) * 2 + 1 });
+            assert_eq!(start, if count <= 5 { 0 } else { (count * 2) - 10 + 1 });
             while history.start > 0 {
                 history.reveal(&items, &entries);
             }
