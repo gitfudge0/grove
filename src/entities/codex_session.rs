@@ -528,6 +528,13 @@ impl CodexSession {
             }
         }));
     }
+    pub(crate) fn dashboard_launch_pending(&self) -> bool {
+        self.dashboard_launch.is_some()
+    }
+    #[cfg(test)]
+    pub(crate) fn begin_dashboard_handoff_for_test(&mut self) {
+        self.dashboard_launch = Some(DashboardLaunch::Starting);
+    }
     pub(crate) fn dashboard_submission_ready(&self) -> bool {
         self.dashboard_launch == Some(DashboardLaunch::Ready)
     }
@@ -1169,6 +1176,9 @@ mod dashboard_tests {
     fn draft_model_selection_keeps_ready_efforts_without_another_handshake(
         cx: &mut gpui::TestAppContext,
     ) {
+        // Scope fingerprints the test config path. Initialize it before another
+        // parallel UI fixture can change the environment between the two reads.
+        let _config = crate::settings::lock_test_config();
         let checkout = tempfile::tempdir().unwrap();
         cx.update(|cx| {
             for provider in [codex::Provider::Codex, codex::Provider::Claude] {

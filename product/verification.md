@@ -1,5 +1,49 @@
 # Verification and known gaps
 
+## Main page composer preparation
+
+The Dashboard composer shares worktree discovery, provider options, image and
+attachment preparation, and first-message handoff progress in one status slot.
+Codex and Claude both passed GPUI fixtures for overlap disclosure, stable idle/
+loading geometry, draft and image ownership, worktree retry routing, blocked
+keyboard submission, native-command Send access during catalog loading/errors,
+and focus restoration when status controls disappear. The real Dashboard
+replacement/adoption path is covered with synthetic session actors; observation
+uses weak references and does not own provider lifetime.
+
+The scoped Dashboard run passed 63 tests with five opt-in fixtures ignored and
+two explicit baseline exclusions. Those two header-inset fixtures
+(`dashboard_position_uses_its_own_inset_viewport` and
+`dashboard_adoption_keeps_composer_anchored_on_first_frame`) also failed on a
+fresh build of the captured base: they expect a viewport without the existing
+48px header. The startup Ready-layout fixture now settles worktree preparation
+before checking its anchor. A parallel catalog-generation failure was traced to
+first-time test-config initialization changing the environment fingerprint;
+that fixture now initializes the shared config before taking either fingerprint,
+and the complete scoped rerun passed.
+
+Linux X11 QA used a separate app identity and configuration with synthetic Codex
+and Claude sessions. Ten fresh-process cases passed and were visually inspected:
+Ready, overlapping preparation, expanded disclosure, long provider-option error,
+and connection handoff for each provider. Native synthetic Space activated the
+disclosure without changing the draft. Dark/Light appearance and a constrained
+360px composer at 20px rem were exercised; narrow model summaries retain their
+full text by wrapping within the Dashboard toolbar. Both narrow error captures
+were rerun after that correction. Desktop tiling limited the ordinary capture
+viewport to 701px logical width rather than the requested 900px.
+
+The 33 UI conformance checks, eight reply-suggestion regressions, strict Clippy,
+formatting, reference comparator and repository/tooling checks passed. Early
+shared-cache zero-test results were discarded. Initial native capture attempts
+had stale compositor frames and a fixture input-handle teardown leak; fresh
+processes and explicit empty-root teardown corrected the harness and reruns
+passed. These are component captures, not full Home-screen or live transport
+checks. Live Codex and Claude prompt delivery, macOS/Windows rendering, native
+pointer/retry interaction and animated spinner appearance remain untested;
+reduced-motion marks were captured. No app installation, restart or release was
+performed.
+
+
 ## Provider catalog reuse
 
 Linux metadata-only checks used Codex CLI 0.167.2 and Claude Code 2.1.323 with

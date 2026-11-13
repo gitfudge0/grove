@@ -632,3 +632,23 @@ The OS factor is not persisted as app zoom, snapped to its steps or applied to
 GPUI's display scale. Control geometry grows with text to preserve containment.
 Absent desktop schemas use 1×. Other desktop-specific text preference sources
 and Windows/macOS text accessibility settings are not yet integrated.
+
+
+## Main page composer preparation
+
+The main New session/Dashboard composer reserves one compact preparation slot
+immediately above its writing surface. Worktree discovery, provider options,
+image/attachment preparation and the first-message connection/send handoff share
+that slot, with the semantic Working mark and a specific label. Errors take
+priority and retain an owner-specific Retry action in the same slot. Concurrent
+operations expose a keyboard-accessible count disclosure; they never rotate
+automatically. Idle and single-line loading retain the same slot height, while
+expanded activity and long diagnostics make room in normal flow. Project and
+worktree selectors, model/access menus and draft ownership remain unchanged.
+Only Dashboard-originated first-message handoffs use this presentation; existing
+conversation connection/activity states retain their current owners. A provider
+catalog error is shown once, rather than repeated as a session notice.
+When a focused preparation disclosure or Retry action disappears after async
+completion, focus returns to the writing field. Completion never steals focus
+from another control. Dashboard handoff observation does not extend a launched
+session's lifetime.
