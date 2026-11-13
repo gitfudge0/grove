@@ -17925,7 +17925,7 @@ mod tests {
                     let items = view.session.read(cx).state.saved.items.clone();
                     view.turn_history.expand_all_for_test(&items);
                     cx.notify();
-                })
+                });
             });
             for (width, rem) in [(1000., 16.), (420., 16.), (420., 22.)] {
                 cx.simulate_resize(gpui::size(gpui::px(width), gpui::px(800.)));
@@ -18037,7 +18037,7 @@ mod tests {
                     let items = view.session.read(cx).state.saved.items.clone();
                     view.turn_history.expand_all_for_test(&items);
                     cx.notify();
-                })
+                });
             });
             for (width, rem) in [(1000., 16.), (420., 16.), (420., 22.)] {
                 cx.simulate_resize(gpui::size(gpui::px(width), gpui::px(800.)));

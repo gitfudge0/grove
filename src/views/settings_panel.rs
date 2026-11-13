@@ -1,4 +1,5 @@
 //! App-wide settings and shortcut reference, mounted in the main canvas.
+use super::components;
 use super::status::{self, StatusKind};
 use super::{motion, rpx, tokens::*};
 use crate::{
@@ -150,6 +151,11 @@ pub struct SettingsPanel {
     _environment_observer: Subscription,
     _provider_observer: Subscription,
     changelog_markdown: Vec<(String, String, Entity<gpui_component::text::TextViewState>)>,
+    provider_accounts: [Entity<super::connections_panel::ConnectionsPanel>; 2],
+    _account_observers: Vec<Subscription>,
+    _account_subscriptions: Vec<Subscription>,
+    managed_provider: Option<Agent>,
+    provider_manage_focus: [FocusHandle; 3],
     provider_details: HashSet<&'static str>,
     connections: Entity<super::connections_panel::ConnectionsPanel>,
     connections_pending_focus: bool,
@@ -172,8 +178,45 @@ impl SettingsPanel {
                 cx.emit(SettingsPanelEvent::ConnectionsChanged(event.0));
             },
         );
+        let provider_accounts = [
+            grove_core::provider::Provider::Codex,
+            grove_core::provider::Provider::Claude,
+        ]
+        .map(|provider| {
+            cx.new(|cx| {
+                super::connections_panel::ConnectionsPanel::account_panel(
+                    runtime.clone(),
+                    provider,
+                    cx,
+                )
+            })
+        });
+        let account_observers = provider_accounts
+            .iter()
+            .map(|account| cx.observe(account, |_, _, cx| cx.notify()))
+            .collect();
+        let account_subscriptions = provider_accounts
+            .iter()
+            .map(|account| {
+                cx.subscribe(
+                    account,
+                    |_, _, event: &super::connections_panel::ConnectionChanged, cx| {
+                        cx.emit(SettingsPanelEvent::ConnectionsChanged(event.0));
+                    },
+                )
+            })
+            .collect();
         Self {
             runtime,
+            provider_accounts,
+            _account_observers: account_observers,
+            _account_subscriptions: account_subscriptions,
+            managed_provider: None,
+            provider_manage_focus: [
+                cx.focus_handle().tab_stop(true),
+                cx.focus_handle().tab_stop(true),
+                cx.focus_handle().tab_stop(true),
+            ],
             connections,
             _connections_subscription: connections_subscription,
             connections_pending_focus: false,
@@ -618,6 +661,11 @@ impl SettingsPanel {
                 );
             self.archived_panel = Some(panel);
         }
+        if page == Page::Providers {
+            for account in self.provider_accounts.clone() {
+                account.update(cx, |panel, cx| panel.refresh(false, cx));
+            }
+        }
         if page == Page::Connections {
             self.connections
                 .update(cx, |panel, cx| panel.refresh(false, cx));
@@ -743,244 +791,488 @@ impl SettingsPanel {
         cx.notify();
     }
 
-    fn providers_body(&self, cx: &mut Context<Self>) -> gpui::Div {
-        let updates = self.runtime.read(cx).provider_updates.clone();
-        let state = updates.read(cx);
-        let checking = state.checking();
-        let updating = state.rows().iter().any(|row| row.updating);
-        let mut body = div()
-            .w_full()
-            .min_w_0()
-            .flex()
-            .flex_col()
-            .child(
-                div().flex().justify_end().pb(rpx(SPACE_LG)).child(
-                    self.button(
-                        "settings-provider-check",
-                        "Check for provider updates",
-                        false,
-                        !checking && !updating,
-                    )
-                    .child(if checking {
-                        status::mark(
-                            "settings-provider-check-loading",
-                            StatusKind::Working,
-                            ICON_SM,
-                            cx,
+    fn toggle_managed_provider(
+        &mut self,
+        agent: Agent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self
+            .provider_accounts
+            .iter()
+            .any(|panel| panel.read(cx).busy())
+        {
+            return;
+        }
+        // Disclosure is immediate input/focus layout feedback; focus moves with the current layout.
+        self.managed_provider = if self.managed_provider == Some(agent) {
+            None
+        } else {
+            Some(agent)
+        };
+        self.provider_manage_focus[match agent {
+            Agent::Codex => 0,
+            Agent::Claude => 1,
+            _ => 2,
+        }]
+        .focus(window, cx);
+        cx.notify();
+    }
+
+    fn providers_body(&self, window: &mut Window, cx: &mut Context<Self>) -> gpui::Div {
+        let mut body = div().w_full().min_w_0().flex().flex_col();
+        let mut version_body = self
+            .managed_provider
+            .map(|agent| self.provider_version_body(agent, window, cx));
+        let updates = self.runtime.read(cx).provider_updates.read(cx);
+        let busy = self
+            .provider_accounts
+            .iter()
+            .any(|panel| panel.read(cx).busy());
+        for (index, agent) in [Agent::Codex, Agent::Claude, Agent::OpenCode]
+            .into_iter()
+            .enumerate()
+        {
+            if agent == Agent::OpenCode
+                && !updates.rows().iter().any(|row| {
+                    row.status.agent == agent
+                        && (row.status.executable.is_some()
+                            || row.status.update_available()
+                            || row.error.is_some())
+                })
+            {
+                continue;
+            }
+            let account = self.provider_accounts.get(index).cloned();
+            let (kind, label) = account
+                .as_ref()
+                .map_or((StatusKind::Idle, "Version only"), |account| {
+                    account.read(cx).summary()
+                });
+            let can_login = account
+                .as_ref()
+                .is_some_and(|account| account.read(cx).can_login());
+            let expanded = self.managed_provider == Some(agent);
+            let id = format!("settings-provider-{}", agent.label());
+            let update = updates.rows().iter().find(|row| row.status.agent == agent);
+            let mut actions = components::form_actions()
+                .w_auto()
+                .max_w_full()
+                .flex_shrink_1()
+                .id(format!("{id}-actions"))
+                .debug_selector({
+                    let id = id.clone();
+                    move || format!("{id}-actions")
+                });
+            if can_login {
+                actions = actions.child(
+                    components::form_action(format!("{id}-login"), "Sign in", false, window, cx)
+                        .icon(
+                            gpui_component::Icon::default()
+                                .path("icons/external-link.svg")
+                                .size(rpx(ICON_SM)),
                         )
-                    } else {
-                        crate::icons::icon("refresh", ICON_SM, c::FG_DIM()).into_any_element()
-                    })
-                    .child(if checking {
-                        "Checking…"
-                    } else {
-                        "Check for updates"
-                    })
-                    .when(!checking && !updating, |el| {
-                        el.on_click(cx.listener(|this, _, _, cx| {
-                            this.runtime.read(cx).provider_updates.clone().update(
-                                cx,
-                                crate::entities::provider_updates::ProviderUpdates::check,
-                            );
-                        }))
+                        .disabled(busy)
                         .on_key_down(cx.listener(
-                            |this, event: &gpui::KeyDownEvent, window, cx| {
-                                if matches!(event.keystroke.key.as_str(), "enter" | "space")
+                            move |this, event: &gpui::KeyDownEvent, window, cx| {
+                                if !busy
+                                    && matches!(event.keystroke.key.as_str(), "enter" | "space")
+                                    && !event.is_held
                                     && !event.keystroke.modifiers.control
                                     && !event.keystroke.modifiers.alt
                                     && !event.keystroke.modifiers.platform
                                 {
                                     window.prevent_default();
                                     cx.stop_propagation();
-                                    this.runtime.read(cx).provider_updates.clone().update(
-                                        cx,
-                                        crate::entities::provider_updates::ProviderUpdates::check,
-                                    );
+                                    this.managed_provider = Some(agent);
+                                    this.provider_accounts[index]
+                                        .update(cx, |panel, cx| panel.login(window, cx));
+                                    cx.notify();
                                 }
                             },
                         ))
-                    }),
-                ),
-            )
-            .when(state.rows().is_empty(), |body| {
-                body.child(
-                    div()
-                        .py(rpx(SPACE_LG))
-                        .text_color(c::FG_DIM())
-                        .child(if checking {
-                            "Checking provider versions…"
-                        } else {
-                            "Check for updates to see provider versions."
-                        }),
-                )
-            });
-        for row in state.rows() {
-            let provider = &row.status;
-            let agent = provider.agent;
-            let id = format!("settings-provider-{}", agent.label());
-            let native = matches!(
-                provider.installer,
-                grove_core::provider_updates::Installer::ClaudeNative
-            );
-            let installed =
-                provider
-                    .installed
-                    .as_deref()
-                    .unwrap_or(if provider.executable.is_none() {
-                        "Not installed"
-                    } else {
-                        "Version unavailable"
-                    });
-            let versions = if !native && provider.update_available() {
-                format!(
-                    "{installed} → {}",
-                    provider.latest.as_deref().unwrap_or_default()
-                )
-            } else {
-                installed.to_string()
-            };
-            let current = row.update_verified
-                || (!native
-                    && !row.checking
-                    && row.error.is_none()
-                    && provider.installed.is_some()
-                    && provider.latest.is_some()
-                    && !provider.update_available());
-            let enabled = provider.can_update() && !checking && !updating;
-            let identity = div()
-                .flex_1()
-                .min_w_0()
-                .flex()
-                .flex_col()
-                .gap(rpx(SPACE_XS))
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap(rpx(SPACE_SM))
-                        .child(crate::icons::icon(agent.icon_name(), ICON_MD, c::FG()))
-                        .child(
-                            div()
-                                .text_size(rpx(TEXT_BODY))
-                                .font_weight(FontWeight::MEDIUM)
-                                .child(agent_display_label(agent)),
-                        ),
-                )
-                .child(
-                    super::components::readonly_value(format!("{id}-versions"), versions)
-                        .text_size(rpx(TEXT_SMALL))
-                        .line_height(rpx(CARD_LINE_SM_H))
-                        .text_color(c::FG_DIM())
-                        .pl(rpx(ICON_MD + SPACE_SM)),
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.managed_provider = Some(agent);
+                            this.provider_accounts[index]
+                                .update(cx, |panel, cx| panel.login(window, cx));
+                            cx.notify();
+                        })),
                 );
-            let mut actions = div()
-                .flex()
-                .flex_shrink_0()
-                .items_center()
-                .gap(rpx(SPACE_SM));
-            if row.updating || (!current && provider.can_update()) {
-                let retry = row.error.is_some();
+            }
+            if let Some(row) = update
+                .filter(|row| row.updating || row.status.update_available() || row.error.is_some())
+            {
+                let enabled = !busy
+                    && !updates.checking()
+                    && !updates.rows().iter().any(|row| row.updating)
+                    && row.status.can_update();
                 actions = actions.child(
-                    self.button(
+                    components::form_action(
                         format!("{id}-update"),
-                        format!(
-                            "{} {}",
-                            if retry { "Retry updating" } else { "Update" },
-                            agent_display_label(agent)
-                        ),
+                        if row.updating {
+                            "Updating…"
+                        } else if row.error.is_some() {
+                            "Retry"
+                        } else {
+                            "Update"
+                        },
                         false,
-                        enabled,
+                        window,
+                        cx,
                     )
                     .debug_selector({
                         let id = id.clone();
                         move || format!("{id}-update")
                     })
-                    .child(if row.updating {
-                        status::mark(format!("{id}-updating"), StatusKind::Working, ICON_SM, cx)
-                    } else {
-                        crate::icons::icon(
-                            if retry { "refresh" } else { "arrow-up" },
-                            ICON_SM,
-                            c::FG_DIM(),
+                    .icon(
+                        gpui_component::Icon::default()
+                            .path("icons/refresh.svg")
+                            .size(rpx(ICON_SM)),
+                    )
+                    .disabled(!enabled)
+                    .on_key_down(cx.listener(
+                        move |this, event: &gpui::KeyDownEvent, window, cx| {
+                            if enabled
+                                && matches!(event.keystroke.key.as_str(), "enter" | "space")
+                                && !event.is_held
+                                && !event.keystroke.modifiers.control
+                                && !event.keystroke.modifiers.alt
+                                && !event.keystroke.modifiers.platform
+                            {
+                                window.prevent_default();
+                                cx.stop_propagation();
+                                this.runtime
+                                    .read(cx)
+                                    .provider_updates
+                                    .clone()
+                                    .update(cx, |updates, cx| updates.start_update(agent, cx));
+                            }
+                        },
+                    ))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.runtime
+                            .read(cx)
+                            .provider_updates
+                            .clone()
+                            .update(cx, |updates, cx| updates.start_update(agent, cx));
+                    })),
+                );
+            }
+            actions = actions.child(
+                components::form_action(
+                    format!("{id}-manage"),
+                    if expanded { "Less" } else { "Manage" },
+                    false,
+                    window,
+                    cx,
+                )
+                .debug_selector({
+                    let id = id.clone();
+                    move || format!("{id}-manage")
+                })
+                .with_focus_handle(self.provider_manage_focus[index].clone())
+                .aria_expanded(expanded)
+                .icon(
+                    gpui_component::Icon::default()
+                        .path(if expanded {
+                            "icons/chev-down.svg"
+                        } else {
+                            "icons/chev-right.svg"
+                        })
+                        .size(rpx(ICON_SM)),
+                )
+                .disabled(busy)
+                .on_key_down(
+                    cx.listener(move |this, event: &gpui::KeyDownEvent, window, cx| {
+                        if !busy
+                            && matches!(event.keystroke.key.as_str(), "enter" | "space")
+                            && !event.is_held
+                            && !event.keystroke.modifiers.control
+                            && !event.keystroke.modifiers.alt
+                            && !event.keystroke.modifiers.platform
+                        {
+                            window.prevent_default();
+                            cx.stop_propagation();
+                            this.toggle_managed_provider(agent, window, cx);
+                        }
+                    }),
+                )
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    this.toggle_managed_provider(agent, window, cx);
+                })),
+            );
+            let mut card = div()
+                .id(id.clone())
+                .w_full()
+                .min_w_0()
+                .border_t_1()
+                .border_color(c::BORDER_SOFT())
+                .py(rpx(SPACE_2XL))
+                .child(
+                    div()
+                        .flex()
+                        .flex_wrap()
+                        .items_center()
+                        .gap(rpx(SPACE_LG))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w(rpx(FIELD_LABEL_COL_W))
+                                .flex()
+                                .gap(rpx(SPACE_SM))
+                                .child(crate::icons::icon(agent.icon_name(), ICON_SM, c::FG()))
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .min_w_0()
+                                        .flex()
+                                        .flex_col()
+                                        .gap(rpx(SPACE_XS))
+                                        .child(
+                                            div()
+                                                .font_weight(FontWeight::MEDIUM)
+                                                .child(agent_display_label(agent)),
+                                        )
+                                        .child(status::label(
+                                            format!("{id}-account-status"),
+                                            kind,
+                                            label,
+                                            ICON_SM,
+                                            cx,
+                                        )),
+                                ),
                         )
-                        .into_any_element()
-                    })
-                    .child(if row.updating {
-                        "Updating…"
-                    } else if retry {
-                        "Retry"
+                        .child(actions),
+                );
+            if expanded {
+                card = card.child(
+                    div()
+                        .id(format!("{id}-management"))
+                        .debug_selector({
+                            let id = id.clone();
+                            move || format!("{id}-management")
+                        })
+                        .w_full()
+                        .min_w_0()
+                        .flex()
+                        .flex_col()
+                        .gap(rpx(SPACE_2XL))
+                        .pt(rpx(SPACE_2XL))
+                        .when_some(account, gpui::ParentElement::child)
+                        .when_some(version_body.take(), gpui::ParentElement::child),
+                );
+            } else if let Some(error) = update.and_then(|row| row.error.as_ref()) {
+                card = card.child(status::label(
+                    format!("{id}-update-error"),
+                    StatusKind::Failed,
+                    error.clone(),
+                    ICON_SM,
+                    cx,
+                ));
+            }
+            body = body.child(card);
+        }
+        body.border_b_1()
+            .border_color(c::BORDER_SOFT())
+            .text_size(rpx(TEXT_BODY))
+    }
+
+    fn provider_version_body(
+        &self,
+        selected: Agent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> gpui::Div {
+        let updates = self.runtime.read(cx).provider_updates.clone();
+        let state = updates.read(cx);
+        let row = state.rows().iter().find(|row| row.status.agent == selected);
+        let busy = state.checking()
+            || state.rows().iter().any(|row| row.updating)
+            || self
+                .provider_accounts
+                .iter()
+                .any(|account| account.read(cx).busy());
+        let id = format!("settings-provider-{}", selected.label());
+        let mut actions = components::form_actions()
+            .w_auto()
+            .max_w_full()
+            .flex_shrink_1()
+            .id(format!("{id}-version-actions"))
+            .debug_selector({
+                let id = id.clone();
+                move || format!("{id}-version-actions")
+            })
+            .child(
+                components::form_action(
+                    format!("{id}-check"),
+                    if state.checking() {
+                        "Checking…"
                     } else {
-                        "Update"
-                    })
+                        "Check for updates"
+                    },
+                    false,
+                    window,
+                    cx,
+                )
+                .icon(
+                    gpui_component::Icon::default()
+                        .path("icons/refresh.svg")
+                        .size(rpx(ICON_SM)),
+                )
+                .disabled(busy)
+                .on_key_down(
+                    cx.listener(move |this, event: &gpui::KeyDownEvent, window, cx| {
+                        if !busy
+                            && matches!(event.keystroke.key.as_str(), "enter" | "space")
+                            && !event.is_held
+                            && !event.keystroke.modifiers.control
+                            && !event.keystroke.modifiers.alt
+                            && !event.keystroke.modifiers.platform
+                        {
+                            window.prevent_default();
+                            cx.stop_propagation();
+                            this.runtime.read(cx).provider_updates.clone().update(
+                                cx,
+                                crate::entities::provider_updates::ProviderUpdates::check,
+                            );
+                        }
+                    }),
+                )
+                .when(!busy, |el| {
+                    el.on_click(cx.listener(|this, _, _, cx| {
+                        this.runtime.read(cx).provider_updates.clone().update(
+                            cx,
+                            crate::entities::provider_updates::ProviderUpdates::check,
+                        );
+                    }))
+                }),
+            );
+        let versions =
+            row.map_or_else(
+                || "Version not checked".to_string(),
+                |row| {
+                    let installed = row.status.installed.as_deref().unwrap_or(
+                        if row.status.executable.is_some() {
+                            "Version unavailable"
+                        } else {
+                            "Not installed"
+                        },
+                    );
+                    if row.status.update_available()
+                        && !matches!(
+                            row.status.installer,
+                            grove_core::provider_updates::Installer::ClaudeNative
+                        )
+                    {
+                        format!(
+                            "{installed} → {}",
+                            row.status.latest.as_deref().unwrap_or_default()
+                        )
+                    } else {
+                        installed.into()
+                    }
+                },
+            );
+        if let Some(row) = row {
+            if matches!(
+                row.status.installer,
+                grove_core::provider_updates::Installer::ClaudeNative
+            ) && !row.status.update_available()
+            {
+                let enabled = !busy && row.status.can_update();
+                actions = actions.child(
+                    components::form_action(
+                        format!("{id}-native-update"),
+                        "Update",
+                        false,
+                        window,
+                        cx,
+                    )
+                    .icon(
+                        gpui_component::Icon::default()
+                            .path("icons/refresh.svg")
+                            .size(rpx(ICON_SM)),
+                    )
+                    .disabled(!enabled)
+                    .on_key_down(cx.listener(
+                        move |this, event: &gpui::KeyDownEvent, window, cx| {
+                            if enabled
+                                && matches!(event.keystroke.key.as_str(), "enter" | "space")
+                                && !event.is_held
+                                && !event.keystroke.modifiers.control
+                                && !event.keystroke.modifiers.alt
+                                && !event.keystroke.modifiers.platform
+                            {
+                                window.prevent_default();
+                                cx.stop_propagation();
+                                this.runtime
+                                    .read(cx)
+                                    .provider_updates
+                                    .clone()
+                                    .update(cx, |updates, cx| updates.start_update(selected, cx));
+                            }
+                        },
+                    ))
                     .when(enabled, |el| {
                         el.on_click(cx.listener(move |this, _, _, cx| {
                             this.runtime
                                 .read(cx)
                                 .provider_updates
                                 .clone()
-                                .update(cx, |updates, cx| updates.start_update(agent, cx));
+                                .update(cx, |updates, cx| updates.start_update(selected, cx));
                         }))
-                    })
-                    .when(enabled, |el| {
-                        el.on_key_down(cx.listener(
-                            move |this, event: &gpui::KeyDownEvent, window, cx| {
-                                if matches!(event.keystroke.key.as_str(), "enter" | "space")
-                                    && !event.keystroke.modifiers.control
-                                    && !event.keystroke.modifiers.alt
-                                    && !event.keystroke.modifiers.platform
-                                {
-                                    window.prevent_default();
-                                    cx.stop_propagation();
-                                    this.runtime
-                                        .read(cx)
-                                        .provider_updates
-                                        .clone()
-                                        .update(cx, |updates, cx| updates.start_update(agent, cx));
-                                }
-                            },
-                        ))
                     }),
                 );
-            } else if current && row.error.is_none() {
-                actions = actions.child(status::label(
-                    format!("{id}-current"),
-                    StatusKind::Success,
-                    if row.updated { "Updated" } else { "Up to date" },
-                    ICON_SM,
-                    cx,
-                ));
-            } else if provider.update_available() {
-                actions = actions.child(div().text_color(c::FG_DIM()).child("Update unavailable"));
             }
-            let mut card = div()
-                .id(id.clone())
-                .w_full()
-                .min_w_0()
-                .flex()
-                .flex_col()
-                .gap(rpx(SPACE_SM))
-                .py(rpx(SPACE_LG))
-                .border_t_1()
-                .border_color(c::BORDER_SOFT())
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap(rpx(SPACE_LG))
-                        .child(identity)
-                        .child(actions),
-                );
+        }
+        let mut body = div()
+            .w_full()
+            .min_w_0()
+            .flex()
+            .flex_col()
+            .gap(rpx(SPACE_LG))
+            .border_t_1()
+            .border_color(c::BORDER_SOFT())
+            .pt(rpx(SPACE_2XL))
+            .child(
+                div()
+                    .flex()
+                    .flex_wrap()
+                    .items_center()
+                    .gap(rpx(SPACE_LG))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w(rpx(FIELD_LABEL_COL_W))
+                            .flex()
+                            .flex_col()
+                            .gap(rpx(SPACE_SM))
+                            .child(
+                                div()
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .child("Version · This machine"),
+                            )
+                            .child(
+                                components::readonly_value(format!("{id}-versions"), versions)
+                                    .text_size(rpx(TEXT_SMALL))
+                                    .text_color(c::FG_DIM()),
+                            ),
+                    )
+                    .child(actions),
+            );
+        if let Some(row) = row {
             if let Some(error) = &row.error {
-                let expanded = self.provider_details.contains(agent.label());
-                card = card.child(
+                let expanded = self.provider_details.contains(selected.label());
+                body = body.child(
                     div()
                         .flex()
+                        .flex_wrap()
                         .items_center()
                         .gap(rpx(SPACE_SM))
                         .child(status::label(
                             format!("{id}-error-summary"),
                             StatusKind::Failed,
-                            if provider.error.is_some() {
+                            if row.status.error.is_some() {
                                 "Could not check."
                             } else {
                                 "Update failed."
@@ -991,18 +1283,13 @@ impl SettingsPanel {
                         .child(
                             Self::disclosure(
                                 format!("{id}-details"),
-                                format!("Error details for {}", agent_display_label(agent)),
+                                format!("Error details for {}", agent_display_label(selected)),
                                 expanded,
                             )
                             .debug_selector({
                                 let id = id.clone();
                                 move || format!("{id}-details")
                             })
-                            .border_0()
-                            .bg(c::BG())
-                            .text_color(c::FG_DIM())
-                            .tab_stop(true)
-                            .aria_expanded(expanded)
                             .child(crate::icons::icon(
                                 if expanded { "chev-down" } else { "chev-right" },
                                 ICON_SM,
@@ -1010,35 +1297,63 @@ impl SettingsPanel {
                             ))
                             .child("Details")
                             .on_click(cx.listener(move |this, _, _, cx| {
-                                this.toggle_provider_details(agent, cx);
+                                this.toggle_provider_details(selected, cx);
                             }))
                             .on_key_down(cx.listener(
                                 move |this, event: &gpui::KeyDownEvent, window, cx| {
-                                    if matches!(event.keystroke.key.as_str(), "enter" | "space")
-                                        && !event.keystroke.modifiers.control
-                                        && !event.keystroke.modifiers.alt
-                                        && !event.keystroke.modifiers.platform
-                                    {
+                                    if matches!(event.keystroke.key.as_str(), "enter" | "space") {
                                         window.prevent_default();
                                         cx.stop_propagation();
-                                        this.toggle_provider_details(agent, cx);
+                                        this.toggle_provider_details(selected, cx);
                                     }
                                 },
                             )),
                         ),
                 );
                 if expanded {
-                    card = card.child(
-                        super::components::readonly_value(format!("{id}-error"), error.clone())
+                    body = body.child(
+                        components::readonly_value(format!("{id}-error"), error.clone())
                             .text_size(rpx(TEXT_SMALL))
-                            .line_height(rpx(CARD_LINE_SM_H))
                             .text_color(c::FG_DIM()),
                     );
                 }
+            } else if row.updated
+                || row.update_verified
+                || (!matches!(
+                    row.status.installer,
+                    grove_core::provider_updates::Installer::ClaudeNative
+                ) && !row.checking
+                    && row.status.installed.is_some()
+                    && row.status.latest.is_some()
+                    && !row.status.update_available())
+            {
+                body = body.child(status::label(
+                    format!("{id}-current"),
+                    StatusKind::Success,
+                    if row.updated { "Updated" } else { "Up to date" },
+                    ICON_SM,
+                    cx,
+                ));
+            } else if matches!(
+                row.status.installer,
+                grove_core::provider_updates::Installer::ClaudeNative
+            ) {
+                body = body.child(
+                    div()
+                        .text_size(rpx(TEXT_SMALL))
+                        .text_color(c::FG_DIM())
+                        .child("The native installer checks its configured update channel."),
+                );
+            } else if row.status.update_available() && !row.status.can_update() {
+                body = body.child(
+                    div()
+                        .text_size(rpx(TEXT_SMALL))
+                        .text_color(c::FG_DIM())
+                        .child("Update unavailable"),
+                );
             }
-            body = body.child(card);
         }
-        body.text_size(rpx(TEXT_SMALL))
+        body
     }
 
     fn disclosure(
@@ -1366,18 +1681,11 @@ impl SettingsPanel {
                 .child(Self::setting_row("Run agents in terminal", "Use the Codex and Claude Code command-line interfaces instead of Grove’s conversation view. Applies to new sessions.", terminal_agents_control))
                 .when(cfg!(windows), |body| body.child(div().text_size(rpx(TEXT_SMALL)).text_color(c::FG_DIM()).child("Windows supports terminal agents only.")))
                 .child(Self::section("Provider tools"))
-                .child(Self::setting_row("Provider versions", "See installed and latest versions, then update each provider separately.",
-                    self.button("settings-provider-versions", "Provider versions", false, true)
-                        .debug_selector(|| "settings-provider-versions".into())
+                .child(Self::setting_row("Providers", "Manage accounts and provider updates.",
+                    self.button("settings-providers", "Providers", false, true)
                         .child(crate::icons::icon("arrow-right", ICON_SM, c::FG_DIM()))
-                        .child("Provider versions")
+                        .child("Providers")
                         .on_click(cx.listener(|this, _, window, cx| this.open_nested(Page::Providers, window, cx)))))
-                .child(Self::setting_row("Connections", "Sign in to Codex or Claude and authorize configured MCP servers.",
-                    self.button("settings-connections", "Connections", false, true)
-                        .debug_selector(|| "settings-connections".into())
-                        .child(crate::icons::icon("arrow-right", ICON_SM, c::FG_DIM()))
-                        .child("Connections")
-                        .on_click(cx.listener(|this, _, window, cx| this.open_nested(Page::Connections, window, cx)))))
                 .child(Self::section("Agent access"))
                 .child(Self::setting_row("Yolo mode", "Launch new CLI and native sessions with bypass permissions. When off, agents use their defaults. OpenCode uses its own permissions.", permissions))
                 .child(Self::section("Browser access"))
@@ -1820,7 +2128,7 @@ impl Render for SettingsPanel {
             Page::Shortcuts => "Shortcuts",
             Page::Changelog => "Changelog",
             Page::Themes => "Themes",
-            Page::Providers => "Provider versions",
+            Page::Providers => "Providers",
             Page::Connections => "Connections",
             Page::Archived => "Archived projects",
         };
@@ -1829,7 +2137,7 @@ impl Render for SettingsPanel {
             Page::Shortcuts => self.shortcuts_body(cx),
             Page::Changelog => self.changelog_body(window, cx),
             Page::Themes => self.themes_body(cx),
-            Page::Providers => self.providers_body(cx),
+            Page::Providers => self.providers_body(window, cx),
             Page::Connections => div().child(self.connections.clone()),
             Page::Archived => {
                 div().when_some(self.archived_panel.clone(), gpui::ParentElement::child)
@@ -2064,6 +2372,192 @@ mod tests {
         });
     }
 
+    impl SettingsPanel {
+        fn fixture_providers(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+            use crate::entities::provider_updates::ProviderRow;
+            use grove_core::provider_updates::{Installer, ProviderStatus};
+            for (index, scenario) in ["connected", "signed-out"].into_iter().enumerate() {
+                self.provider_accounts[index]
+                    .update(cx, |account, cx| account.fixture(scenario, window, cx));
+            }
+            self.runtime
+                .read(cx)
+                .provider_updates
+                .clone()
+                .update(cx, |updates, cx| {
+                    updates.set_rows_for_test(
+                        [Agent::Codex, Agent::Claude]
+                            .into_iter()
+                            .map(|agent| ProviderRow {
+                                status: ProviderStatus {
+                                    agent,
+                                    installed: Some("1.0.0".into()),
+                                    latest: Some("1.1.0".into()),
+                                    executable: Some("/fixture/provider".into()),
+                                    error: None,
+                                    installer: if agent == Agent::Claude {
+                                        Installer::ClaudeNative
+                                    } else {
+                                        Installer::Npm {
+                                            executable: "/fixture/npm".into(),
+                                            prefix: "/fixture".into(),
+                                            package: "@openai/codex".into(),
+                                        }
+                                    },
+                                },
+                                checking: false,
+                                updating: false,
+                                updated: false,
+                                update_verified: false,
+                                last_success: Some(1),
+                                error: None,
+                            })
+                            .collect(),
+                        cx,
+                    );
+                });
+        }
+    }
+
+    #[gpui::test]
+    fn providers_management_is_account_and_version_only_and_restores_focus(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        cx.update(setup);
+        let (panel, cx) = cx.add_window_view(|_, cx| {
+            let runtime = cx.new(Runtime::new);
+            SettingsPanel::new(runtime, cx)
+        });
+        cx.update(|window, cx| {
+            panel.update(cx, |panel, cx| {
+                panel.open_provider_updates(window, cx);
+                panel.fixture_providers(window, cx);
+            });
+        });
+        draw(cx);
+        assert!(cx
+            .debug_bounds("settings-provider-codex-management")
+            .is_none());
+        assert!(cx
+            .debug_bounds("settings-provider-claude-management")
+            .is_none());
+        for agent in [Agent::Codex, Agent::Claude] {
+            let manage = cx
+                .debug_bounds(if agent == Agent::Codex {
+                    "settings-provider-codex-manage"
+                } else {
+                    "settings-provider-claude-manage"
+                })
+                .unwrap();
+            cx.simulate_click(manage.center(), gpui::Modifiers::default());
+            draw(cx);
+            assert!(cx
+                .debug_bounds(if agent == Agent::Codex {
+                    "settings-provider-codex-management"
+                } else {
+                    "settings-provider-claude-management"
+                })
+                .is_some());
+            assert!(cx.debug_bounds("connections-context").is_none());
+            assert!(cx.debug_bounds("connections-server-0").is_none());
+            assert!(cx.debug_bounds("connections-reconnect").is_none());
+            cx.simulate_keystrokes("space");
+            draw(cx);
+            assert!(cx
+                .debug_bounds(if agent == Agent::Codex {
+                    "settings-provider-codex-management"
+                } else {
+                    "settings-provider-claude-management"
+                })
+                .is_none());
+            cx.update(|window, cx| {
+                assert!(
+                    panel.read(cx).provider_manage_focus[usize::from(agent != Agent::Codex)]
+                        .is_focused(window)
+                );
+            });
+        }
+    }
+
+    #[gpui::test]
+    fn provider_account_refresh_and_confirmation_are_keyboard_accessible(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        cx.update(setup);
+        let (panel, cx) = cx.add_window_view(|_, cx| {
+            let runtime = cx.new(Runtime::new);
+            SettingsPanel::new(runtime, cx)
+        });
+        cx.update(|window, cx| {
+            panel.update(cx, |panel, cx| {
+                panel.open_provider_updates(window, cx);
+                panel.fixture_providers(window, cx);
+                panel.managed_provider = Some(Agent::Codex);
+            });
+        });
+        draw(cx);
+        cx.update(|window, cx| {
+            panel.read(cx).provider_accounts[0]
+                .read(cx)
+                .fixture_return_focus()
+                .focus(window, cx);
+        });
+        cx.simulate_keystrokes("enter");
+        draw(cx);
+        cx.simulate_keystrokes("tab space");
+        draw(cx);
+        cx.update(|_, cx| {
+            assert!(panel.read(cx).provider_accounts[0]
+                .read(cx)
+                .fixture_confirming());
+        });
+        cx.simulate_keystrokes("tab space");
+        draw(cx);
+        cx.update(|_, cx| {
+            assert!(!panel.read(cx).provider_accounts[0]
+                .read(cx)
+                .fixture_confirming());
+        });
+    }
+
+    #[gpui::test]
+    fn provider_actions_fit_native_widths_and_zoom(cx: &mut gpui::TestAppContext) {
+        cx.update(setup);
+        let (panel, cx) = cx.add_window_view(|_, cx| {
+            let runtime = cx.new(Runtime::new);
+            SettingsPanel::new(runtime, cx)
+        });
+        cx.update(|window, cx| {
+            panel.update(cx, |panel, cx| {
+                panel.open_provider_updates(window, cx);
+                panel.fixture_providers(window, cx);
+                panel.managed_provider = Some(Agent::Codex);
+            });
+        });
+        for width in [900., 500., 320.] {
+            for rem in [16., 24.] {
+                cx.simulate_resize(gpui::size(gpui::px(width), gpui::px(1200.)));
+                cx.update(|window, cx| {
+                    window.set_rem_size(gpui::px(rem));
+                    gpui_component::Theme::global_mut(cx).font_size = gpui::px(rem);
+                });
+                draw(cx);
+                let body = cx.debug_bounds("settings-body").unwrap();
+                for name in [
+                    "settings-provider-codex-actions",
+                    "provider-account-actions",
+                    "settings-provider-codex-version-actions",
+                ] {
+                    let action = cx.debug_bounds(name).unwrap();
+                    assert!(
+                        action.left() >= body.left() && action.right() <= body.right(),
+                        "{name} outside body at {width}/{rem}: {action:?}, {body:?}"
+                    );
+                }
+            }
+        }
+    }
+
     #[cfg(target_os = "linux")]
     #[test]
     #[ignore = "captures isolated Connections screens with fixture state"]
@@ -2198,6 +2692,162 @@ mod tests {
                                 assert!(std::process::Command::new("import")
                                     .arg("-window")
                                     .arg("Grove Connections review QA")
+                                    .arg(path)
+                                    .status()
+                                    .unwrap()
+                                    .success());
+                            }
+                        }
+                    }
+                    cx.update(|cx| cx.quit());
+                })
+                .detach();
+            });
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[ignore = "captures isolated Providers screens with fixture state"]
+    fn providers_review_linux_capture() {
+        let output = std::path::PathBuf::from(
+            std::env::var_os("GROVE_PROVIDERS_QA_OUTPUT").expect("task-owned capture directory"),
+        );
+        assert!(
+            std::env::var_os("GROVE_CONFIG_DIR").is_some(),
+            "isolated configuration required"
+        );
+        fs_err::create_dir_all(&output).unwrap();
+        gpui_platform::application()
+            .with_assets(crate::assets::Assets)
+            .run(move |cx| {
+                setup(cx);
+                crate::fonts::register(cx).unwrap();
+                cx.set_reduce_motion(true);
+                let mut retained = None;
+                let window = cx
+                    .open_window(
+                        gpui::WindowOptions {
+                            app_id: Some("dev.grove.providers-review-qa".into()),
+                            kind: gpui::WindowKind::PopUp,
+                            window_bounds: Some(gpui::WindowBounds::Windowed(gpui::Bounds::new(
+                                gpui::point(gpui::px(40.), gpui::px(40.)),
+                                gpui::size(gpui::px(900.), gpui::px(900.)),
+                            ))),
+                            ..Default::default()
+                        },
+                        |window, cx| {
+                            window.set_window_title("Grove Providers review QA");
+                            let runtime = cx.new(Runtime::new);
+                            let panel = cx.new(|cx| SettingsPanel::new(runtime, cx));
+                            panel.update(cx, |panel, cx| {
+                                panel.open(window, cx);
+                                panel.category = Category::Agents;
+                                panel.page = Page::Providers;
+                            });
+                            retained = Some(panel.clone());
+                            cx.new(|cx| gpui_component::Root::new(panel, window, cx))
+                        },
+                    )
+                    .unwrap();
+                let panel = retained.unwrap();
+                cx.activate(true);
+                cx.spawn(async move |cx| {
+                    for (theme, rem, width) in [
+                        ("grove-dark", 16., 900.),
+                        ("grove-light", 16., 900.),
+                        ("grove-dark", 24., 500.),
+                    ] {
+                        for scenario in [
+                            "collapsed",
+                            "codex",
+                            "claude",
+                            "waiting",
+                            "confirm",
+                            "external",
+                        ] {
+                            cx.update(|cx| {
+                                grove_core::theme::set_by_name(theme);
+                                c::sync_component_theme(cx);
+                                gpui_component::Theme::global_mut(cx).font_size = gpui::px(rem);
+                            });
+                            cx.update_window(window.into(), |_, window, cx| {
+                                window.resize(gpui::size(gpui::px(width), gpui::px(900.)));
+                                window.set_rem_size(gpui::px(rem));
+                                panel.update(cx, |panel, cx| {
+                                    panel.scroll.set_offset(gpui::Point::default());
+                                    panel.fixture_providers(window, cx);
+                                    panel.managed_provider = match scenario {
+                                        "collapsed" => None,
+                                        "claude" | "external" => Some(Agent::Claude),
+                                        _ => Some(Agent::Codex),
+                                    };
+                                    let index =
+                                        usize::from(panel.managed_provider == Some(Agent::Claude));
+                                    if ["waiting", "confirm", "external"].contains(&scenario) {
+                                        panel.provider_accounts[index].update(cx, |account, cx| {
+                                            account.fixture(scenario, window, cx);
+                                        });
+                                    }
+                                    cx.notify();
+                                });
+                                window.refresh();
+                            })
+                            .unwrap();
+                            cx.background_executor()
+                                .timer(std::time::Duration::from_millis(200))
+                                .await;
+                            if let Some(helper) = std::env::var_os("GROVE_QA_EXPOSE_HELPER") {
+                                for _ in 0..3 {
+                                    assert!(std::process::Command::new(&helper)
+                                        .arg("Grove Providers review QA")
+                                        .status()
+                                        .unwrap()
+                                        .success());
+                                    cx.background_executor()
+                                        .timer(std::time::Duration::from_millis(100))
+                                        .await;
+                                }
+                            }
+                            let path = output
+                                .join(format!("providers-{scenario}-{theme}-{rem}-{width}.png"));
+                            assert!(std::process::Command::new("import")
+                                .arg("-window")
+                                .arg("Grove Providers review QA")
+                                .arg(&path)
+                                .status()
+                                .unwrap()
+                                .success());
+                            if scenario == "waiting" || width <= 500. {
+                                cx.update(|cx| {
+                                    panel.update(cx, |panel, cx| {
+                                        panel.scroll.set_offset(gpui::point(
+                                            gpui::px(0.),
+                                            gpui::px(-10000.),
+                                        ));
+                                        cx.notify();
+                                    });
+                                });
+                                cx.background_executor()
+                                    .timer(std::time::Duration::from_millis(100))
+                                    .await;
+                                if let Some(helper) = std::env::var_os("GROVE_QA_EXPOSE_HELPER") {
+                                    for _ in 0..3 {
+                                        assert!(std::process::Command::new(&helper)
+                                            .arg("Grove Providers review QA")
+                                            .status()
+                                            .unwrap()
+                                            .success());
+                                        cx.background_executor()
+                                            .timer(std::time::Duration::from_millis(100))
+                                            .await;
+                                    }
+                                }
+                                let path = output.join(format!(
+                                    "providers-{scenario}-bottom-{theme}-{rem}-{width}.png"
+                                ));
+                                assert!(std::process::Command::new("import")
+                                    .arg("-window")
+                                    .arg("Grove Providers review QA")
                                     .arg(path)
                                     .status()
                                     .unwrap()
@@ -3212,6 +3862,9 @@ mod tests {
             "Both providers reserve the same action edge"
         );
         assert_eq!(codex.size.height, claude.size.height);
+        let manage = cx.debug_bounds("settings-provider-claude-manage").unwrap();
+        cx.simulate_click(manage.center(), gpui::Modifiers::default());
+        draw(cx);
         let details = cx
             .debug_bounds("settings-provider-claude-details")
             .expect("error disclosure");

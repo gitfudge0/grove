@@ -1,5 +1,27 @@
 # Verification and known gaps
 
+## Compact provider settings (November 2026)
+
+Providers combines account sign-in and version maintenance for Codex and Claude,
+with an optional version-only OpenCode row when installed or needing attention.
+MCP, checkout and reconnect controls are absent from Providers; conversation
+Connections recovery retains its existing provider and checkout scope.
+
+Linux GPUI checks passed 22 Settings tests, including keyboard activation,
+provider ownership, collapse focus and action bounds at 900/500/320px with
+16/24px rem; 33 conformance checks and 32 core account/updater tests also passed.
+An isolated native QA app captured collapsed, Codex, Claude, sign-in waiting,
+sign-out confirmation and external-credential states in dark/light at 900px and
+dark at 500px with enlarged text. Inspection confirmed aligned actions and
+wrapping without clipping in the inspected states. These are synthetic provider
+snapshots, not live authentication or credential-mutation evidence.
+
+**Codex:** live read-only CLI status reported signed in (exit 0).
+**Claude:** live read-only CLI JSON status reported signed out (exit 1).
+These probes verify installed CLI responses, not native-button-to-provider
+behavior. Real browser callbacks, login/logout, provider installation/update
+mutation, and macOS/Windows native rendering remain untested.
+
 ## Ten user/agent transcript turns (November 2026)
 
 The default history window and reveal batch are ten turns, counting each user
