@@ -12,6 +12,41 @@ does not authorize an action while disconnected; active-turn availability also
 checks turn identity, status, compaction and recovery. There is no second
 persisted capability cache.
 
+## Model discovery
+
+The Dashboard discovers only its selected provider. Model browsing discovers the
+visible provider, or providers with saved favorites in the available scope.
+Browsing never changes the launch provider or creates a conversation.
+
+Last successful model lists are stored separately from workspace skills and
+configured defaults under `provider-models` in Grove's configuration directory.
+Only model metadata and a versioned fingerprint are persisted, using private
+atomic writes; credentials, config contents, drafts and transcripts are excluded.
+The fingerprint separates provider/account environment, launch configuration,
+context roots, local provider overrides and executable identity. Ordinary empty
+checkouts can share a catalog; custom configuration keeps conservative isolation.
+Disk loading and fingerprinting run on background/provider threads.
+
+There is no five-minute model or workspace expiration. Source changes invalidate
+workspace metadata through the background watcher; account/configuration changes
+also invalidate the model identity. Codex initialization reuses a known model list
+while still reading skills and configured defaults. Claude's required initialize
+response includes models, so a necessary workspace/session handshake still
+receives them. Model-only browsing can reuse either provider without a handshake,
+including after an app restart.
+
+**Refresh models** reloads the visible provider scope. Existing rows remain usable
+while refreshing; failure retains them and exposes Retry. Refreshed capabilities
+reach the owning session and transport without reconfiguring its model, access or
+conversation. Successful refresh replaces the shared model catalog. The last
+successful disk record survives a failed refresh; it does not turn that refresh
+into a success.
+
+`native_catalog_smoke PROVIDER EMPTY_CWD` checks full metadata discovery and warm
+reuse. Its optional `models` mode checks model-only reuse in another process;
+`refresh-models` forces a fresh lookup. Use disposable `GROVE_CONFIG_DIR` and
+`GROVE_PROVIDER_DIAGNOSTICS_DIR` directories to count actual subprocess handshakes.
+
 ## Completion and recovery
 
 Codex accepts late tool events for settled turns. Claude waits for authoritative

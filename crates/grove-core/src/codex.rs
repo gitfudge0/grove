@@ -370,6 +370,7 @@ struct Actor {
     side_chat: bool,
     side_mcp_servers: Vec<String>,
     discovery_only: bool,
+    model_catalog_key: Option<crate::model_catalog::Key>,
     state: Snapshot,
     actions: mpsc::Receiver<Action>,
     updates: crate::latest::Sender<Snapshot>,
@@ -408,6 +409,7 @@ impl Actor {
             side_chat: false,
             side_mcp_servers: Vec::new(),
             discovery_only: false,
+            model_catalog_key: None,
             state: Snapshot::new(saved),
             actions,
             updates,
@@ -526,7 +528,14 @@ impl Actor {
         self.queue_ready = false;
         self.queue_paused = !self.state.queued_prompts.is_empty();
         self.pending.clear();
-        self.state.models.clear();
+        self.model_catalog_key = (!self.side_chat)
+            .then(|| crate::model_catalog::Key::new(&self.state.saved, &self.args))
+            .flatten();
+        self.state.models = self
+            .model_catalog_key
+            .as_ref()
+            .and_then(crate::model_catalog::load)
+            .unwrap_or_default();
         self.state.skills.clear();
         self.interrupt_retry = None;
         self.interaction_children = crate::interaction::Children::default();
@@ -1252,6 +1261,7 @@ impl Actor {
                 &action,
                 Action::Submit { .. }
                     | Action::UpdateSkills(_)
+                    | Action::UpdateModels(_)
                     | Action::Prompt(_)
                     | Action::Interrupt
                     | Action::Reconnect
@@ -1305,6 +1315,7 @@ impl Actor {
                 Action::Reconnect
                     | Action::Stop { .. }
                     | Action::UpdateSkills(_)
+                    | Action::UpdateModels(_)
                     | Action::Draft(_)
                     | Action::SetTitle(_)
                     | Action::RegenerateTitle
@@ -1328,6 +1339,7 @@ impl Actor {
                 self.state.mark_reviewed(work_period)?;
             }
             Action::UpdateSkills(skills) => self.state.skills = skills,
+            Action::UpdateModels(models) => self.state.models = models,
             Action::Interaction { epoch, action } => {
                 if epoch != self.state.interaction_epoch {
                     return Err("This interaction belongs to a previous connection".into());
@@ -2671,7 +2683,20 @@ impl Actor {
         match request.kind {
             Pending::Initialize => {
                 self.write(&json!({"method":"initialized","params":{}}))?;
-                self.request("model/list", json!({"limit":100}), Pending::Models)?;
+                if !self.side_chat && self.state.models.is_empty() {
+                    self.request("model/list", json!({"limit":100}), Pending::Models)?;
+                } else if self.state.resolved_model.is_none() {
+                    if let Some(model) = self
+                        .state
+                        .models
+                        .iter()
+                        .find(|model| model["isDefault"] == true)
+                    {
+                        self.state.resolved_model = model["model"].as_str().map(str::to_owned);
+                        self.state.resolved_effort =
+                            model["defaultReasoningEffort"].as_str().map(str::to_owned);
+                    }
+                }
                 if !self.side_chat {
                     self.request(
                         "skills/list",
@@ -2707,6 +2732,8 @@ impl Actor {
                         json!({"limit":100,"cursor":cursor}),
                         Pending::Models,
                     )?;
+                } else if let Some(key) = &self.model_catalog_key {
+                    crate::model_catalog::remember(key, &self.state.models);
                 }
             }
             Pending::Skills => {
@@ -4201,6 +4228,49 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
+    fn initialization_reuses_models_but_still_reads_workspace_skills_and_config() {
+        for cached in [false, true] {
+            let mut actor = actor();
+            actor.process = Some(fixture_process());
+            actor.pending.insert(
+                99,
+                Request {
+                    kind: Pending::Initialize,
+                    deadline: Instant::now() + Duration::from_secs(30),
+                },
+            );
+            if cached {
+                actor.state.models = vec![
+                    json!({"model":"cached-model", "isDefault":true, "defaultReasoningEffort":"high"}),
+                ];
+                actor.state.resolved_model = None;
+            } else {
+                actor.state.models.clear();
+            }
+            actor.message(json!({"id":99,"result":{}})).unwrap();
+            assert_eq!(
+                actor
+                    .pending
+                    .values()
+                    .any(|pending| matches!(pending.kind, Pending::Models)),
+                !cached
+            );
+            assert!(actor
+                .pending
+                .values()
+                .any(|pending| matches!(pending.kind, Pending::Skills)));
+            assert!(actor
+                .pending
+                .values()
+                .any(|pending| matches!(pending.kind, Pending::Config)));
+            if cached {
+                assert_eq!(actor.state.resolved_model.as_deref(), Some("cached-model"));
+            }
+        }
+    }
+
+    #[test]
     fn claude_recovery_removes_shell_tools_misidentified_as_children() {
         for provider in [Provider::Claude, Provider::Codex] {
             let mut saved = saved();
@@ -5341,6 +5411,9 @@ mod tests {
         let skills = vec![json!({"name":"newly-installed","path":"/skills/new/SKILL.md"})];
         actor.action(Action::UpdateSkills(skills.clone())).unwrap();
         assert_eq!(actor.state.skills, skills);
+        let models = vec![json!({"model":"new-catalog-model", "supportsFastMode":true})];
+        actor.action(Action::UpdateModels(models.clone())).unwrap();
+        assert_eq!(actor.state.models, models);
         assert!(actor
             .input("$newly-installed", Vec::new())
             .contains(&json!({

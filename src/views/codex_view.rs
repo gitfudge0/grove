@@ -1859,7 +1859,7 @@ impl CodexView {
                     cx.emit(CodexViewEvent::FileOpened);
                 }
                 super::file_browser::FileBrowserEvent::Closed => {
-                    cx.emit(CodexViewEvent::FileClosed)
+                    cx.emit(CodexViewEvent::FileClosed);
                 }
             }
             cx.notify();
@@ -8164,6 +8164,13 @@ impl CodexView {
                         return;
                     }
                     match event {
+                        model_picker::PickerEvent::CatalogUpdated(provider, models) => {
+                            if this.session.read(cx).state.saved.provider == *provider {
+                                this.session.update(cx, |session, cx| {
+                                    session.update_models(models.clone(), cx);
+                                });
+                            }
+                        }
                         model_picker::PickerEvent::Dismiss => {
                             if this.model_from_card {
                                 this.model_from_card = false;

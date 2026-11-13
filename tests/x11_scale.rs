@@ -93,7 +93,7 @@ fn invalid_automatic_sources_warn_and_continue() {
     for invalid in ["", "garbage", "0", "-1", "NaN", "inf", "-inf", "1e-40"] {
         let mut warnings = Vec::new();
         let selected = select_scale(None, Some(invalid), Some("120"), no_randr, |warning| {
-            warnings.push(warning)
+            warnings.push(warning);
         })
         .unwrap();
         assert_eq!(selected.factor, 1.25, "GDK_SCALE={invalid}");

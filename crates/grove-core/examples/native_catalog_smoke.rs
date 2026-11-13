@@ -13,7 +13,11 @@ fn main() -> Result<(), String> {
     let provider = match args.get(1).map(String::as_str) {
         Some("codex") => Provider::Codex,
         Some("claude") => Provider::Claude,
-        _ => return Err("Usage: native_catalog_smoke codex|claude EMPTY_CWD".into()),
+        _ => {
+            return Err(
+                "Usage: native_catalog_smoke codex|claude EMPTY_CWD [models|refresh-models]".into(),
+            )
+        }
     };
     let cwd = std::path::PathBuf::from(args.get(2).ok_or("Missing cwd")?)
         .canonicalize()
@@ -31,6 +35,24 @@ fn main() -> Result<(), String> {
         "cwd":cwd, "label":"Smoke", "roots":[], "thread_id":null, "items":[], "native_config_version":1
     })).map_err(|error| error.to_string())?;
     let launch_args = provider.agent().launch_args_for_backend(true, false, false);
+    if matches!(
+        args.get(3).map(String::as_str),
+        Some("models" | "refresh-models")
+    ) {
+        if args[3] == "refresh-models" {
+            composer_catalog::invalidate(&saved, &launch_args);
+        }
+        let models = composer_catalog::discover_models(saved, launch_args)?;
+        if models.is_empty() {
+            return Err("Provider returned no models".into());
+        }
+        println!(
+            "provider={provider:?} mode={} models={} conversation_created=false",
+            args[3],
+            models.len()
+        );
+        return Ok(());
+    }
     let started = Instant::now();
     let cold = composer_catalog::discover(saved.clone(), launch_args.clone())?;
     let cold_ms = started.elapsed().as_secs_f64() * 1000.;

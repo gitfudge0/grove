@@ -32,6 +32,7 @@ pub mod identity;
 pub mod interaction;
 pub mod issues;
 pub mod latest;
+mod model_catalog;
 pub mod multi_root;
 pub mod next_reply;
 pub mod prompts;

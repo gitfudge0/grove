@@ -4,10 +4,9 @@ use std::{
     collections::HashMap,
     hash::{Hash, Hasher},
     sync::{Arc, Condvar, Mutex, OnceLock},
-    time::{Duration, Instant},
+    time::Instant,
 };
 
-const TTL: Duration = Duration::from_mins(5);
 const MAX_SCOPES: usize = 32;
 
 /// Checkout configuration must never cross a provider or launch destination.
@@ -66,10 +65,8 @@ impl Cache {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         match &*state {
-            State::Finished(result, at) if at.elapsed() < TTL => {
-                result.as_ref().as_ref().ok().cloned()
-            }
-            _ => None,
+            State::Finished(result, _) => result.as_ref().as_ref().ok().cloned(),
+            State::Loading => None,
         }
     }
     fn invalidate(&self, scope: &Scope) {
@@ -95,7 +92,27 @@ impl Cache {
         scope: Scope,
         load: impl FnOnce() -> Result<Snapshot, String>,
     ) -> Result<Snapshot, String> {
-        let skills_revision = skill_revision_with_args(&scope.cwd, &scope.args, &scope.config_args);
+        let mut saved = SavedSession::empty(
+            String::new(),
+            if scope.claude {
+                codex::Provider::Claude
+            } else {
+                codex::Provider::Codex
+            },
+            String::new(),
+            scope.cwd.clone(),
+        );
+        saved.config_args.clone_from(&scope.config_args);
+        saved.native_config_version = scope.config_version;
+        saved.roots = scope
+            .roots
+            .iter()
+            .map(|path| crate::session_meta::ContextRoot {
+                project: String::new(),
+                wt_path: path.clone(),
+            })
+            .collect();
+        let skills_revision = revision(&saved, &scope.args);
         let (entry, owner) = {
             let mut entries = self
                 .0
@@ -108,10 +125,8 @@ impl Cache {
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
                 {
                     State::Loading => entry.skills_revision != skills_revision,
-                    State::Finished(result, at) => {
-                        result.is_err()
-                            || at.elapsed() >= TTL
-                            || entry.skills_revision != skills_revision
+                    State::Finished(result, _) => {
+                        result.is_err() || entry.skills_revision != skills_revision
                     }
                 }
             }) {
@@ -188,10 +203,38 @@ pub fn cached(saved: &SavedSession, args: &[String]) -> Option<Snapshot> {
     if !std::path::Path::new(&saved.cwd).is_dir() {
         return None;
     }
-    cache().peek(&Scope::new(saved, args))
+    if crate::model_catalog::requires_refresh(saved, args) {
+        return None;
+    }
+    let mut snapshot = cache().peek(&Scope::new(saved, args))?;
+    if let Some(models) = crate::model_catalog::cached(saved, args) {
+        snapshot.models = models;
+    }
+    Some(snapshot)
 }
 pub fn invalidate(saved: &SavedSession, args: &[String]) {
     cache().invalidate(&Scope::new(saved, args));
+    crate::model_catalog::invalidate(saved, args);
+}
+
+/// The UI can reuse remembered model rows without filesystem work or a provider process.
+pub fn cached_models(saved: &SavedSession, args: &[String]) -> Option<Vec<serde_json::Value>> {
+    crate::model_catalog::cached(saved, args)
+}
+
+/// Model browsing does not need checkout skills or configured defaults. Disk hydration is
+/// deliberately on the caller's background thread; only a missing catalog starts discovery.
+pub fn discover_models(
+    saved: SavedSession,
+    args: Vec<String>,
+) -> Result<Vec<serde_json::Value>, String> {
+    if let Some(models) = crate::model_catalog::Key::new(&saved, &args)
+        .as_ref()
+        .and_then(crate::model_catalog::load)
+    {
+        return Ok(models);
+    }
+    discover(saved, args).map(|snapshot| snapshot.models)
 }
 
 /// Background callers join one metadata handshake per scope. Failures remain retryable.
@@ -200,8 +243,28 @@ pub fn discover(mut saved: SavedSession, args: Vec<String>) -> Result<Snapshot, 
         return Err("The selected checkout is no longer available.".into());
     }
     let scope = Scope::new(&saved, &args);
+    let model_key = crate::model_catalog::Key::new(&saved, &args);
+    let current_models = model_key.as_ref().and_then(crate::model_catalog::load);
+    if model_key.is_some() && current_models.is_none() {
+        // Another workspace's ready snapshot cannot satisfy a missing/explicitly
+        // invalidated model catalog. Keep coalescing an already-running handshake.
+        cache().invalidate(&scope);
+    }
     saved = metadata_request(saved);
-    cache().discover(scope, || codex::discover_composer(saved, args))
+    let mut snapshot = cache().discover(scope, || codex::discover_composer(saved, args))?;
+    if let Some(models) = model_key.as_ref().and_then(crate::model_catalog::load) {
+        snapshot.models = models;
+    }
+    Ok(snapshot)
+}
+
+/// Background revision for all discovery inputs. Unlike model browsing, configured defaults
+/// and skills remain workspace-specific and must be re-read when account/configuration changes.
+pub fn revision(saved: &SavedSession, args: &[String]) -> u64 {
+    let mut revision = std::collections::hash_map::DefaultHasher::new();
+    skill_revision_with_args(&saved.cwd, args, &saved.config_args).hash(&mut revision);
+    crate::model_catalog::revision(saved, args).hash(&mut revision);
+    revision.finish()
 }
 
 /// Fingerprint skill sources off the UI thread, following symlinked installations.
@@ -450,7 +513,7 @@ mod tests {
     }
 
     #[test]
-    fn ready_catalog_reuses_models_and_efforts_until_expiry_or_retry() {
+    fn ready_catalog_reuses_models_and_efforts_until_retry() {
         let cache = Cache::default();
         let scope = Scope::new(&saved(), &[]);
         cache.discover(scope.clone(), || Ok(result())).unwrap();
@@ -461,19 +524,6 @@ mod tests {
             state.models[0]["supportedReasoningEfforts"][0]["reasoningEffort"],
             "high"
         );
-        let entry = cache.0.lock().unwrap().get(&scope).unwrap().clone();
-        *entry.state.lock().unwrap() = State::Finished(
-            Box::new(Ok(result())),
-            Instant::now().checked_sub(TTL).unwrap(),
-        );
-        assert!(cache.peek(&scope).is_none());
-        let mut changed = result();
-        changed.models.clear();
-        assert!(cache
-            .discover(scope.clone(), || Ok(changed))
-            .unwrap()
-            .models
-            .is_empty());
         cache.invalidate(&scope);
         assert!(cache.peek(&scope).is_none());
         assert!(!cache
@@ -494,12 +544,16 @@ mod tests {
             move || {
                 cache.discover(scope, || {
                     started.send(()).unwrap();
-                    finish.recv_timeout(Duration::from_secs(5)).unwrap();
+                    finish
+                        .recv_timeout(std::time::Duration::from_secs(5))
+                        .unwrap();
                     Ok(result())
                 })
             }
         });
-        loading.recv_timeout(Duration::from_secs(5)).unwrap();
+        loading
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap();
         // Retry must not evict the in-flight owner and duplicate its process.
         cache.invalidate(&scope);
         let follower = std::thread::spawn({
@@ -510,7 +564,7 @@ mod tests {
                 })
             }
         });
-        let deadline = Instant::now() + Duration::from_secs(5);
+        let deadline = Instant::now() + std::time::Duration::from_secs(5);
         let joined = loop {
             // Map + owner + follower prove the follower acquired this very entry.
             let joined = cache
@@ -533,6 +587,9 @@ mod tests {
     #[test]
     fn provider_switch_reuses_only_its_ready_catalog_and_efforts() {
         let cwd = tempfile::tempdir().unwrap();
+        // A unique unsupported launcher option both isolates the in-memory fixture and
+        // fails before process spawn if a regression accidentally crosses the boundary.
+        let args = vec![format!("--catalog-fixture={}", cwd.path().display())];
         let mut request = saved();
         request.cwd = cwd.path().to_string_lossy().into_owned();
         for provider in [codex::Provider::Codex, codex::Provider::Claude] {
@@ -542,22 +599,24 @@ mod tests {
                 "model":provider.label(),
                 "supportedReasoningEfforts":[{"reasoningEffort":"high"}]
             })];
+            crate::model_catalog::seed_memory(&request, &args, state.models.clone());
             cache()
-                .discover(Scope::new(&request, &[]), || Ok(state))
+                .discover(Scope::new(&request, &args), || Ok(state))
                 .unwrap();
         }
         // A picker-selected model does not change scope; switching back also hits.
         for provider in [codex::Provider::Claude, codex::Provider::Codex] {
             request.provider = provider;
             request.composer.model = Some(provider.label().into());
-            let ready = cached(&request, &[]).expect("provider switch should be immediately ready");
+            let ready =
+                cached(&request, &args).expect("provider switch should be immediately ready");
             assert_eq!(ready.models[0]["model"], provider.label());
             assert_eq!(
                 ready.models[0]["supportedReasoningEfforts"][0]["reasoningEffort"],
                 "high"
             );
             assert_eq!(
-                discover(request.clone(), Vec::new()).unwrap().models,
+                discover(request.clone(), args.clone()).unwrap().models,
                 ready.models
             );
         }

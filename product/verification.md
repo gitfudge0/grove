@@ -1,5 +1,35 @@
 # Verification and known gaps
 
+## Provider catalog reuse
+
+Linux metadata-only checks used Codex CLI 0.167.2 and Claude Code 2.1.323 with
+separate disposable Grove configuration, checkout and diagnostic directories.
+Both providers passed cold discovery, warm lookup, model-only reuse in a fresh
+process, reuse from another empty checkout, and explicit refresh. Diagnostic
+subprocess-file counts were respectively 1, 0, 0 and 1 for cold, restarted,
+other-checkout and forced-refresh runs. Codex advertised eight models and Claude
+five. These were metadata handshakes, not model turns or conversation/resume tests;
+no end-to-end prompt-delivery claim follows from them.
+
+The core suite passed 923 tests with ten opt-in checks ignored and one existing
+tmux test excluded. The excluded immediate server-recreation test failed during
+the unfiltered run and reproduced on unchanged main on its third focused attempt.
+Six picker fixtures and 13 deferred-session fixtures passed, including provider
+scope, retained rows, stale replies, keyboard selection and draft preservation.
+The cache-split provider-switch fixture seeds memory only and has a rejecting
+launcher fallback, so a cache regression fails without launching installed CLIs.
+
+Native Linux Dark captures showed seeded Ready, Refreshing and retained-model
+failure states for both providers. A native Space keystroke activated Refresh
+without touching the other provider. The cleanup leak in the initial QA fixture
+was corrected and the rerun passed. Requested wide/narrow window bounds were
+replaced by desktop sizing (2880×1800 and 1402×1708 physical captures), so the
+intended 360px narrow window remains unverified. Native Light and macOS/Windows
+rendering and provider/keychain behavior remain untested. The 33 UI conformance
+checks and all-target strict Clippy passed. No application installation or restart
+was performed.
+
+
 ## Platform-specific window controls
 
 Windows/Linux controls occupy the far right of the whole window; the content
@@ -31,9 +61,9 @@ bootstrap; traditional X11 server decorations were covered by policy tests only.
 Codex and Claude shared session-header GPUI fixtures both passed. Live provider
 boundaries are untested for both; provider transport behavior did not change.
 
-Strict production Clippy remains blocked by two unchanged baseline warnings:
-`semicolon_if_nothing_returned` in `src/views/codex_view.rs:1862` and
-`assigning_clones` in `src/views/file_browser.rs:393`. No lint rule was weakened.
+The baseline Clippy style warnings in these paths and their window-control
+fixtures were corrected mechanically during provider catalog delivery. No lint
+rule was weakened.
 
 ## OS display scaling
 

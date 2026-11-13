@@ -390,7 +390,7 @@ impl FileBrowser {
         // Reveal checkout files using the same canonical paths as directory rows.
         // Explicit outside-checkout links never broaden the explorer root.
         if let Ok(path) = checked_path(&self.root, &target.path) {
-            target.path = path.clone();
+            target.path.clone_from(&path);
             if let Ok(root) = self.root.canonicalize() {
                 for parent in path
                     .ancestors()

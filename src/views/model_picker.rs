@@ -1,6 +1,6 @@
 //! Provider browsing is independent of the conversation's selected provider.
 use super::*;
-use crate::settings::SettingsState;
+use crate::{settings::SettingsState, views::components::disabled_header_control};
 use serde_json::Value;
 
 const PICKER_W: f32 = 360.0;
@@ -25,12 +25,14 @@ struct Model {
 }
 #[derive(Clone)]
 enum Catalog {
+    Unloaded,
     Loading,
     Ready(Vec<Model>),
     Error(String),
 }
 #[derive(Clone, Debug)]
 pub(super) enum PickerEvent {
+    CatalogUpdated(codex::Provider, Vec<Value>),
     Select(codex::Provider, String),
     Dismiss,
 }
@@ -42,6 +44,9 @@ pub(super) struct ModelPicker {
     filter: Filter,
     catalogs: [Catalog; 2],
     generations: [u64; 2],
+    refreshing: [bool; 2],
+    refresh_errors: [Option<String>; 2],
+    refresh_focus: FocusHandle,
     search: Entity<InputState>,
     cursor: usize,
     keyboard_cursor: bool,
@@ -93,7 +98,7 @@ impl ModelPicker {
             this.keyboard_cursor = false;
             cx.notify();
         });
-        let mut catalogs = [Catalog::Loading, Catalog::Loading];
+        let mut catalogs = [Catalog::Unloaded, Catalog::Unloaded];
         if !state.models.is_empty() {
             catalogs[index(state.saved.provider)] =
                 Catalog::Ready(models(state.saved.provider, state.models.clone()));
@@ -116,6 +121,9 @@ impl ModelPicker {
             },
             catalogs,
             generations: [0; 2],
+            refreshing: [false; 2],
+            refresh_errors: [None, None],
+            refresh_focus: cx.focus_handle(),
             search,
             cursor: 0,
             keyboard_cursor: false,
@@ -134,21 +142,42 @@ impl ModelPicker {
     pub(super) fn seed_test_catalogs(&mut self) {
         tests::seed(self);
     }
+    fn needs_provider(&self, provider: codex::Provider, cx: &App) -> bool {
+        (self.allow_switch || provider == self.saved.provider)
+            && match self.filter {
+                Filter::Provider(selected) => provider == selected,
+                Filter::Favorites => cx
+                    .global::<SettingsState>()
+                    .store
+                    .model_favorites
+                    .iter()
+                    .any(|favorite| favorite.provider == provider),
+            }
+    }
     pub(super) fn discover(&mut self, cx: &mut Context<Self>) {
         for provider in [codex::Provider::Codex, codex::Provider::Claude] {
-            if (self.allow_switch || provider == self.saved.provider)
-                && matches!(self.catalogs[index(provider)], Catalog::Loading)
+            if self.needs_provider(provider, cx)
+                && matches!(self.catalogs[index(provider)], Catalog::Unloaded)
             {
-                self.load(provider, cx);
+                self.load(provider, false, cx);
             }
         }
     }
-    fn load(&mut self, provider: codex::Provider, cx: &mut Context<Self>) {
+    fn load(&mut self, provider: codex::Provider, refresh: bool, cx: &mut Context<Self>) {
         let i = index(provider);
-        let retry = matches!(self.catalogs[i], Catalog::Error(_));
+        if self.refreshing[i] {
+            return;
+        }
+        let retry = refresh
+            || matches!(self.catalogs[i], Catalog::Error(_))
+            || self.refresh_errors[i].is_some();
         self.generations[i] = self.generations[i].wrapping_add(1);
         let generation = self.generations[i];
-        self.catalogs[i] = Catalog::Loading;
+        self.refresh_errors[i] = None;
+        let retained = matches!(self.catalogs[i], Catalog::Ready(_));
+        if !retained {
+            self.catalogs[i] = Catalog::Loading;
+        }
         if !std::path::Path::new(&self.saved.cwd).is_dir() {
             self.catalogs[i] =
                 Catalog::Error("The selected checkout is no longer available.".into());
@@ -171,31 +200,65 @@ impl ModelPicker {
             settings.yolo_enabled,
             settings.chrome_enabled.unwrap_or(false),
         );
-        if retry {
-            grove_core::composer_catalog::invalidate(&saved, &args);
+        if !retry {
+            if let Some(state) = grove_core::composer_catalog::cached_models(&saved, &args) {
+                self.catalogs[i] = Catalog::Ready(models(provider, state.clone()));
+                cx.emit(PickerEvent::CatalogUpdated(provider, state));
+                cx.notify();
+                return;
+            }
         }
-        if let Some(state) = grove_core::composer_catalog::cached(&saved, &args) {
-            self.catalogs[i] = Catalog::Ready(models(provider, state.models));
-            cx.notify();
-            return;
-        }
-        let task =
-            cx.background_spawn(async move { grove_core::composer_catalog::discover(saved, args) });
+        self.refreshing[i] = true;
+        let task = cx.background_spawn(async move {
+            if retry {
+                grove_core::composer_catalog::invalidate(&saved, &args);
+            }
+            grove_core::composer_catalog::discover_models(saved, args)
+        });
         cx.spawn(async move |this, cx| {
             let result = task.await;
             let _ = this.update(cx, |this, cx| {
-                if this.generations[i] != generation {
-                    return;
-                }
-                this.catalogs[i] = match result {
-                    Ok(state) => Catalog::Ready(models(provider, state.models)),
-                    Err(error) => Catalog::Error(error),
-                };
-                cx.notify();
+                this.complete_models(provider, generation, result, cx);
             });
         })
         .detach();
         cx.notify();
+    }
+    fn complete_models(
+        &mut self,
+        provider: codex::Provider,
+        generation: u64,
+        result: Result<Vec<Value>, String>,
+        cx: &mut Context<Self>,
+    ) {
+        let i = index(provider);
+        if self.generations[i] != generation {
+            return;
+        }
+        self.refreshing[i] = false;
+        match result {
+            Ok(values) => {
+                self.catalogs[i] = Catalog::Ready(models(provider, values.clone()));
+                self.refresh_errors[i] = None;
+                cx.emit(PickerEvent::CatalogUpdated(provider, values));
+            }
+            Err(error) if matches!(self.catalogs[i], Catalog::Ready(_)) => {
+                self.refresh_errors[i] = Some(error);
+            }
+            Err(error) => self.catalogs[i] = Catalog::Error(error),
+        }
+        cx.notify();
+    }
+    fn refresh_visible(&mut self, cx: &mut Context<Self>) {
+        if self.passive || self.refreshing.iter().any(|pending| *pending) {
+            return;
+        }
+        for provider in [codex::Provider::Codex, codex::Provider::Claude] {
+            if !self.needs_provider(provider, cx) || self.refreshing[index(provider)] {
+                continue;
+            }
+            self.load(provider, true, cx);
+        }
     }
     fn visible(&self, cx: &App) -> Vec<Model> {
         let query = self.search.read(cx).value().trim().to_lowercase();
@@ -231,6 +294,7 @@ impl ModelPicker {
             return;
         }
         self.filter = filter;
+        self.discover(cx);
         self.cursor = 0;
         self.keyboard_cursor = false;
         self.legacy_open = false;
@@ -310,6 +374,7 @@ impl Render for ModelPicker {
         self.cursor = self.cursor.min(values.len().saturating_sub(1));
         let scale = f32::from(window.rem_size()) / crate::zoom::REM_BASE;
         let width = PICKER_W.min(f32::from(window.viewport_size().width) / scale - SPACE_3XL);
+        let refreshing = self.refreshing.iter().any(|pending| *pending);
         let search_navigation = self.keyboard_cursor
             && (self.search.focus_handle(cx).is_focused(window) || self.focus.is_focused(window));
         let mut rail = div()
@@ -554,11 +619,19 @@ impl Render for ModelPicker {
             );
         }
         for provider in [codex::Provider::Codex, codex::Provider::Claude] {
-            if !self.allow_switch && provider != self.saved.provider {
+            if !self.needs_provider(provider, cx) {
                 continue;
             }
-            if matches!(self.filter, Filter::Provider(p) if p != provider) {
-                continue;
+            let refresh_error = self.refresh_errors[index(provider)].as_ref();
+            if self.refreshing[index(provider)]
+                && matches!(self.catalogs[index(provider)], Catalog::Ready(_))
+            {
+                rows = rows.child(
+                    div()
+                        .p(rpx(SPACE_LG))
+                        .text_color(c::FG_DIM())
+                        .child(format!("Refreshing {} models…", provider.label())),
+                );
             }
             match &self.catalogs[index(provider)] {
                 Catalog::Loading => {
@@ -569,7 +642,17 @@ impl Render for ModelPicker {
                             .child(format!("Loading {} models…", provider.label())),
                     );
                 }
-                Catalog::Error(error) => {
+                Catalog::Error(_) | Catalog::Ready(_)
+                    if refresh_error.is_some()
+                        || matches!(&self.catalogs[index(provider)], Catalog::Error(_)) =>
+                {
+                    let error = refresh_error
+                        .or_else(|| match &self.catalogs[index(provider)] {
+                            Catalog::Error(error) => Some(error),
+                            _ => None,
+                        })
+                        .cloned()
+                        .unwrap_or_default();
                     rows = rows.child(
                         div()
                             .p(rpx(SPACE_LG))
@@ -595,13 +678,13 @@ impl Render for ModelPicker {
                                 .gap(rpx(SPACE_SM))
                                 .child(crate::icons::icon("refresh", ICON_SM, c::FG_DIM()))
                                 .child("Retry")
-                                .on_click(
-                                    cx.listener(move |this, _, _, cx| this.load(provider, cx)),
-                                )
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.load(provider, false, cx);
+                                }))
                                 .on_key_down(cx.listener(
                                     move |this, event: &gpui::KeyDownEvent, _, cx| {
                                         if action_key(event) {
-                                            this.load(provider, cx);
+                                            this.load(provider, false, cx);
                                             cx.stop_propagation();
                                         }
                                     },
@@ -609,15 +692,12 @@ impl Render for ModelPicker {
                             ),
                     );
                 }
-                Catalog::Ready(_) => {}
+                Catalog::Unloaded | Catalog::Ready(_) | Catalog::Error(_) => {}
             }
         }
         let all_ready = [codex::Provider::Codex, codex::Provider::Claude]
             .into_iter()
-            .filter(|provider| {
-                (self.allow_switch || *provider == self.saved.provider)
-                    && !matches!(self.filter,Filter::Provider(p) if p!=*provider)
-            })
+            .filter(|provider| self.needs_provider(*provider, cx))
             .all(|provider| matches!(self.catalogs[index(provider)], Catalog::Ready(_)));
         if values.is_empty() && all_ready {
             rows = rows.child(
@@ -752,7 +832,27 @@ impl Render for ModelPicker {
                                     .bordered(false)
                                     .focus_bordered(false)
                                     .p_0()
-                                    .w_full(),
+                                    .flex_1()
+                                    .min_w_0(),
+                            )
+                            .child(
+                                (if refreshing || self.passive {
+                                    disabled_header_control("model-refresh", "Refresh models")
+                                } else {
+                                    header_control("model-refresh", "Refresh models")
+                                })
+                                    .debug_selector(|| "model-refresh".into())
+                                    .track_focus(&self.refresh_focus)
+                                    .tab_index(0)
+                                    .tab_stop(!self.passive && !refreshing)
+                                    .child(crate::icons::icon("refresh", ICON_SM, c::FG_DIM()))
+                                    .on_click(cx.listener(|this, _, _, cx| this.refresh_visible(cx)))
+                                    .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, _, cx| {
+                                        if action_key(event) {
+                                            this.refresh_visible(cx);
+                                            cx.stop_propagation();
+                                        }
+                                    })),
                             ),
                     )
                     .child(rows),
@@ -797,6 +897,104 @@ mod tests {
             let _ = window.draw(cx);
         });
     }
+    #[gpui::test]
+    fn discovery_only_loads_browsed_or_favorited_providers(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            cx.set_global(SettingsState::new(grove_core::storage::Store::default()));
+        });
+        let (_, _) = cx.add_window_view(|window, cx| {
+            let mut state = state();
+            state.saved.cwd = "/missing-catalog-fixture".into();
+            state.models.clear();
+            let picker = cx.new(|cx| {
+                let mut picker = ModelPicker::new(&state, true, window, cx);
+                picker.discover(cx);
+                assert!(matches!(picker.catalogs[0], Catalog::Error(_)));
+                assert!(matches!(picker.catalogs[1], Catalog::Unloaded));
+                picker.change_filter(Filter::Provider(codex::Provider::Claude), cx);
+                assert!(matches!(picker.catalogs[1], Catalog::Error(_)));
+                picker
+            });
+            picker.update(cx, |picker, cx| {
+                picker.catalogs = [Catalog::Unloaded, Catalog::Unloaded];
+                cx.global_mut::<SettingsState>()
+                    .store
+                    .toggle_model_favorite(codex::Provider::Claude, "claude-1");
+                picker.change_filter(Filter::Favorites, cx);
+                assert!(matches!(picker.catalogs[0], Catalog::Unloaded));
+                assert!(matches!(picker.catalogs[1], Catalog::Error(_)));
+                picker.allow_switch = false;
+                picker.catalogs = [Catalog::Unloaded, Catalog::Unloaded];
+                picker.discover(cx);
+                assert!(
+                    picker
+                        .catalogs
+                        .iter()
+                        .all(|catalog| matches!(catalog, Catalog::Unloaded)),
+                    "running Codex must not discover a Claude favorite"
+                );
+            });
+            gpui_component::Root::new(picker, window, cx).bordered(false)
+        });
+    }
+
+    #[gpui::test]
+    fn refresh_retains_models_and_rejects_obsolete_results(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            cx.set_global(SettingsState::new(grove_core::storage::Store::default()));
+        });
+        let (_, _) = cx.add_window_view(|window, cx| {
+            let picker = cx.new(|cx| {
+                let mut picker = ModelPicker::new(&state(), true, window, cx);
+                seed(&mut picker);
+                picker.saved.cwd = "/missing-catalog-fixture".into();
+                picker.refreshing[1] = true;
+                picker.refresh_visible(cx);
+                assert!(
+                    matches!(picker.catalogs[0], Catalog::Ready(_)),
+                    "disabled refresh must not start another provider"
+                );
+                picker.refreshing[1] = false;
+                for provider in [codex::Provider::Codex, codex::Provider::Claude] {
+                    let i = index(provider);
+                    picker.filter = Filter::Provider(provider);
+                    let before = picker
+                        .visible(cx)
+                        .iter()
+                        .map(|m| m.id.clone())
+                        .collect::<Vec<_>>();
+                    picker.generations[i] = 2;
+                    picker.refreshing[i] = true;
+                    picker.complete_models(provider, 1, Ok(vec![]), cx);
+                    assert!(picker.refreshing[i]);
+                    picker.complete_models(provider, 2, Err("offline".into()), cx);
+                    assert!(!picker.refreshing[i]);
+                    assert_eq!(picker.refresh_errors[i].as_deref(), Some("offline"));
+                    assert_eq!(
+                        picker
+                            .visible(cx)
+                            .iter()
+                            .map(|m| m.id.clone())
+                            .collect::<Vec<_>>(),
+                        before
+                    );
+                    picker.complete_models(
+                        provider,
+                        2,
+                        Ok(vec![serde_json::json!({"model":"new"})]),
+                        cx,
+                    );
+                    assert!(picker.refresh_errors[i].is_none());
+                    assert_eq!(picker.visible(cx)[0].id, "new");
+                }
+                picker
+            });
+            gpui_component::Root::new(picker, window, cx).bordered(false)
+        });
+    }
+
     #[gpui::test]
     fn picker_shows_every_model_without_internal_scrolling(cx: &mut gpui::TestAppContext) {
         cx.update(|cx| {
@@ -1117,6 +1315,126 @@ mod tests {
             .len(),
             1
         );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[ignore = "opens isolated native model picker QA"]
+    fn provider_catalog_native_capture() {
+        assert!(std::env::var_os("GROVE_CONFIG_DIR").is_some());
+        let output = std::path::PathBuf::from(std::env::var("GROVE_CATALOG_CAPTURE_DIR").unwrap());
+        assert!(output.is_absolute());
+        fs_err::create_dir_all(&output).unwrap();
+        let narrow = std::env::var_os("GROVE_CATALOG_NARROW").is_some();
+        gpui_platform::application()
+            .with_assets(crate::assets::Assets)
+            .run(move |cx| {
+                gpui_component::init(cx);
+                crate::fonts::register(cx).unwrap();
+                cx.set_reduce_motion(true);
+                cx.set_global(SettingsState::new(grove_core::storage::Store::default()));
+                c::sync_component_theme(cx);
+                let mut retained = None;
+                let window = cx
+                    .open_window(
+                        gpui::WindowOptions {
+                            window_bounds: Some(gpui::WindowBounds::Windowed(gpui::Bounds::new(
+                                gpui::point(gpui::px(30.), gpui::px(30.)),
+                                gpui::size(
+                                    gpui::px(if narrow { 360. } else { 600. }),
+                                    gpui::px(540.),
+                                ),
+                            ))),
+                            ..Default::default()
+                        },
+                        |window, cx| {
+                            window.set_window_title("Grove model catalog QA");
+                            let picker = cx.new(|cx| {
+                                let mut picker = ModelPicker::new(&state(), true, window, cx);
+                                picker.saved.cwd = "/missing-catalog-fixture".into();
+                                seed(&mut picker);
+                                picker
+                            });
+                            retained = Some(picker.clone());
+                            cx.new(|cx| {
+                                gpui_component::Root::new(picker, window, cx)
+                                    .bordered(false)
+                                    .bg(c::BG())
+                            })
+                        },
+                    )
+                    .unwrap();
+                let picker = retained.unwrap();
+                cx.activate(true);
+                cx.spawn(async move |cx| {
+                    for provider in [codex::Provider::Codex, codex::Provider::Claude] {
+                        for mode in ["ready", "refreshing", "failure"] {
+                            cx.update_window(window.into(), |_, window, cx| {
+                                picker.update(cx, |picker, cx| {
+                                    seed(picker);
+                                    picker.filter = Filter::Provider(provider);
+                                    picker.refreshing = [false; 2];
+                                    picker.refresh_errors = [None, None];
+                                    if mode == "refreshing" {
+                                        picker.refreshing[index(provider)] = true;
+                                    }
+                                    if mode == "failure" {
+                                        picker.refresh_errors[index(provider)] = Some(
+                                            "Catalog refresh unavailable; cached models retained."
+                                                .into(),
+                                        );
+                                    }
+                                    picker.refresh_focus.focus(window, cx);
+                                    cx.notify();
+                                });
+                                window.refresh();
+                            })
+                            .unwrap();
+                            cx.background_executor()
+                                .timer(std::time::Duration::from_millis(250))
+                                .await;
+                            let file = output.join(format!("{provider:?}-{mode}.png"));
+                            assert!(std::process::Command::new("import")
+                                .args(["-window", "Grove model catalog QA"])
+                                .arg(file)
+                                .status()
+                                .unwrap()
+                                .success());
+                        }
+                    }
+                    cx.update_window(window.into(), |_, window, cx| {
+                        picker.update(cx, |picker, cx| {
+                            picker.refresh_errors = [None, None];
+                            picker.refresh_focus.focus(window, cx);
+                        });
+                        window.dispatch_keystroke(gpui::Keystroke::parse("space").unwrap(), cx);
+                        picker.read_with(cx, |picker, _| {
+                            assert!(
+                                matches!(picker.catalogs[1], Catalog::Error(_)),
+                                "Space activates refresh on the focused native control"
+                            );
+                            assert!(
+                                matches!(picker.catalogs[0], Catalog::Ready(_)),
+                                "refresh preserves the other provider"
+                            );
+                        });
+                        window.blur();
+                        window.refresh();
+                    })
+                    .unwrap();
+                    cx.background_executor()
+                        .timer(std::time::Duration::from_millis(100))
+                        .await;
+                    cx.update_window(window.into(), |_, window, _| window.remove_window())
+                        .unwrap();
+                    drop(picker);
+                    cx.background_executor()
+                        .timer(std::time::Duration::from_millis(100))
+                        .await;
+                    cx.update(|cx| cx.quit());
+                })
+                .detach();
+            });
     }
 
     #[test]

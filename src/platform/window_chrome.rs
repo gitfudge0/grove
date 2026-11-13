@@ -163,7 +163,7 @@ mod tests {
         use WindowAction::{Close, Fullscreen, Maximize, Minimize};
         let supported = gpui::WindowControls::default();
         let client = gpui::Decorations::Client {
-            tiling: Default::default(),
+            tiling: gpui::Tiling::default(),
         };
         assert_eq!(
             controls(ControlPlatform::Mac, client, supported),
