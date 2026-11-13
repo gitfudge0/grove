@@ -818,12 +818,22 @@ impl Paragraph {
             })
         });
         if self.should_render_inline_flow() || custom_link {
-            let items = InlineFlow::render_links(
+            let mut items = InlineFlow::render_links(
                 self.inline_flow_items(node_cx, cx),
                 &node_cx.markdown_extensions,
                 window,
                 cx,
             );
+            // A standalone app-owned link is a native paragraph child, so its
+            // labels and action group can wrap to the actual parent width.
+            // Measuring it as an atomic inline image uses intrinsic width and
+            // lets long labels overflow narrow transcript panes.
+            if items.len() == 1
+                && let InlineFlowItem::Custom { element } = &mut items[0]
+                && let Some(element) = element.take()
+            {
+                return element;
+            }
             if self.should_render_inline_flow()
                 || items
                     .iter()
