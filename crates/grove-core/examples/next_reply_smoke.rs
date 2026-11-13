@@ -21,13 +21,14 @@ fn main() -> Result<(), String> {
     state.status = Status::Done;
     let request = Request::capture(&state).ok_or("Missing response context")?;
     let result = request.generate(&CommitControl::default())?;
-    if result.is_none() {
+    if result.is_empty() {
         return Err("Provider returned no suggestion for the fixture".into());
     }
     println!(
-        "{} next-reply structured generation passed ({} characters)",
+        "{} next-reply structured generation passed ({} suggestions, lengths: {:?})",
         provider.label(),
-        result.as_ref().map_or(0, |s| s.chars().count())
+        result.len(),
+        result.iter().map(|s| s.chars().count()).collect::<Vec<_>>()
     );
     Ok(())
 }

@@ -19,8 +19,8 @@ use gpui::{
 };
 use gpui_component::{
     input::{
-        IndentInline, Input, InputEvent, InputState, MoveDown, MoveUp, TextDecoration,
-        TextDecorationCollection, TextReplacement,
+        IndentInline, Input, InputEvent, InputState, MoveDown, MoveLeft, MoveRight, MoveUp,
+        TextDecoration, TextDecorationCollection, TextReplacement,
     },
     menu::{PopupMenu, PopupMenuItem},
     text::{TextSelectionSnapshot, TextView, TextViewState, TextViewStyle},
@@ -48,6 +48,7 @@ mod model_picker;
 mod table_sizing_tests;
 
 const CODE_COPY_FEEDBACK_MS: u64 = 1200;
+const NEXT_REPLY_POSITION_W: f32 = 32.0;
 const STOP_CONFIRMATION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
 
 struct StopConfirmation {
@@ -1279,10 +1280,11 @@ pub struct CodexView {
     next_reply: grove_core::next_reply::Candidate,
     next_reply_control: Option<grove_core::next_reply::JobControl>,
     next_reply_task: Option<gpui::Task<()>>,
+    next_reply_focus: [FocusHandle; 2],
     next_reply_generate: fn(
         &grove_core::next_reply::Request,
         &grove_core::commit_agent::CommitControl,
-    ) -> Result<Option<String>, String>,
+    ) -> Result<Vec<String>, String>,
     plan_answer: Option<PlanAnswerComposer>,
     native_plans: HashMap<(String, String), Entity<super::native_plan::NativePlan>>,
     pub(crate) description_scope: Option<grove_core::change_description::Scope>,
@@ -1816,7 +1818,6 @@ impl CodexView {
                     }
                     InputEvent::Blur => cx.notify(),
                     InputEvent::Change => {
-                        this.next_reply.edit(&this.input.read(cx).value());
                         this.clear_stop_confirmation(cx);
                         if this.plan_answer.is_some() {
                             this.persist_plan_answer_draft(cx);
@@ -1909,6 +1910,7 @@ impl CodexView {
             next_reply: grove_core::next_reply::Candidate::pending(),
             next_reply_control: None,
             next_reply_task: None,
+            next_reply_focus: std::array::from_fn(|_| cx.focus_handle()),
             next_reply_generate: grove_core::next_reply::Request::generate,
             input,
             reference,
@@ -5064,7 +5066,6 @@ impl CodexView {
         cx.notify();
     }
     fn submit_mode(&mut self, mode: SubmissionMode, window: &mut Window, cx: &mut Context<Self>) {
-        self.dismiss_next_reply(cx);
         if self.plan_answer.is_some() {
             self.save_plan_answer(window, cx);
             return;
@@ -5113,6 +5114,7 @@ impl CodexView {
             session.submit_with_mode(text.clone(), self.images.clone(), mode, cx)
         });
         if let Ok(submission) = result {
+            self.dismiss_next_reply(cx);
             if mode != SubmissionMode::Queue {
                 self.record_submission_bubble(
                     submission,
@@ -5209,7 +5211,11 @@ impl CodexView {
             || self.menu.is_some()
             || self.popup.is_some()
             || self.composer_collapsed
-            || !input.focus_handle(cx).is_focused(window)
+            || !(input.focus_handle(cx).is_focused(window)
+                || self
+                    .next_reply_focus
+                    .iter()
+                    .any(|focus| focus.is_focused(window)))
             || !input.reply_preview_eligible()
             || self.suggestion_choices(state, cx).is_some()
         {
@@ -5222,8 +5228,11 @@ impl CodexView {
         let Some(text) = self.next_reply_text(window, cx) else {
             return false;
         };
-        self.dismiss_next_reply(cx);
+        if !self.input.focus_handle(cx).is_focused(window) {
+            return false;
+        }
         self.input.update(cx, |input, cx| {
+            input.set_reply_preview(None, c::FG_DIM(), cx);
             input.accept_reply_preview(text.into(), window, cx);
         });
         // Explicit replacements use silent input events; persist the actual accepted draft.
@@ -5231,6 +5240,66 @@ impl CodexView {
         self.session
             .update(cx, |session, cx| session.send(Action::Draft(draft), cx));
         true
+    }
+
+    fn move_next_reply(
+        &mut self,
+        previous: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if self.next_reply_text(window, cx).is_none() {
+            return false;
+        }
+        self.next_reply.cycle(previous);
+        self.input.focus_handle(cx).focus(window, cx);
+        cx.notify();
+        true
+    }
+
+    fn next_reply_navigation(&self, previous: bool, cx: &Context<Self>) -> gpui::AnyElement {
+        let (id, label, glyph, index) = if previous {
+            (
+                "next-reply-previous",
+                "Previous suggested reply",
+                "chev-left",
+                0,
+            )
+        } else {
+            ("next-reply-next", "Next suggested reply", "chev-right", 1)
+        };
+        if self
+            .next_reply
+            .position()
+            .is_none_or(|(_, count)| count < 2)
+        {
+            return super::components::disabled_header_control(id, label)
+                .debug_selector(move || id.into())
+                .child(crate::icons::icon(glyph, ICON_SM, c::FG_DIM()))
+                .into_any_element();
+        }
+        header_control(id, label)
+            .debug_selector(move || id.into())
+            .track_focus(&self.next_reply_focus[index])
+            .tab_index(0)
+            .focus_visible(|style| style.bg(c::BG_HOVER()).text_color(c::FG()))
+            .on_click(cx.listener(move |this, _, window, cx| {
+                this.move_next_reply(previous, window, cx);
+            }))
+            .on_key_down(
+                cx.listener(move |this, event: &gpui::KeyDownEvent, window, cx| {
+                    if matches!(event.keystroke.key.as_str(), "enter" | "space")
+                        && !event.keystroke.modifiers.modified()
+                        && !event.is_held
+                        && this.move_next_reply(previous, window, cx)
+                    {
+                        window.prevent_default();
+                        cx.stop_propagation();
+                    }
+                }),
+            )
+            .child(crate::icons::icon(glyph, ICON_SM, c::FG_DIM()))
+            .into_any_element()
     }
 
     fn sync_next_reply(
@@ -5250,7 +5319,7 @@ impl CodexView {
         }
         if let Some(request) = request.filter(|r| self.next_reply_seen.as_ref() != Some(&r.key)) {
             self.next_reply_seen = Some(request.key.clone());
-            if self.next_reply_mode_eligible(state) && self.input.read(cx).value().is_empty() {
+            if self.next_reply_mode_eligible(state) {
                 self.next_reply = grove_core::next_reply::Candidate::pending();
                 self.next_reply_request = Some(request.key.clone());
                 let control = grove_core::next_reply::JobControl::default();
@@ -5270,7 +5339,7 @@ impl CodexView {
                                 Ok(text) => text,
                                 Err(error) => {
                                     tracing::debug!(%error, "Next reply generation unavailable");
-                                    None
+                                    Vec::new()
                                 }
                             };
                             this.next_reply.resolve(result);
@@ -5280,7 +5349,6 @@ impl CodexView {
                 }));
             }
         }
-        self.next_reply.edit(&self.input.read(cx).value());
         let preview = self
             .next_reply_text(window, cx)
             .map(gpui::SharedString::from);
@@ -6404,6 +6472,24 @@ impl Render for CodexView {
                     cx.propagate();
                 }
             }))
+            .capture_action(cx.listener(|this, _: &MoveLeft, window, cx| {
+                if !this.input.focus_handle(cx).is_focused(window)
+                    || !this.move_next_reply(true, window, cx)
+                {
+                    cx.propagate();
+                } else {
+                    cx.stop_propagation();
+                }
+            }))
+            .capture_action(cx.listener(|this, _: &MoveRight, window, cx| {
+                if !this.input.focus_handle(cx).is_focused(window)
+                    || !this.move_next_reply(false, window, cx)
+                {
+                    cx.propagate();
+                } else {
+                    cx.stop_propagation();
+                }
+            }))
             .capture_action(cx.listener(|this, _: &MoveDown, window, cx| {
                 if !this.move_suggestion(false, window, cx)
                     && !this.move_queue_selection(false, window, cx)
@@ -7014,14 +7100,35 @@ impl Render for CodexView {
                                     .p_0(),
                             )
                             .when(self.next_reply_text(window, cx).is_some(), |field| {
+                                let (position, count) =
+                                    self.next_reply.position().unwrap_or((0, 0));
                                 field.child(
                                     div()
                                         .id("next-reply-hint")
                                         .debug_selector(|| "next-reply-hint".into())
-                                        .role(gpui::Role::Status)
+                                        .flex()
+                                        .items_center()
+                                        .flex_wrap()
+                                        .gap(rpx(SPACE_LG))
                                         .text_size(rpx(TEXT_MICRO))
                                         .text_color(c::FG_DIM())
-                                        .child("Tab to use suggested reply · Esc to dismiss"),
+                                        .child(
+                                            div()
+                                                .flex()
+                                                .items_center()
+                                                .gap(rpx(SPACE_SM))
+                                                .child(self.next_reply_navigation(true, cx))
+                                                .child(
+                                                    div()
+                                                        .id("next-reply-position")
+                                                        .role(gpui::Role::Status)
+                                                        .w(rpx(NEXT_REPLY_POSITION_W))
+                                                        .text_center()
+                                                        .child(format!("{position} / {count}")),
+                                                )
+                                                .child(self.next_reply_navigation(false, cx)),
+                                        )
+                                        .child("Tab to use · ← / → to switch · Esc to dismiss"),
                                 )
                             })
                             .when(self.composer_collapsed, |field| {
@@ -16265,7 +16372,9 @@ mod tests {
         let (_, cx) = cx.add_window_view(|window, cx| {
             let session = cx.new(|cx| CodexSession::from_connection(snapshot(), connection, cx));
             let chat = cx.new(|cx| CodexView::new(session, window, cx));
-            chat.update(cx, |view, _| view.next_reply_generate = |_, _| Ok(None));
+            chat.update(cx, |view, _| {
+                view.next_reply_generate = |_, _| Ok(Vec::new())
+            });
             view = Some(chat.clone());
             if shell_navigation {
                 let shell = cx.new(|_| ConversationNavigationFixture(chat));
@@ -21394,13 +21503,13 @@ mod tests {
         view.next_reply_seen = Some(request.key.clone());
         view.next_reply_request = Some(request.key);
         view.next_reply = grove_core::next_reply::Candidate::pending();
-        view.next_reply.resolve(Some(proposal.into()));
+        view.next_reply.resolve(vec![proposal.into()]);
     }
 
     #[gpui::test]
     fn next_reply_tab_accepts_whole_reply_for_codex_and_claude(cx: &mut gpui::TestAppContext) {
         let (view, cx, actions, _) = fixture(cx);
-        let proposal = "Add regression coverage for draft preservation.";
+        let proposal = "Check keyboard navigation.";
         for provider in [codex::Provider::Codex, codex::Provider::Claude] {
             cx.update(|window, cx| {
                 view.update(cx, |view, cx| {
@@ -21409,25 +21518,20 @@ mod tests {
             });
             draw(cx);
             assert!(cx.debug_bounds("next-reply-hint").is_some());
-            assert_eq!(
-                view.read_with(cx, |view, cx| view.input.read(cx).value().to_string()),
-                ""
-            );
-            cx.simulate_input("Add regression");
+            cx.simulate_input("Something else");
+            draw(cx);
+            assert!(cx.debug_bounds("next-reply-hint").is_none());
+            cx.simulate_keystrokes(if cfg!(target_os = "macos") {
+                "cmd-a backspace"
+            } else {
+                "ctrl-a backspace"
+            });
             draw(cx);
             assert!(cx.debug_bounds("next-reply-hint").is_some());
             cx.simulate_keystrokes("tab");
             draw(cx);
-            assert_eq!(
-                view.read_with(cx, |view, cx| view.input.read(cx).value().to_string()),
-                proposal
-            );
             view.read_with(cx, |view, cx| {
-                assert_eq!(
-                    view.input.read(cx).cursor(),
-                    proposal.len(),
-                    "Tab must leave the caret at the accepted reply end"
-                );
+                assert_eq!(view.input.read(cx).value().as_ref(), proposal);
                 assert_eq!(
                     view.input.read(cx).selected_range(),
                     proposal.len()..proposal.len()
@@ -21444,34 +21548,100 @@ mod tests {
             draw(cx);
             assert_eq!(
                 view.read_with(cx, |view, cx| view.input.read(cx).value().to_string()),
-                "Add regression"
+                ""
             );
-            assert!(cx.debug_bounds("next-reply-hint").is_none());
+            assert!(
+                cx.debug_bounds("next-reply-hint").is_some(),
+                "Undoing acceptance restores the candidate until Send"
+            );
         }
     }
 
     #[gpui::test]
-    fn next_reply_divergence_escape_and_stale_acceptance_preserve_draft(
+    fn next_reply_carousel_arrows_clicks_and_send_for_codex_and_claude(
         cx: &mut gpui::TestAppContext,
     ) {
         let (view, cx, actions, _) = fixture(cx);
         for provider in [codex::Provider::Codex, codex::Provider::Claude] {
             cx.update(|window, cx| {
                 view.update(cx, |view, cx| {
-                    seed_next_reply(view, provider, "", "Add regression coverage.", window, cx);
+                    seed_next_reply(view, provider, "", "Check keyboard navigation.", window, cx);
+                    view.next_reply.resolve(vec![
+                        "Check keyboard navigation.".into(),
+                        "Check narrow layouts.".into(),
+                        "Show the shared fields.".into(),
+                    ]);
                 });
             });
             draw(cx);
-            cx.simulate_input("Add integration");
+            cx.simulate_keystrokes("left");
             draw(cx);
-            assert!(cx.debug_bounds("next-reply-hint").is_none());
+            assert_eq!(
+                view.read_with(cx, |view, _| view.next_reply.position()),
+                Some((3, 3))
+            );
+            cx.simulate_keystrokes("right");
+            draw(cx);
+            assert_eq!(
+                view.read_with(cx, |view, _| view.next_reply.position()),
+                Some((1, 3))
+            );
+            let next = cx.debug_bounds("next-reply-next").unwrap();
+            cx.simulate_click(next.center(), gpui::Modifiers::default());
+            draw(cx);
+            assert_eq!(
+                view.read_with(cx, |view, _| view.next_reply.position()),
+                Some((2, 3))
+            );
+            cx.simulate_input("My own reply");
+            cx.simulate_keystrokes("left");
+            draw(cx);
+            view.read_with(cx, |view, cx| {
+                assert_eq!(view.next_reply.position(), Some((2, 3)));
+                assert_eq!(
+                    view.input.read(cx).cursor(),
+                    "My own reply".len() - 1,
+                    "Nonempty arrows move the caret"
+                );
+            });
+            cx.simulate_keystrokes(if cfg!(target_os = "macos") {
+                "cmd-a backspace"
+            } else {
+                "ctrl-a backspace"
+            });
+            draw(cx);
+            assert!(cx.debug_bounds("next-reply-hint").is_some());
+            cx.simulate_keystrokes("tab");
+            draw(cx);
             assert_eq!(
                 view.read_with(cx, |view, cx| view.input.read(cx).value().to_string()),
-                "Add integration"
+                "Check narrow layouts."
             );
+            cx.simulate_keystrokes("enter");
+            draw(cx);
+            assert!(actions
+                .try_iter()
+                .any(|action| matches!(action, Action::Submit { .. } | Action::Prompt(_))));
+            assert_eq!(
+                view.read_with(cx, |view, _| view.next_reply.position()),
+                None
+            );
+            cx.update(|_, cx| {
+                view.update(cx, |view, _| {
+                    view.submitted = None;
+                    view.submitted_ack = None;
+                })
+            });
+        }
+    }
+
+    #[gpui::test]
+    fn next_reply_escape_and_stale_acceptance_preserve_draft(cx: &mut gpui::TestAppContext) {
+        let (view, cx, actions, _) = fixture(cx);
+        for provider in [codex::Provider::Codex, codex::Provider::Claude] {
             cx.update(|window, cx| {
                 view.update(cx, |view, cx| {
-                    seed_next_reply(view, provider, "Add", "Add coverage.", window, cx);
+                    seed_next_reply(view, provider, "", "Check layouts.", window, cx);
                 });
             });
             draw(cx);
@@ -21480,19 +21650,51 @@ mod tests {
             assert!(cx.debug_bounds("next-reply-hint").is_none());
             cx.update(|window, cx| {
                 view.update(cx, |view, cx| {
-                    seed_next_reply(view, provider, "Add", "Add coverage.", window, cx);
+                    seed_next_reply(view, provider, "", "Check layouts.", window, cx);
                     view.session
                         .update(cx, |session, _| session.state.accepted_prompts += 1);
                     assert!(
                         !view.accept_next_reply(window, cx),
-                        "stale acceptance must fail before any render"
+                        "Stale acceptance fails before render"
                     );
-                    assert_eq!(view.input.read(cx).value().as_ref(), "Add");
+                    assert!(!view.move_next_reply(false, window, cx));
+                    assert!(view.input.read(cx).value().is_empty());
                 });
             });
             assert!(!actions
                 .try_iter()
                 .any(|action| matches!(action, Action::Submit { .. } | Action::Prompt(_))));
+        }
+    }
+
+    #[gpui::test]
+    fn next_reply_generates_while_draft_is_nonempty(cx: &mut gpui::TestAppContext) {
+        let (view, cx, _, _) = fixture(cx);
+        for provider in [codex::Provider::Codex, codex::Provider::Claude] {
+            cx.update(|window, cx| {
+                view.update(cx, |view, cx| {
+                    seed_next_reply(
+                        view,
+                        provider,
+                        "Already typing",
+                        "Check layouts.",
+                        window,
+                        cx,
+                    );
+                    view.next_reply_seen = None;
+                    view.next_reply_request = None;
+                    view.next_reply_generate = |_, _| Ok(vec!["Check layouts.".into()]);
+                });
+            });
+            draw(cx);
+            view.read_with(cx, |view, cx| {
+                assert!(
+                    view.next_reply_request.is_some(),
+                    "Typing before completion must not lose the suggestions"
+                );
+                assert_eq!(view.input.read(cx).value().as_ref(), "Already typing");
+            });
+            assert!(cx.debug_bounds("next-reply-hint").is_none());
         }
     }
 
@@ -21516,7 +21718,7 @@ mod tests {
                 view.session.update(cx, |session, _| {
                     session.state.accepted_submission = Some(42);
                 });
-                view.next_reply_generate = |_, _| Ok(Some("Add regression coverage.".into()));
+                view.next_reply_generate = |_, _| Ok(vec!["Add regression coverage.".into()]);
             });
         });
         draw(cx);
@@ -21550,6 +21752,10 @@ mod tests {
         draw(cx);
         cx.simulate_keystrokes("enter");
         draw(cx);
+        assert!(
+            cx.debug_bounds("next-reply-hint").is_some(),
+            "Empty Enter must not retire suggestions"
+        );
         assert!(!actions
             .try_iter()
             .any(|action| matches!(action, Action::Submit { .. } | Action::Prompt(_))));
@@ -21571,10 +21777,124 @@ mod tests {
         });
     }
 
+    #[gpui::test]
+    fn next_reply_single_candidate_chevrons_are_unavailable(cx: &mut gpui::TestAppContext) {
+        let (view, cx, _, _) = fixture(cx);
+        cx.update(|window, cx| {
+            view.update(cx, |view, cx| {
+                seed_next_reply(
+                    view,
+                    codex::Provider::Codex,
+                    "",
+                    "Check layouts.",
+                    window,
+                    cx,
+                );
+            })
+        });
+        draw(cx);
+        for id in ["next-reply-previous", "next-reply-next"] {
+            let center = cx.debug_bounds(id).unwrap().center();
+            cx.simulate_click(center, gpui::Modifiers::default());
+            draw(cx);
+            assert_eq!(
+                view.read_with(cx, |view, _| view.next_reply.position()),
+                Some((1, 1))
+            );
+            assert!(view.read_with(cx, |view, cx| view.input.read(cx).value().is_empty()));
+        }
+    }
+
+    #[gpui::test]
+    fn next_reply_modifiers_menus_and_ime_retain_priority(cx: &mut gpui::TestAppContext) {
+        use gpui::EntityInputHandler as _;
+        let (view, cx, _, _) = fixture_with_navigation(cx, true);
+        for provider in [codex::Provider::Codex, codex::Provider::Claude] {
+            cx.update(|window, cx| {
+                view.update(cx, |view, cx| {
+                    seed_next_reply(view, provider, "", "Check layouts.", window, cx);
+                    view.next_reply.resolve(vec![
+                        "Check layouts.".into(),
+                        "Check keyboard navigation.".into(),
+                    ]);
+                })
+            });
+            draw(cx);
+            cx.simulate_keystrokes("shift-left");
+            draw(cx);
+            assert_eq!(
+                view.read_with(cx, |view, _| view.next_reply.position()),
+                Some((1, 2))
+            );
+            cx.update(|window, cx| {
+                view.update(cx, |view, cx| view.next_reply_focus[0].focus(window, cx))
+            });
+            draw(cx);
+            assert!(
+                cx.debug_bounds("next-reply-hint").is_some(),
+                "Pager focus retains its controls"
+            );
+            cx.simulate_keystrokes("space");
+            draw(cx);
+            assert_eq!(
+                view.read_with(cx, |view, _| view.next_reply.position()),
+                Some((2, 2))
+            );
+            cx.update(|window, cx| {
+                view.update(cx, |view, cx| view.next_reply_focus[1].focus(window, cx))
+            });
+            draw(cx);
+            cx.simulate_keystrokes("enter");
+            draw(cx);
+            assert_eq!(
+                view.read_with(cx, |view, _| view.next_reply.position()),
+                Some((1, 2))
+            );
+            assert_eq!(
+                view.read_with(cx, |view, cx| view.input.read(cx).value().to_string()),
+                "",
+                "Pager activation must not insert text into the composer"
+            );
+            cx.simulate_keystrokes("shift-tab");
+            draw(cx);
+            cx.update(|window, cx| {
+                view.read_with(cx, |view, cx| {
+                    assert!(
+                        view.input.read(cx).value().is_empty(),
+                        "Shift+Tab must not accept a suggestion or insert a tab"
+                    );
+                    assert!(
+                        !view.input.focus_handle(cx).is_focused(window),
+                        "Shift+Tab retains normal focus traversal"
+                    );
+                })
+            });
+            cx.update(|window, cx| {
+                view.update(cx, |view, cx| view.input.focus_handle(cx).focus(window, cx))
+            });
+
+            cx.update(|window, cx| {
+                view.update(cx, |view, cx| {
+                    view.menu = Some(ComposerMenu::Settings);
+                    assert!(!view.move_next_reply(false, window, cx));
+                    assert!(!view.accept_next_reply(window, cx));
+                    view.menu = None;
+                    view.input.update(cx, |input, cx| {
+                        input.replace_and_mark_text_in_range(None, "かな", None, window, cx);
+                    });
+                    assert!(!view.move_next_reply(false, window, cx));
+                    assert!(!view.accept_next_reply(window, cx));
+                    assert_eq!(view.input.read(cx).value().as_ref(), "かな");
+                })
+            });
+        }
+    }
+
     #[cfg(target_os = "linux")]
     #[test]
     #[ignore = "opens isolated native X11 next reply fixture"]
     fn next_reply_native_capture() {
+        assert!(std::env::var_os("GROVE_CONFIG_DIR").is_some());
         use gpui::AppContext as _;
         struct ReplyQaContainer {
             view: Entity<CodexView>,
@@ -21606,74 +21926,188 @@ mod tests {
         assert!(matches!(
             selected_case.as_str(),
             "codex-empty-dark"
-                | "claude-prefix-light"
-                | "codex-narrow-prefix"
-                | "claude-multiline"
+                | "claude-selected-light"
+                | "codex-narrow-empty"
+                | "claude-restored-light"
                 | "claude-zoom"
         ));
-        gpui_platform::application().with_assets(crate::assets::Assets).run(move |cx| {
-            gpui_component::init(cx);
-            crate::fonts::register(cx).unwrap();
-            c::sync_component_theme(cx);
-            cx.set_reduce_motion(true);
-            let mut retained = None;
-            let mut retained_container = None;
-            let window = cx.open_window(gpui::WindowOptions {
-                window_bounds: Some(gpui::WindowBounds::Windowed(gpui::Bounds::new(gpui::point(gpui::px(20.), gpui::px(20.)), gpui::size(gpui::px(900.), gpui::px(700.))))),
-                ..Default::default()
-            }, |window, cx| {
-                window.set_window_title("Grove next reply QA");
-                let (handle, _actions) = Handle::channel();
-                let (_updates, receive) = mpsc::channel();
-                let session = cx.new(|cx| CodexSession::from_connection(snapshot(), Connection { handle, updates: receive.into() }, cx));
-                let chat = cx.new(|cx| CodexView::new(session, window, cx));
-                retained = Some(chat.clone());
-                let container = cx.new(|_| ReplyQaContainer { view: chat, width: gpui::px(600.) });
-                retained_container = Some(container.clone());
-                cx.new(|cx| gpui_component::Root::new(container, window, cx).bordered(false))
-            }).unwrap();
-            let view = retained.unwrap();
-            let container = retained_container.unwrap();
-            cx.activate(true);
-            cx.spawn(async move |cx| {
-                for (name, provider, draft, proposal, width, light, rem) in [
-                    ("codex-empty-dark", codex::Provider::Codex, "", "Add regression coverage for draft preservation.", 600., false, 16.),
-                    ("claude-prefix-light", codex::Provider::Claude, "Add regression", "Add regression coverage for draft preservation.", 600., true, 16.),
-                    ("codex-narrow-prefix", codex::Provider::Codex, "Add regression coverage for draft", "Add regression coverage for drafts and verify the original text remains unchanged when switching sessions.", 300., false, 16.),
-                    ("claude-multiline", codex::Provider::Claude, "Add regression coverage.\nThen", "Add regression coverage.\nThen verify draft preservation with both providers before opening a pull request.", 360., true, 16.),
-                    ("claude-zoom", codex::Provider::Claude, "Add regression", "Add regression coverage for draft preservation.", 360., true, 20.),
-                ] {
-                    if name != selected_case { continue; }
-                    cx.update_window(window.into(), |_, window, cx| {
-                        container.update(cx, |container, cx| { container.width = gpui::px(width); cx.notify(); });
-                        window.set_rem_size(gpui::px(rem));
-                        grove_core::theme::set_by_name(if light { c::DEFAULT_LIGHT_THEME } else { c::DEFAULT_DARK_THEME });
-                        c::sync_component_theme(cx);
-                        gpui_component::Theme::global_mut(cx).font_size = gpui::px(rem);
-                        view.update(cx, |view, cx| {
-                            seed_next_reply(view, provider, draft, proposal, window, cx);
-                            view.session.update(cx, |session, _| {
-                                session.state.model = Some(match provider { codex::Provider::Codex => "gpt-6.1-sol", codex::Provider::Claude => "sonnet" }.into());
-                                session.state.effort = Some("low".into());
-                                session.state.access = Some("read-only".into());
+        gpui_platform::application()
+            .with_assets(crate::assets::Assets)
+            .run(move |cx| {
+                gpui_component::init(cx);
+                crate::fonts::register(cx).unwrap();
+                c::sync_component_theme(cx);
+                cx.set_reduce_motion(true);
+                let mut retained = None;
+                let mut retained_container = None;
+                let window = cx
+                    .open_window(
+                        gpui::WindowOptions {
+                            window_bounds: Some(gpui::WindowBounds::Windowed(gpui::Bounds::new(
+                                gpui::point(gpui::px(20.), gpui::px(20.)),
+                                gpui::size(gpui::px(900.), gpui::px(700.)),
+                            ))),
+                            ..Default::default()
+                        },
+                        |window, cx| {
+                            window.set_window_title("Grove next reply QA");
+                            let (handle, _actions) = Handle::channel();
+                            let (_updates, receive) = mpsc::channel();
+                            let session = cx.new(|cx| {
+                                CodexSession::from_connection(
+                                    snapshot(),
+                                    Connection {
+                                        handle,
+                                        updates: receive.into(),
+                                    },
+                                    cx,
+                                )
                             });
-                        });
+                            let chat = cx.new(|cx| CodexView::new(session, window, cx));
+                            retained = Some(chat.clone());
+                            let container = cx.new(|_| ReplyQaContainer {
+                                view: chat,
+                                width: gpui::px(600.),
+                            });
+                            retained_container = Some(container.clone());
+                            cx.new(|cx| {
+                                gpui_component::Root::new(container, window, cx).bordered(false)
+                            })
+                        },
+                    )
+                    .unwrap();
+                let view = retained.unwrap();
+                let container = retained_container.unwrap();
+                cx.activate(true);
+                cx.spawn(async move |cx| {
+                    for (name, provider, draft, proposal, width, light, rem) in [
+                        (
+                            "codex-empty-dark",
+                            codex::Provider::Codex,
+                            "",
+                            "Check keyboard navigation.",
+                            600.,
+                            false,
+                            16.,
+                        ),
+                        (
+                            "claude-selected-light",
+                            codex::Provider::Claude,
+                            "",
+                            "Check keyboard navigation.",
+                            600.,
+                            true,
+                            16.,
+                        ),
+                        (
+                            "codex-narrow-empty",
+                            codex::Provider::Codex,
+                            "",
+                            "Check keyboard navigation.",
+                            300.,
+                            false,
+                            16.,
+                        ),
+                        (
+                            "claude-restored-light",
+                            codex::Provider::Claude,
+                            "",
+                            "Check keyboard navigation.",
+                            360.,
+                            true,
+                            16.,
+                        ),
+                        (
+                            "claude-zoom",
+                            codex::Provider::Claude,
+                            "",
+                            "Check keyboard navigation.",
+                            360.,
+                            true,
+                            20.,
+                        ),
+                    ] {
+                        if name != selected_case {
+                            continue;
+                        }
+                        cx.update_window(window.into(), |_, window, cx| {
+                            container.update(cx, |container, cx| {
+                                container.width = gpui::px(width);
+                                cx.notify();
+                            });
+                            window.set_rem_size(gpui::px(rem));
+                            grove_core::theme::set_by_name(if light {
+                                c::DEFAULT_LIGHT_THEME
+                            } else {
+                                c::DEFAULT_DARK_THEME
+                            });
+                            c::sync_component_theme(cx);
+                            gpui_component::Theme::global_mut(cx).font_size = gpui::px(rem);
+                            view.update(cx, |view, cx| {
+                                seed_next_reply(view, provider, draft, proposal, window, cx);
+                                view.next_reply.resolve(vec![
+                                    proposal.into(),
+                                    "Check narrow layouts.".into(),
+                                    "Show the shared fields.".into(),
+                                ]);
+                                if name == "claude-selected-light" {
+                                    view.next_reply.cycle(false);
+                                }
+                                if name == "claude-restored-light" {
+                                    view.input.update(cx, |input, cx| {
+                                        input.set_value("Something else", window, cx);
+                                        input.set_value("", window, cx);
+                                    });
+                                }
+                                view.session.update(cx, |session, _| {
+                                    session.state.model = Some(
+                                        match provider {
+                                            codex::Provider::Codex => "gpt-6.1-sol",
+                                            codex::Provider::Claude => "sonnet",
+                                        }
+                                        .into(),
+                                    );
+                                    session.state.effort = Some("low".into());
+                                    session.state.access = Some("read-only".into());
+                                });
+                            });
+                            window.refresh();
+                        })
+                        .unwrap();
+                        cx.background_executor()
+                            .timer(std::time::Duration::from_millis(800))
+                            .await;
+                        cx.update_window(window.into(), |_, window, _| window.refresh())
+                            .unwrap();
+                        cx.background_executor()
+                            .timer(std::time::Duration::from_millis(200))
+                            .await;
+                        assert!(std::process::Command::new("import")
+                            .args(["-window", "Grove next reply QA"])
+                            .arg(output.join(format!("{name}.png")))
+                            .status()
+                            .unwrap()
+                            .success());
+                    }
+                    cx.update_window(window.into(), |_, window, _| {
+                        window.blur();
                         window.refresh();
-                    }).unwrap();
-                    cx.background_executor().timer(std::time::Duration::from_millis(800)).await;
-                    cx.update_window(window.into(), |_, window, _| window.refresh()).unwrap();
-                    cx.background_executor().timer(std::time::Duration::from_millis(200)).await;
-                    assert!(std::process::Command::new("import").args(["-window", "Grove next reply QA"]).arg(output.join(format!("{name}.png"))).status().unwrap().success());
-                }
-                cx.update_window(window.into(), |_, window, _| { window.blur(); window.refresh(); }).unwrap();
-                cx.background_executor().timer(std::time::Duration::from_millis(200)).await;
-                cx.update_window(window.into(), |_, window, _| window.remove_window()).unwrap();
-                drop(view);
-                drop(container);
-                cx.background_executor().timer(std::time::Duration::from_millis(100)).await;
-                cx.update(|cx| cx.quit());
-            }).detach();
-        });
+                    })
+                    .unwrap();
+                    cx.background_executor()
+                        .timer(std::time::Duration::from_millis(200))
+                        .await;
+                    cx.update_window(window.into(), |_, window, _| window.remove_window())
+                        .unwrap();
+                    drop(view);
+                    drop(container);
+                    cx.background_executor()
+                        .timer(std::time::Duration::from_millis(100))
+                        .await;
+                    cx.update(|cx| cx.quit());
+                })
+                .detach();
+            });
     }
 
     #[cfg(target_os = "linux")]
