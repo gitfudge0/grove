@@ -296,7 +296,7 @@ fn icon_guards_detect_conditional_glyphs_and_missing_assets() {
 #[test]
 fn r8_dense_controls_share_geometry() {
     let components = source("src/views/components.rs");
-    for name in ["inline_disclosure", "settings_control"] {
+    for name in ["inline_disclosure_base", "settings_control"] {
         let body = components
             .split(&format!("fn {name}("))
             .nth(1)
@@ -307,6 +307,29 @@ fn r8_dense_controls_share_geometry() {
         assert!(
             body.contains("CONTROL_H"),
             "{name} must use shared control height"
+        );
+    }
+    for (wrapper, delegated) in [
+        ("inline_disclosure", "inline_disclosure_frame(id, label)"),
+        (
+            "focusable_inline_disclosure",
+            "inline_disclosure_base(id, label)",
+        ),
+        (
+            "inline_disclosure_frame",
+            "inline_disclosure_base(id, label)",
+        ),
+    ] {
+        let body = components
+            .split(&format!("fn {wrapper}("))
+            .nth(1)
+            .unwrap()
+            .split("\npub ")
+            .next()
+            .unwrap();
+        assert!(
+            body.contains(delegated),
+            "{wrapper} must retain shared disclosure geometry"
         );
     }
     let dense = components
@@ -355,7 +378,7 @@ fn r8_dense_controls_share_geometry() {
 fn button_cursor_policy_covers_shared_recipes_and_vendor_states() {
     let components = source("src/views/components.rs");
     for name in [
-        "inline_disclosure",
+        "inline_disclosure_base",
         "question_choice",
         "question_disclosure",
     ] {
@@ -371,6 +394,26 @@ fn button_cursor_policy_covers_shared_recipes_and_vendor_states() {
             "{name}: full target pointer"
         );
     }
+    // Both disclosure interaction policies share the cursor-owning visual base.
+    let focusable = components
+        .split("pub fn focusable_inline_disclosure(")
+        .nth(1)
+        .unwrap()
+        .split("\nfn ")
+        .next()
+        .unwrap();
+    assert!(focusable.contains("inline_disclosure_base(id, label)"));
+    assert!(focusable.contains(".tab_index(0)"));
+    assert!(!focusable.contains("prevent_default"));
+    let preserving = components
+        .split("fn inline_disclosure_frame(")
+        .nth(1)
+        .unwrap()
+        .split("\nfn ")
+        .next()
+        .unwrap();
+    assert!(preserving.contains("inline_disclosure_base(id, label)"));
+    assert!(preserving.contains("prevent_default"));
     let settings = components
         .split("pub fn settings_control(")
         .nth(1)

@@ -85,6 +85,10 @@ pub fn codex_kind(status: grove_core::codex::Status) -> StatusKind {
         Status::Idle => StatusKind::Idle,
     }
 }
+pub const CHECK_CONFIRMATION_HOLD: std::time::Duration = std::time::Duration::from_secs(3);
+pub const CHECK_CONFIRMATION_LIFETIME: std::time::Duration = std::time::Duration::from_millis(
+    (CHECK_DRAW_DURATION.as_millis() + CHECK_CONFIRMATION_HOLD.as_millis()) as u64,
+);
 pub const CHECK_DRAW_DURATION: std::time::Duration = std::time::Duration::from_millis(440);
 
 /// A one-shot catalog check reveal, anchored to the real receipt clock.

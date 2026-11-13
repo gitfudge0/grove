@@ -305,7 +305,28 @@ pub fn inline_disclosure(
     inline_disclosure_frame(id, label).hover(|style| style.text_color(c::FG()))
 }
 
+/// Inline disclosure that transfers pointer focus and supports normal keyboard activation.
+/// Use when the disclosure owns subsequent keyboard input, rather than preserving editor focus.
+pub fn focusable_inline_disclosure(
+    id: impl Into<gpui::ElementId>,
+    label: impl Into<gpui::SharedString>,
+) -> Stateful<Div> {
+    inline_disclosure_base(id, label)
+        .tab_index(0)
+        .hover(|style| style.text_color(c::FG()))
+}
+
 fn inline_disclosure_frame(
+    id: impl Into<gpui::ElementId>,
+    label: impl Into<gpui::SharedString>,
+) -> Stateful<Div> {
+    inline_disclosure_base(id, label).on_mouse_down(MouseButton::Left, |_, window, cx| {
+        window.prevent_default();
+        cx.stop_propagation();
+    })
+}
+
+fn inline_disclosure_base(
     id: impl Into<gpui::ElementId>,
     label: impl Into<gpui::SharedString>,
 ) -> Stateful<Div> {
@@ -322,10 +343,6 @@ fn inline_disclosure_frame(
         .rounded(rpx(RADIUS_CONTROL))
         .group("neutral-control")
         .text_color(c::FG_DIM())
-        .on_mouse_down(MouseButton::Left, |_, window, cx| {
-            window.prevent_default();
-            cx.stop_propagation();
-        })
 }
 
 /// A compound form well with an embedded label and error attached to its field.
@@ -1368,15 +1385,6 @@ pub fn boolean_choices<T: 'static>(
             } else {
                 c::BG()
             })
-            .child(crate::icons::icon(
-                if selected_value {
-                    "toggle-on"
-                } else {
-                    "toggle-off"
-                },
-                ICON_SM,
-                c::FG_DIM(),
-            ))
             .child(text)
             .when(enabled, |control| {
                 control

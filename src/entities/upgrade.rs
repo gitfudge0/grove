@@ -24,6 +24,7 @@ pub const CHANGELOG_LIMIT: usize = 10;
 pub struct Upgrade {
     state: UpgradeState,
     changelog: ChangelogState,
+    last_changelog: Vec<upgrade::ReleaseNote>,
     method: InstallMethod,
     /// Held, never read: dropping a `Task` cancels it, so this field *is* the timers' lifetime.
     _timers: Vec<Task<()>>,
@@ -47,6 +48,7 @@ impl Upgrade {
         Self {
             state: UpgradeState::Idle,
             changelog: ChangelogState::Idle,
+            last_changelog: Vec::new(),
             method: upgrade::detect(),
             _timers: vec![launch, periodic],
             check_task: None,
@@ -67,12 +69,45 @@ impl Upgrade {
         cx.notify();
     }
 
+    #[cfg(test)]
+    #[allow(
+        clippy::used_underscore_binding,
+        reason = "The offline QA fixture must cancel the otherwise lifetime-only production timers."
+    )]
+    pub(crate) fn set_fixture(
+        &mut self,
+        state: UpgradeState,
+        changelog: ChangelogState,
+        cx: &mut Context<Self>,
+    ) {
+        self._timers.clear();
+        self.check_task = None;
+        self.changelog_task = None;
+        self.state = state;
+        if let ChangelogState::Loaded(notes) = &changelog {
+            self.last_changelog.clone_from(notes);
+        }
+        self.changelog = changelog;
+        cx.notify();
+    }
+
     pub fn state(&self) -> &UpgradeState {
         &self.state
     }
 
     pub fn changelog(&self) -> &ChangelogState {
         &self.changelog
+    }
+
+    pub fn changelog_notes(&self) -> &[upgrade::ReleaseNote] {
+        &self.last_changelog
+    }
+
+    pub fn reconsider(&mut self, cx: &mut Context<Self>) {
+        if let UpgradeState::Skipped(release) = &self.state {
+            self.state = UpgradeState::Available(release.clone());
+            cx.notify();
+        }
     }
 
     pub fn method(&self) -> InstallMethod {
@@ -87,7 +122,8 @@ impl Upgrade {
         }
     }
 
-    /// `manual` only selects the error policy; all three triggers route through `begin_check`, so a duplicate is impossible.
+    /// Manual checks surface errors and rediscover skipped releases. Every trigger uses
+    /// `begin_check` to reject duplicate work.
     pub fn check(&mut self, manual: bool, cx: &mut Context<Self>) {
         if !begin_check(&self.state) {
             return;
@@ -113,16 +149,33 @@ impl Upgrade {
     }
 
     pub fn fetch_changelog(&mut self, cx: &mut Context<Self>) {
+        self.fetch_changelog_with(
+            async { upgrade::releases(CHANGELOG_LIMIT).map_err(|e| e.to_string()) },
+            cx,
+        );
+    }
+
+    fn fetch_changelog_with(
+        &mut self,
+        operation: impl std::future::Future<Output = Result<Vec<upgrade::ReleaseNote>, String>>
+            + Send
+            + 'static,
+        cx: &mut Context<Self>,
+    ) {
+        if matches!(self.changelog, ChangelogState::Loading) {
+            return;
+        }
         self.changelog = ChangelogState::Loading;
         cx.notify();
-        let fetch = cx.background_spawn(async {
-            upgrade::releases(CHANGELOG_LIMIT).map_err(|e| e.to_string())
-        });
+        let fetch = cx.background_spawn(operation);
         self.changelog_task = Some(cx.spawn(async move |this, cx| {
             let result = fetch.await;
             let _ = this.update(cx, |this, cx| {
                 this.changelog = match result {
-                    Ok(notes) => ChangelogState::Loaded(notes),
+                    Ok(notes) => {
+                        this.last_changelog.clone_from(&notes);
+                        ChangelogState::Loaded(notes)
+                    }
                     Err(e) => ChangelogState::Error(e),
                 };
                 cx.notify();
@@ -263,12 +316,79 @@ mod tests {
         cx.new(|_| Upgrade {
             state: UpgradeState::Available(release("v98.0.0")),
             changelog: ChangelogState::Idle,
+            last_changelog: Vec::new(),
             method: InstallMethod::Source,
             _timers: vec![],
             check_task: None,
             changelog_task: None,
             apply_task: None,
         })
+    }
+
+    #[gpui::test]
+    fn changelog_preserves_notes_through_failed_refresh_and_retries(cx: &mut gpui::TestAppContext) {
+        let upgrade = offered_upgrade(cx);
+        upgrade.update(cx, |upgrade, cx| {
+            upgrade.fetch_changelog_with(
+                async {
+                    Ok(vec![upgrade::ReleaseNote {
+                        tag: "v2.0.0".into(),
+                        name: "Example".into(),
+                        date: String::new(),
+                        body: "## Notes\n\n- Item".into(),
+                    }])
+                },
+                cx,
+            );
+        });
+        cx.run_until_parked();
+        let (send, receive) = futures::channel::oneshot::channel();
+        upgrade.update(cx, |upgrade, cx| {
+            upgrade.fetch_changelog_with(async { receive.await.unwrap() }, cx);
+        });
+        upgrade.read_with(cx, |upgrade, _| {
+            assert!(matches!(upgrade.changelog(), ChangelogState::Loading));
+            assert_eq!(upgrade.changelog_notes()[0].tag, "v2.0.0");
+        });
+        // A duplicate request must not replace the active fetch.
+        upgrade.update(cx, |upgrade, cx| {
+            upgrade.fetch_changelog_with(async { Ok(vec![]) }, cx);
+        });
+        send.send(Err("Offline".into())).unwrap();
+        cx.run_until_parked();
+        upgrade.read_with(cx, |upgrade, _| {
+            assert!(matches!(upgrade.changelog(), ChangelogState::Error(_)));
+            assert_eq!(upgrade.changelog_notes()[0].tag, "v2.0.0");
+        });
+        upgrade.update(cx, |upgrade, cx| {
+            upgrade.fetch_changelog_with(async { Ok(vec![]) }, cx);
+        });
+        cx.run_until_parked();
+        upgrade.read_with(cx, |upgrade, _| {
+            assert!(
+                matches!(upgrade.changelog(), ChangelogState::Loaded(notes) if notes.is_empty())
+            );
+            assert!(upgrade.changelog_notes().is_empty());
+        });
+    }
+
+    #[gpui::test]
+    fn reconsidering_skipped_release_keeps_automatic_dismissal(cx: &mut gpui::TestAppContext) {
+        let upgrade = offered_upgrade(cx);
+        upgrade.update(cx, |upgrade, cx| {
+            upgrade.state = UpgradeState::Skipped(release("v99.0.0"));
+            upgrade.reconsider(cx);
+        });
+        upgrade.read_with(cx, |upgrade, cx| {
+            assert!(matches!(upgrade.state(), UpgradeState::Available(_)));
+            assert_eq!(
+                cx.global::<SettingsState>()
+                    .store
+                    .skipped_version
+                    .as_deref(),
+                Some("v99.0.0")
+            );
+        });
     }
 
     #[gpui::test]

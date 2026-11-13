@@ -1023,7 +1023,7 @@ impl Render for ProjectPanel {
             Page::Move(_) => {
                 "The project folder and worktrees stay in place. Open sessions keep running.".into()
             }
-            Page::Archived => "Restore a project to the sidebar or remove its registration.".into(),
+            Page::Archived => format!("Archived projects in workspace {}. Restore a project to its sidebar or remove its registration.", cx.global::<SettingsState>().store.workspaces.name(cx.global::<SettingsState>().store.workspaces.active)),
         };
         if let Some(decision) = self.decision.clone() {
             match decision {

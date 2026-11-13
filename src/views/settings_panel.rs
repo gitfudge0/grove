@@ -22,6 +22,7 @@ use grove_core::{agent::Agent, storage::Store};
 use grove_core::{app_theme, theme::ThemeKind};
 use std::collections::HashSet;
 
+const ENVIRONMENT_ACTION_W: f32 = 176.0;
 const FOCUS_SCAN_LIMIT: usize = 128;
 const THEME_ROW_H: f32 = 42.0;
 const THEME_KIND_W: f32 = 36.0;
@@ -146,6 +147,7 @@ pub struct SettingsPanel {
     _upgrade_observer: Subscription,
     _environment_observer: Subscription,
     _provider_observer: Subscription,
+    changelog_markdown: Vec<(String, String, Entity<gpui_component::text::TextViewState>)>,
     provider_details: HashSet<&'static str>,
 }
 
@@ -187,6 +189,7 @@ impl SettingsPanel {
             _upgrade_observer: cx.observe(&upgrade, |_, _, cx| cx.notify()),
             _environment_observer: cx.observe(&shell_environment, |_, _, cx| cx.notify()),
             _provider_observer: cx.observe(&provider_updates, |_, _, cx| cx.notify()),
+            changelog_markdown: Vec::new(),
             provider_details: HashSet::new(),
         }
     }
@@ -338,15 +341,6 @@ impl SettingsPanel {
                     self.theme_filter == kind,
                     true,
                 )
-                .child(crate::icons::icon(
-                    match kind {
-                        None => "contrast",
-                        Some(ThemeKind::Light) => "sun",
-                        Some(ThemeKind::Dark) => "moon",
-                    },
-                    ICON_SM,
-                    c::FG_DIM(),
-                ))
                 .child(label)
                 .on_click(cx.listener(move |this, _, _, cx| {
                     this.theme_filter = kind;
@@ -472,12 +466,20 @@ impl SettingsPanel {
             );
         }
         body = body.child(
-            self.button(
+            Self::disclosure(
                 "theme-notices",
                 "Theme palette acknowledgements",
-                false,
-                true,
+                self.show_theme_notices,
             )
+            .child(crate::icons::icon(
+                if self.show_theme_notices {
+                    "chev-down"
+                } else {
+                    "chev-right"
+                },
+                ICON_SM,
+                c::FG_DIM(),
+            ))
             .child("Theme palette acknowledgements")
             .on_click(cx.listener(|this, _, _, cx| {
                 this.show_theme_notices = !this.show_theme_notices;
@@ -516,15 +518,6 @@ impl SettingsPanel {
         if self.save(cx, |store| store.tmux_enabled = Some(tmux)) && tmux {
             self.runtime.update(cx, Runtime::discover_tmux_sessions);
         }
-    }
-
-    fn set_default_agent(&mut self, agent: Agent, cx: &mut Context<Self>) {
-        if !agent.available() {
-            self.error = Some(format!("{} is not installed.", agent.label()));
-            cx.notify();
-            return;
-        }
-        self.save(cx, |store| store.default_agent = Some(agent));
     }
 
     fn set_yolo(&mut self, enabled: bool, cx: &mut Context<Self>) {
@@ -954,11 +947,10 @@ impl SettingsPanel {
                             cx,
                         ))
                         .child(
-                            self.button(
+                            Self::disclosure(
                                 format!("{id}-details"),
                                 format!("Error details for {}", agent_display_label(agent)),
-                                false,
-                                true,
+                                expanded,
                             )
                             .debug_selector({
                                 let id = id.clone();
@@ -1005,6 +997,23 @@ impl SettingsPanel {
             body = body.child(card);
         }
         body.text_size(rpx(TEXT_SMALL))
+    }
+
+    fn disclosure(
+        id: impl Into<gpui::ElementId>,
+        label: impl Into<gpui::SharedString>,
+        expanded: bool,
+    ) -> gpui::Stateful<gpui::Div> {
+        super::components::focusable_inline_disclosure(id, label)
+            .tab_index(0)
+            .aria_expanded(expanded)
+            .w_auto()
+            .self_start()
+            .h(rpx(CONTROL_H))
+            .px(rpx(SPACE_LG))
+            .gap(rpx(SPACE_SM))
+            .text_size(rpx(TEXT_SMALL))
+            .focus_visible(|style| style.bg(c::BG_HOVER()))
     }
 
     fn button(
@@ -1135,7 +1144,6 @@ impl SettingsPanel {
             )
             .child(
                 self.choice("settings-zoom-reset", "Reset zoom", false, true)
-                    .child(crate::icons::icon("reset", ICON_SM, c::FG_DIM()))
                     .child(format!("{:.0}%", zoom * 100.0))
                     .on_click(cx.listener(|this, _, _, cx| this.set_zoom(0.0, cx))),
             )
@@ -1154,80 +1162,11 @@ impl SettingsPanel {
             cx,
             |this, enabled, _, cx| this.set_reduce_motion(enabled, cx),
         );
-        let landing_page = store.default_landing_page;
-        let mut landing_choices = Self::choices();
-        for page in grove_core::storage::LandingPage::ALL {
-            let label = page.label();
-            let id = match page {
-                grove_core::storage::LandingPage::NewSession => {
-                    "settings-landing-new-session".to_owned()
-                }
-                grove_core::storage::LandingPage::Home => "settings-landing-home".to_owned(),
-                _ => format!("settings-landing-{}", label.to_lowercase()),
-            };
-            landing_choices = landing_choices.child(
-                self.choice(id.clone(), label, landing_page == page, true)
-                    .debug_selector(move || id.clone())
-                    .child(crate::icons::icon(
-                        match page {
-                            grove_core::storage::LandingPage::NewSession => "plus",
-                            grove_core::storage::LandingPage::Home => "home",
-                            grove_core::storage::LandingPage::Projects => "folder",
-                            grove_core::storage::LandingPage::Sessions => "list",
-                            grove_core::storage::LandingPage::History => "history",
-                        },
-                        ICON_SM,
-                        c::FG_DIM(),
-                    ))
-                    .child(label)
-                    .on_click(cx.listener(move |_, _, _, cx| {
-                        SettingsState::update(cx, |store| {
-                            store.default_landing_page = page;
-                        });
-                        cx.notify();
-                    }))
-                    .on_key_down(
-                        cx.listener(move |_, event: &gpui::KeyDownEvent, window, cx| {
-                            if matches!(event.keystroke.key.as_str(), "enter" | "space")
-                                && !event.is_held
-                            {
-                                SettingsState::update(cx, |store| {
-                                    store.default_landing_page = page;
-                                });
-                                window.prevent_default();
-                                cx.stop_propagation();
-                                cx.notify();
-                            }
-                        }),
-                    ),
-            );
-        }
         body = body.when(self.category == Category::General, |body| {
             body.child(
                 div()
                     .flex()
                     .flex_col()
-                    .child(Self::setting_row(
-                        "Archived projects",
-                        "Restore or remove archived project registrations",
-                        self.button(
-                            "settings-archived-projects",
-                            "Archived projects",
-                            false,
-                            true,
-                        )
-                        .debug_selector(|| "settings-archived-projects".into())
-                        .child(crate::icons::icon("archive", ICON_SM, c::FG_DIM()))
-                        .child("Manage")
-                        .on_click(cx.listener(|this, _, window, cx| {
-                            this.open_nested(Page::Archived, window, cx);
-                        })),
-                    ))
-                    .child(Self::setting_row(
-                        "Default landing page",
-                        "Used whenever Grove opens its landing page",
-                        landing_choices,
-                    ))
                     .child(Self::section("Appearance"))
                     .child(Self::setting_row(
                         "Theme",
@@ -1255,7 +1194,6 @@ impl SettingsPanel {
                     !tmux_on,
                     true,
                 )
-                .child(crate::icons::icon("terminal", ICON_SM, c::FG_DIM()))
                 .child("Built-in")
                 .on_click(cx.listener(|this, _, _, cx| this.set_backend(false, cx))),
             )
@@ -1266,7 +1204,6 @@ impl SettingsPanel {
                     tmux_on,
                     tmux_available,
                 )
-                .child(crate::icons::icon("terminal", ICON_SM, c::FG_DIM()))
                 .child("Tmux")
                 .when(tmux_available, |el| {
                     el.on_click(cx.listener(|this, _, _, cx| this.set_backend(true, cx)))
@@ -1290,11 +1227,6 @@ impl SettingsPanel {
                     chrome == enabled,
                     true,
                 )
-                .child(crate::icons::icon(
-                    if enabled { "toggle-on" } else { "toggle-off" },
-                    ICON_SM,
-                    c::FG_DIM(),
-                ))
                 .child(label)
                 .on_click(cx.listener(move |this, _, _, cx| this.set_chrome(enabled, cx))),
             );
@@ -1305,11 +1237,6 @@ impl SettingsPanel {
                     terminal_agents == enabled,
                     !cfg!(windows),
                 )
-                .child(crate::icons::icon(
-                    if enabled { "toggle-on" } else { "toggle-off" },
-                    ICON_SM,
-                    c::FG_DIM(),
-                ))
                 .child(label)
                 .when(!cfg!(windows), |el| {
                     el.on_click(
@@ -1322,50 +1249,68 @@ impl SettingsPanel {
         let environment_state = environment.read(cx).state();
         let refreshing = environment_state == RefreshState::Refreshing;
         let refresh_enabled = !cfg!(windows) && !refreshing;
-        let refresh_label = if refreshing {
-            "Refreshing…"
-        } else {
-            "Refresh now"
+        let confirmation = environment.read(cx).confirmation();
+        let refresh_label = match environment_state {
+            RefreshState::Refreshing => "Refreshing…",
+            RefreshState::Refreshed => "Refreshed",
+            RefreshState::Error => "Retry refresh",
+            RefreshState::Idle => "Refresh now",
         };
         let environment_control = div()
             .flex()
             .flex_col()
+            .w(rpx(ENVIRONMENT_ACTION_W))
+            .max_w_full()
+            .min_w_0()
             .items_end()
             .gap(rpx(SPACE_SM))
             .child(
                 self.button(
                     "settings-shell-environment",
-                    refresh_label,
+                    "Refresh shell environment",
                     false,
                     refresh_enabled,
                 )
-                .child(crate::icons::icon("refresh", ICON_SM, c::FG_DIM()))
+                .debug_selector(|| "settings-shell-environment".into())
+                .w_full()
+                .justify_start()
+                .child(if refreshing {
+                    status::mark(
+                        "settings-environment-working",
+                        StatusKind::Working,
+                        ICON_SM,
+                        cx,
+                    )
+                } else if let Some((generation, started)) = confirmation {
+                    status::drawn_check(
+                        "settings-environment-confirmed",
+                        generation,
+                        started,
+                        ICON_SM,
+                        cx,
+                    )
+                } else {
+                    crate::icons::icon("refresh", ICON_SM, c::FG_DIM()).into_any_element()
+                })
                 .child(refresh_label)
                 .when(refresh_enabled, |el| {
                     el.on_click(cx.listener(|this, _, _, cx| {
-                        let environment = this.runtime.read(cx).shell_environment.clone();
-                        environment.update(cx, ShellEnvironment::refresh);
+                        this.runtime
+                            .read(cx)
+                            .shell_environment
+                            .clone()
+                            .update(cx, ShellEnvironment::refresh);
                     }))
                 }),
             )
-            .when(
-                matches!(
-                    environment_state,
-                    RefreshState::Refreshed | RefreshState::Error
-                ),
-                |el| {
-                    el.child(
-                        div()
-                            .text_size(rpx(TEXT_SMALL))
-                            .text_color(c::FG_DIM())
-                            .child(if environment_state == RefreshState::Refreshed {
-                                "Environment refreshed"
-                            } else {
-                                "Refresh failed. Previous environment retained."
-                            }),
-                    )
-                },
-            );
+            .when(environment_state == RefreshState::Error, |el| {
+                el.child(
+                    div()
+                        .text_size(rpx(TEXT_SMALL))
+                        .text_color(c::FG_DIM())
+                        .child("Refresh failed. Previous environment retained."),
+                )
+            });
         let terminal_body = div().flex().flex_col()
             .child(Self::section("New terminal sessions"))
             .child(Self::setting_row("Terminal backend", if tmux_available { "Existing sessions keep their current backend." } else { "Tmux is not installed. Built-in remains available." }, backend))
@@ -1373,35 +1318,9 @@ impl SettingsPanel {
             .child(Self::section("Environment"))
             .child(Self::setting_row("Shell environment", if cfg!(windows) { "Shell environment refresh is unavailable on Windows." } else { "Refreshes every 10 minutes. Changes apply to new sessions." }, environment_control));
 
-        let mut agents = Self::choices();
-        for agent in Agent::ALL {
-            let available = agent.available();
-            let selected = store.default_agent == Some(agent);
-            let label = if available {
-                agent_display_label(agent).to_string()
-            } else {
-                format!("{} (unavailable)", agent_display_label(agent))
-            };
-            agents = agents.child(
-                self.choice(
-                    format!("settings-agent-{}", agent.label()),
-                    label.clone(),
-                    selected,
-                    available,
-                )
-                .child(crate::icons::icon(agent.icon_name(), ICON_SM, c::FG_DIM()))
-                .child(label)
-                .when(available, |el| {
-                    el.on_click(
-                        cx.listener(move |this, _, _, cx| this.set_default_agent(agent, cx)),
-                    )
-                }),
-            );
-        }
         body = body.when(self.category == Category::Agents, |body| body.child(
             div().flex().flex_col()
                 .child(Self::section("New sessions"))
-                .child(Self::setting_row("Default agent", "Start new sessions with this agent.", agents))
                 .child(Self::setting_row("Run agents in terminal", "Use the Codex and Claude Code command-line interfaces instead of Grove’s conversation view. Applies to new sessions.", terminal_agents_control))
                 .when(cfg!(windows), |body| body.child(div().text_size(rpx(TEXT_SMALL)).text_color(c::FG_DIM()).child("Windows supports terminal agents only.")))
                 .child(Self::section("Provider tools"))
@@ -1414,7 +1333,7 @@ impl SettingsPanel {
                 .child(Self::section("Agent access"))
                 .child(Self::setting_row("Yolo mode", "Launch new CLI and native sessions with bypass permissions. When off, agents use their defaults. OpenCode uses its own permissions.", permissions))
                 .child(Self::section("Browser access"))
-                .child(Self::setting_row("Claude in Chrome", "Let Claude read and control Chrome tabs.", browser))
+                .child(Self::setting_row("Claude in Chrome", "Let Claude read and control Chrome tabs. Applies to new Claude sessions.", browser))
         ));
         body = body.when(self.category == Category::Terminal, |body| {
             body.child(terminal_body)
@@ -1431,6 +1350,11 @@ impl SettingsPanel {
         body = body.when(self.category == Category::Privacy, |body| body.child(
             div().flex().flex_col()
                 .child(Self::section("Usage & diagnostics"))
+                .when(crate::telemetry::disabled_by_environment(), |body| body.child(
+                    div().text_size(rpx(TEXT_SMALL)).text_color(c::FG_DIM()).child(format!(
+                        "Collection is disabled by GROVE_TELEMETRY. Your saved preference is {}.", if telemetry { "On" } else { "Off" }
+                    ))
+                ))
                 .child(Self::setting_row("Share anonymous usage data", "Help improve Grove with usage events and diagnostics.", telemetry_button))
                 .child(div().text_size(rpx(TEXT_SMALL)).text_color(c::FG_DIM()).child("Usage events include app and session activity, version, OS, diagnostic error types, and scrubbed panic locations. Project names, file paths, Git data, prompts, and conversation or terminal content are excluded. GROVE_TELEMETRY=off also disables collection."))
         ));
@@ -1441,6 +1365,7 @@ impl SettingsPanel {
             UpgradeState::Idle => ("Not checked yet".to_string(), false),
             UpgradeState::Checking => ("Checking…".to_string(), true),
             UpgradeState::UpToDate => ("Up to date".to_string(), false),
+            UpgradeState::Skipped(release) => (format!("Version {} skipped", release.tag), false),
             UpgradeState::Available(release) => {
                 (format!("Update available: {}", release.tag), false)
             }
@@ -1451,6 +1376,7 @@ impl SettingsPanel {
         };
         let status_kind = match upgrade.state() {
             UpgradeState::Idle => StatusKind::Unknown,
+            UpgradeState::Skipped(_) => StatusKind::Stopped,
             UpgradeState::Checking | UpgradeState::Updating(_) => StatusKind::Working,
             UpgradeState::UpToDate | UpgradeState::Updated => StatusKind::Success,
             UpgradeState::Available(_) => StatusKind::Warning,
@@ -1460,6 +1386,25 @@ impl SettingsPanel {
         let has_update = upgrade.available().is_some();
         let can_restart = restart_available(upgrade.state());
         let mut actions = div().flex().flex_wrap().gap(rpx(SPACE_SM));
+        if matches!(upgrade.state(), UpgradeState::Skipped(_)) {
+            actions = actions.child(
+                self.button(
+                    "settings-update-reconsider",
+                    "Reconsider skipped version",
+                    false,
+                    true,
+                )
+                .child(crate::icons::icon("restore", ICON_SM, c::FG_DIM()))
+                .child("Reconsider version")
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.runtime
+                        .read(cx)
+                        .upgrade
+                        .clone()
+                        .update(cx, crate::entities::upgrade::Upgrade::reconsider);
+                })),
+            );
+        }
         if can_restart {
             actions = actions.child(
                 super::components::form_action(
@@ -1579,11 +1524,28 @@ impl SettingsPanel {
                         "Shortcuts",
                         "Commands for the current view",
                         self.button("settings-shortcuts", "View shortcuts", false, true)
+                            .debug_selector(|| "settings-shortcuts".into())
                             .child(crate::icons::icon("command", ICON_SM, c::FG_DIM()))
                             .child("View shortcuts")
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.open_nested(Page::Shortcuts, window, cx);
                             })),
+                    ))
+                    .child(Self::setting_row(
+                        "Archived projects",
+                        "Restore or remove archived project registrations",
+                        self.button(
+                            "settings-archived-projects",
+                            "Archived projects",
+                            false,
+                            true,
+                        )
+                        .debug_selector(|| "settings-archived-projects".into())
+                        .child(crate::icons::icon("archive", ICON_SM, c::FG_DIM()))
+                        .child("Manage")
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.open_nested(Page::Archived, window, cx);
+                        })),
                     )),
             )
         })
@@ -1667,7 +1629,7 @@ impl SettingsPanel {
             ))
     }
 
-    fn changelog_body(&self, cx: &mut Context<Self>) -> gpui::Div {
+    fn changelog_body(&mut self, window: &Window, cx: &mut Context<Self>) -> gpui::Div {
         let upgrade = self.runtime.read(cx).upgrade.clone();
         let upgrade = upgrade.read(cx);
         let mut body = div().flex().flex_col().gap(rpx(SPACE_2XL));
@@ -1707,35 +1669,76 @@ impl SettingsPanel {
                 ));
             }
             ChangelogState::Error(error) => {
-                body = body.child(status::label(
-                    "changelog-error",
-                    StatusKind::Failed,
-                    format!("Could not load changelog: {error}"),
-                    ICON_SM,
-                    cx,
-                ));
+                body = body
+                    .child(status::label(
+                        "changelog-error",
+                        StatusKind::Failed,
+                        format!("Could not load changelog: {error}"),
+                        ICON_SM,
+                        cx,
+                    ))
+                    .child(
+                        self.button(
+                            "settings-changelog-retry",
+                            "Retry loading changelog",
+                            false,
+                            true,
+                        )
+                        .self_start()
+                        .child(crate::icons::icon("refresh", ICON_SM, c::FG_DIM()))
+                        .child("Retry loading")
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.runtime
+                                .read(cx)
+                                .upgrade
+                                .clone()
+                                .update(cx, crate::entities::upgrade::Upgrade::fetch_changelog);
+                        })),
+                    );
             }
             ChangelogState::Loaded(notes) if notes.is_empty() => {
                 body = body.child("No release notes available.");
             }
-            ChangelogState::Loaded(notes) => {
-                for (index, note) in notes.iter().enumerate() {
-                    body = body.child(
+            ChangelogState::Loaded(_) => {}
+        }
+        let notes = upgrade.changelog_notes().to_vec();
+        if self.changelog_markdown.len() != notes.len()
+            || self
+                .changelog_markdown
+                .iter()
+                .zip(&notes)
+                .any(|((tag, body, _), note)| tag != &note.tag || body != &note.body)
+        {
+            self.changelog_markdown = notes
+                .iter()
+                .map(|note| {
+                    (
+                        note.tag.clone(),
+                        note.body.clone(),
+                        cx.new(|cx| gpui_component::text::TextViewState::markdown(&note.body, cx)),
+                    )
+                })
+                .collect();
+        }
+        for (index, (tag, _, markdown)) in self.changelog_markdown.iter().enumerate() {
+            body = body.child(
+                div()
+                    .id(format!("settings-release-{index}"))
+                    .flex()
+                    .flex_col()
+                    .gap(rpx(SPACE_SM))
+                    .child(
                         div()
-                            .id(format!("settings-release-{index}"))
-                            .flex()
-                            .flex_col()
-                            .gap(rpx(SPACE_SM))
-                            .child(
-                                div()
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .text_color(c::FG())
-                                    .child(note.tag.clone()),
-                            )
-                            .child(div().text_color(c::FG_DIM()).child(note.body.clone())),
-                    );
-                }
-            }
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(c::FG())
+                            .child(tag.clone()),
+                    )
+                    .child(
+                        gpui_component::text::TextView::new(markdown)
+                            .selectable(true)
+                            .style(super::codex_view::markdown_style(window)),
+                    ),
+            );
         }
         body.text_size(rpx(TEXT_BODY))
     }
@@ -1771,7 +1774,7 @@ impl Render for SettingsPanel {
         let body = match self.page {
             Page::Settings => self.settings_body(window, cx),
             Page::Shortcuts => self.shortcuts_body(cx),
-            Page::Changelog => self.changelog_body(cx),
+            Page::Changelog => self.changelog_body(window, cx),
             Page::Themes => self.themes_body(cx),
             Page::Providers => self.providers_body(cx),
             Page::Archived => {
@@ -1936,18 +1939,23 @@ impl Render for SettingsPanel {
                                         body.pt(rpx(SPACE_20))
                                     })
                                     .child(body)
-                                    .when(self.page != Page::Providers, |body| {
-                                        body.child(
-                                            div()
-                                                .id("settings-save-note")
-                                                .debug_selector(|| "settings-save-note".into())
-                                                .pt(rpx(SPACE_3XL))
-                                                .pb(rpx(SPACE_LG))
-                                                .text_size(rpx(TEXT_MICRO))
-                                                .text_color(c::FG_DIM())
-                                                .child("Changes save automatically"),
-                                        )
-                                    }),
+                                    .when(
+                                        self.page == Page::Themes
+                                            || self.page == Page::Settings
+                                                && self.category != Category::About,
+                                        |body| {
+                                            body.child(
+                                                div()
+                                                    .id("settings-save-note")
+                                                    .debug_selector(|| "settings-save-note".into())
+                                                    .pt(rpx(SPACE_3XL))
+                                                    .pb(rpx(SPACE_LG))
+                                                    .text_size(rpx(TEXT_MICRO))
+                                                    .text_color(c::FG_DIM())
+                                                    .child("Changes save automatically"),
+                                            )
+                                        },
+                                    ),
                             ),
                     ),
             )
@@ -1999,6 +2007,137 @@ mod tests {
         cx.run_until_parked();
         cx.update(|window, cx| {
             let _ = window.draw(cx);
+        });
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[ignore = "captures isolated Settings pages with fixture state"]
+    fn settings_review_linux_capture() {
+        let output = std::path::PathBuf::from(
+            std::env::var_os("GROVE_SETTINGS_QA_OUTPUT").expect("task-owned capture directory"),
+        );
+        assert!(
+            std::env::var_os("GROVE_CONFIG_DIR").is_some(),
+            "isolated configuration required"
+        );
+        fs_err::create_dir_all(&output).unwrap();
+        gpui_platform::application().with_assets(crate::assets::Assets).run(move |cx| {
+            setup(cx);
+            crate::fonts::register(cx).unwrap();
+            cx.set_reduce_motion(true);
+            let mut retained = None;
+            let window = cx.open_window(gpui::WindowOptions {
+                app_id: Some("dev.grove.settings-review-qa".into()),
+                window_bounds: Some(gpui::WindowBounds::Windowed(gpui::Bounds::new(
+                    gpui::point(gpui::px(40.), gpui::px(40.)), gpui::size(gpui::px(900.), gpui::px(850.))))),
+                ..Default::default()
+            }, |window, cx| {
+                window.set_window_title("Grove Settings review QA");
+                let runtime = cx.new(Runtime::new);
+                runtime.read(cx).upgrade.clone().update(cx, |upgrade, cx| upgrade.set_fixture(UpgradeState::Idle, ChangelogState::Idle, cx));
+                let panel = cx.new(|cx| SettingsPanel::new(runtime, cx));
+                panel.update(cx, |panel, cx| panel.open(window, cx));
+                retained = Some(panel.clone());
+                cx.new(|cx| gpui_component::Root::new(panel, window, cx))
+            }).unwrap();
+            let panel = retained.unwrap();
+            cx.activate(true);
+            cx.spawn(async move |cx| {
+                let cases = [
+                    ("general", Category::General, Page::Settings),
+                    ("agents", Category::Agents, Page::Settings),
+                    ("terminal", Category::Terminal, Page::Settings),
+                    ("privacy", Category::Privacy, Page::Settings),
+                    ("about", Category::About, Page::Settings),
+                    ("themes", Category::General, Page::Themes),
+                    ("themes-notices", Category::General, Page::Themes),
+                    ("archived", Category::General, Page::Archived),
+                    ("shortcuts", Category::General, Page::Shortcuts),
+                    ("providers", Category::Agents, Page::Providers),
+                    ("providers-error", Category::Agents, Page::Providers),
+                    ("changelog", Category::About, Page::Changelog),
+                    ("changelog-error", Category::About, Page::Changelog),
+                    ("terminal-working", Category::Terminal, Page::Settings),
+                    ("terminal-confirmed", Category::Terminal, Page::Settings),
+                    ("terminal-error", Category::Terminal, Page::Settings),
+                ];
+                for (theme, rem, width) in [("grove-dark", 16., 900.), ("grove-light", 16., 900.), ("grove-dark", 24., 500.), ("grove-dark", 24., 320.)] {
+                    for (name, category, page) in cases {
+                        cx.update(|cx| {
+                            grove_core::theme::set_by_name(theme);
+                            c::sync_component_theme(cx);
+                            gpui_component::Theme::global_mut(cx).font_size = gpui::px(rem);
+                        });
+                        cx.update_window(window.into(), |_, window, cx| {
+                            window.resize(gpui::size(gpui::px(width), gpui::px(850.)));
+                            window.set_rem_size(gpui::px(rem));
+                            panel.update(cx, |panel, cx| {
+                                panel.select_category(category, cx);
+                                panel.show_theme_notices = name == "themes-notices";
+                                if page == Page::Changelog {
+                                    panel.page = page; // Fixture content; never fetch the network.
+                                } else if page != Page::Settings {
+                                    panel.open_nested(page, window, cx);
+                                }
+                                let runtime = panel.runtime.read(cx);
+                                let upgrade = runtime.upgrade.clone();
+                                let environment = runtime.shell_environment.clone();
+                                let release = grove_core::upgrade::Release {
+                                    version: semver::Version::new(99,0,0), tag: "v99.0.0".into(), html_url: "https://example.invalid/release".into(), body: String::new(), dmg_url: None, dmg_sha256_url: None, target_commitish: "main".into()
+                                };
+                                let notes = vec![grove_core::upgrade::ReleaseNote {
+                                    tag: "Example release".into(), name: String::new(), date: String::new(), body: "## Improvements\n\n- Clearer update status\n- Better recovery\n\n[Release details](https://example.invalid/release)\n\n```rust\nlet recovered = true;\n```".into()
+                                }];
+                                upgrade.update(cx, |upgrade, cx| {
+                                    upgrade.set_fixture(UpgradeState::Skipped(release), ChangelogState::Loaded(notes), cx);
+                                    if name == "changelog-error" { upgrade.set_fixture(UpgradeState::Idle, ChangelogState::Error("Network unavailable".into()), cx); }
+                                });
+                                environment.update(cx, |environment, cx| environment.set_fixture(match name {
+                                    "terminal-working" => RefreshState::Refreshing,
+                                    "terminal-confirmed" => RefreshState::Refreshed,
+                                    "terminal-error" => RefreshState::Error,
+                                    _ => RefreshState::Idle,
+                                }, cx));
+                                if page == Page::Providers {
+                                    let providers = panel.runtime.read(cx).provider_updates.clone();
+                                    let rows = if name == "providers-error" {
+                                        use crate::entities::provider_updates::ProviderRow;
+                                        use grove_core::provider_updates::{Installer, ProviderStatus};
+                                        panel.provider_details.insert(Agent::Claude.label());
+                                        vec![ProviderRow {
+                                            status: ProviderStatus {
+                                                agent: Agent::Claude, installed: Some("1.0.0".into()), latest: None,
+                                                executable: Some("/fixture/claude".into()), error: None,
+                                                installer: Installer::ClaudeNative,
+                                            }, checking: false, updating: false, updated: false, update_verified: false,
+                                            last_success: Some(1), error: Some("Permission denied while updating the provider executable. Example diagnostic only.".into()),
+                                        }]
+                                    } else { Vec::new() };
+                                    providers.update(cx, |providers, cx| providers.set_rows_for_test(rows, cx));
+                                }
+                                if name == "privacy" {
+                                    SettingsState::update(cx, |store| store.telemetry_enabled = Some(true));
+                                }
+                                cx.notify();
+                            });
+                            window.refresh();
+                        }).unwrap();
+                        cx.background_executor().timer(std::time::Duration::from_millis(200)).await;
+                        if name == "themes-notices" || (name.starts_with("terminal-") && width <= 500.) {
+                            cx.update(|cx| panel.update(cx, |panel, cx| {
+                                panel.scroll.set_offset(gpui::point(gpui::px(0.), gpui::px(-10000.)));
+                                cx.notify();
+                            }));
+                            cx.background_executor().timer(std::time::Duration::from_millis(100)).await;
+                        }
+                        let path = output.join(format!("{name}-{theme}-{rem}-{width}.png"));
+                        assert!(std::process::Command::new("import").arg("-window").arg("Grove Settings review QA").arg(&path).status().unwrap().success());
+                        eprintln!("Settings fixture capture: {}", path.display());
+                    }
+                }
+                cx.update(|cx| cx.quit());
+            }).detach();
         });
     }
 
@@ -2138,44 +2277,123 @@ mod tests {
     }
 
     #[gpui::test]
-    fn landing_page_group_saves_without_leaving_settings(cx: &mut gpui::TestAppContext) {
+    fn removed_preferences_preserve_saved_launch_values(cx: &mut gpui::TestAppContext) {
+        cx.update(setup);
+        cx.update(|cx| {
+            SettingsState::update(cx, |store| {
+                store.default_landing_page = grove_core::storage::LandingPage::History;
+                store.default_agent = Some(Agent::Codex);
+            });
+        });
+        let (panel, cx) = cx.add_window_view(|_, cx| {
+            let runtime = cx.new(Runtime::new);
+            SettingsPanel::new(runtime, cx)
+        });
+        cx.update(|window, cx| panel.update(cx, |panel, cx| panel.open(window, cx)));
+        draw(cx);
+        assert!(cx.debug_bounds("settings-landing-history").is_none());
+        let archive = cx.debug_bounds("settings-archived-projects").unwrap();
+        let shortcuts = cx.debug_bounds("settings-shortcuts").unwrap();
+        assert!(archive.top() > shortcuts.bottom());
+        cx.update(|_, cx| {
+            panel.update(cx, |panel, cx| panel.select_category(Category::Agents, cx));
+        });
+        draw(cx);
+        assert!(cx.debug_bounds("settings-agent-codex").is_none());
+        cx.update(|_, cx| {
+            assert_eq!(
+                cx.global::<SettingsState>().store.default_agent,
+                Some(Agent::Codex)
+            );
+            assert_eq!(
+                cx.global::<SettingsState>().store.default_landing_page,
+                grove_core::storage::LandingPage::History
+            );
+        });
+    }
+
+    #[gpui::test]
+    fn refresh_receipts_fit_narrow_zoomed_settings(cx: &mut gpui::TestAppContext) {
+        cx.update(setup);
+        let (panel, cx) = cx.add_window_view(|_, cx| {
+            let runtime = cx.new(Runtime::new);
+            SettingsPanel::new(runtime, cx)
+        });
+        cx.simulate_resize(gpui::size(gpui::px(320.), gpui::px(600.)));
+        cx.update(|window, cx| {
+            window.set_rem_size(gpui::px(24.));
+            panel.update(cx, |panel, cx| {
+                panel.open(window, cx);
+                panel.select_category(Category::Terminal, cx);
+            });
+        });
+        let mut action_bounds = None;
+        for state in [
+            RefreshState::Idle,
+            RefreshState::Refreshing,
+            RefreshState::Refreshed,
+            RefreshState::Error,
+        ] {
+            cx.update(|_, cx| {
+                panel
+                    .read(cx)
+                    .runtime
+                    .read(cx)
+                    .shell_environment
+                    .clone()
+                    .update(cx, |environment, cx| environment.set_fixture(state, cx));
+            });
+            draw(cx);
+            let action = cx.debug_bounds("settings-shell-environment").unwrap();
+            let body = cx.debug_bounds("settings-body").unwrap();
+            assert!(
+                action.left() >= body.left() && action.right() <= body.right(),
+                "{state:?}: {action:?} outside {body:?}"
+            );
+            if let Some(previous) = action_bounds {
+                assert_eq!(action, previous, "receipt moved action slot");
+            }
+            action_bounds = Some(action);
+        }
+    }
+
+    #[gpui::test]
+    fn save_notes_only_appear_on_editable_pages(cx: &mut gpui::TestAppContext) {
         cx.update(setup);
         let (panel, cx) = cx.add_window_view(|_, cx| {
             let runtime = cx.new(Runtime::new);
             SettingsPanel::new(runtime, cx)
         });
         cx.update(|window, cx| panel.update(cx, |panel, cx| panel.open(window, cx)));
-        cx.simulate_resize(gpui::size(gpui::px(1100.), gpui::px(900.)));
         draw(cx);
-        for (name, page) in [
-            (
-                "settings-landing-new-session",
-                grove_core::storage::LandingPage::NewSession,
-            ),
-            (
-                "settings-landing-projects",
-                grove_core::storage::LandingPage::Projects,
-            ),
-            (
-                "settings-landing-history",
-                grove_core::storage::LandingPage::History,
-            ),
-            (
-                "settings-landing-home",
-                grove_core::storage::LandingPage::Home,
-            ),
+        assert!(cx.debug_bounds("settings-save-note").is_some());
+        for page in [
+            Page::Shortcuts,
+            Page::Changelog,
+            Page::Providers,
+            Page::Settings,
         ] {
-            let bounds = cx.debug_bounds(name).unwrap();
-            cx.simulate_click(bounds.center(), gpui::Modifiers::default());
-            draw(cx);
             cx.update(|_, cx| {
-                assert_eq!(
-                    cx.global::<SettingsState>().store.default_landing_page,
-                    page
-                );
-                assert!(panel.read(cx).is_open());
-                assert_eq!(panel.read(cx).category, Category::General);
+                panel.update(cx, |panel, cx| {
+                    panel.page = page;
+                    panel.category = Category::About;
+                    panel
+                        .runtime
+                        .read(cx)
+                        .upgrade
+                        .clone()
+                        .update(cx, |upgrade, cx| {
+                            upgrade.set_fixture(
+                                UpgradeState::Idle,
+                                ChangelogState::Error("Offline".into()),
+                                cx,
+                            );
+                        });
+                    cx.notify();
+                });
             });
+            draw(cx);
+            assert!(cx.debug_bounds("settings-save-note").is_none(), "{page:?}");
         }
     }
 
