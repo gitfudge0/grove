@@ -201,7 +201,7 @@ impl SettingsPanel {
                 cx.subscribe(
                     account,
                     |_, _, event: &super::connections_panel::ConnectionChanged, cx| {
-                        cx.emit(SettingsPanelEvent::ConnectionsChanged(event.0))
+                        cx.emit(SettingsPanelEvent::ConnectionsChanged(event.0));
                     },
                 )
             })
@@ -998,7 +998,7 @@ impl SettingsPanel {
                     }),
                 )
                 .on_click(cx.listener(move |this, _, window, cx| {
-                    this.toggle_managed_provider(agent, window, cx)
+                    this.toggle_managed_provider(agent, window, cx);
                 })),
             );
             let mut card = div()
@@ -1058,8 +1058,8 @@ impl SettingsPanel {
                         .flex_col()
                         .gap(rpx(SPACE_2XL))
                         .pt(rpx(SPACE_2XL))
-                        .when_some(account, |el, account| el.child(account))
-                        .when_some(version_body.take(), |el, version| el.child(version)),
+                        .when_some(account, gpui::ParentElement::child)
+                        .when_some(version_body.take(), gpui::ParentElement::child),
                 );
             } else if let Some(error) = update.and_then(|row| row.error.as_ref()) {
                 card = card.child(status::label(
@@ -1143,7 +1143,7 @@ impl SettingsPanel {
                         this.runtime.read(cx).provider_updates.clone().update(
                             cx,
                             crate::entities::provider_updates::ProviderUpdates::check,
-                        )
+                        );
                     }))
                 }),
             );
@@ -1219,7 +1219,7 @@ impl SettingsPanel {
                                 .read(cx)
                                 .provider_updates
                                 .clone()
-                                .update(cx, |updates, cx| updates.start_update(selected, cx))
+                                .update(cx, |updates, cx| updates.start_update(selected, cx));
                         }))
                     }),
                 );
@@ -1297,14 +1297,14 @@ impl SettingsPanel {
                             ))
                             .child("Details")
                             .on_click(cx.listener(move |this, _, _, cx| {
-                                this.toggle_provider_details(selected, cx)
+                                this.toggle_provider_details(selected, cx);
                             }))
                             .on_key_down(cx.listener(
                                 move |this, event: &gpui::KeyDownEvent, window, cx| {
                                     if matches!(event.keystroke.key.as_str(), "enter" | "space") {
                                         window.prevent_default();
                                         cx.stop_propagation();
-                                        this.toggle_provider_details(selected, cx)
+                                        this.toggle_provider_details(selected, cx);
                                     }
                                 },
                             )),
@@ -2414,7 +2414,7 @@ mod tests {
                             })
                             .collect(),
                         cx,
-                    )
+                    );
                 });
         }
     }
@@ -2431,8 +2431,8 @@ mod tests {
         cx.update(|window, cx| {
             panel.update(cx, |panel, cx| {
                 panel.open_provider_updates(window, cx);
-                panel.fixture_providers(window, cx)
-            })
+                panel.fixture_providers(window, cx);
+            });
         });
         draw(cx);
         assert!(cx
@@ -2471,9 +2471,10 @@ mod tests {
                 })
                 .is_none());
             cx.update(|window, cx| {
-                assert!(panel.read(cx).provider_manage_focus
-                    [if agent == Agent::Codex { 0 } else { 1 }]
-                .is_focused(window))
+                assert!(
+                    panel.read(cx).provider_manage_focus[usize::from(agent != Agent::Codex)]
+                        .is_focused(window)
+                );
             });
         }
     }
@@ -2491,15 +2492,15 @@ mod tests {
             panel.update(cx, |panel, cx| {
                 panel.open_provider_updates(window, cx);
                 panel.fixture_providers(window, cx);
-                panel.managed_provider = Some(Agent::Codex)
-            })
+                panel.managed_provider = Some(Agent::Codex);
+            });
         });
         draw(cx);
         cx.update(|window, cx| {
             panel.read(cx).provider_accounts[0]
                 .read(cx)
                 .fixture_return_focus()
-                .focus(window, cx)
+                .focus(window, cx);
         });
         cx.simulate_keystrokes("enter");
         draw(cx);
@@ -2508,14 +2509,14 @@ mod tests {
         cx.update(|_, cx| {
             assert!(panel.read(cx).provider_accounts[0]
                 .read(cx)
-                .fixture_confirming())
+                .fixture_confirming());
         });
         cx.simulate_keystrokes("tab space");
         draw(cx);
         cx.update(|_, cx| {
             assert!(!panel.read(cx).provider_accounts[0]
                 .read(cx)
-                .fixture_confirming())
+                .fixture_confirming());
         });
     }
 
@@ -2530,8 +2531,8 @@ mod tests {
             panel.update(cx, |panel, cx| {
                 panel.open_provider_updates(window, cx);
                 panel.fixture_providers(window, cx);
-                panel.managed_provider = Some(Agent::Codex)
-            })
+                panel.managed_provider = Some(Agent::Codex);
+            });
         });
         for width in [900., 500., 320.] {
             for rem in [16., 24.] {
@@ -2780,14 +2781,11 @@ mod tests {
                                         "claude" | "external" => Some(Agent::Claude),
                                         _ => Some(Agent::Codex),
                                     };
-                                    let index = if panel.managed_provider == Some(Agent::Claude) {
-                                        1
-                                    } else {
-                                        0
-                                    };
+                                    let index =
+                                        usize::from(panel.managed_provider == Some(Agent::Claude));
                                     if ["waiting", "confirm", "external"].contains(&scenario) {
                                         panel.provider_accounts[index].update(cx, |account, cx| {
-                                            account.fixture(scenario, window, cx)
+                                            account.fixture(scenario, window, cx);
                                         });
                                     }
                                     cx.notify();

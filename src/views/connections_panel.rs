@@ -499,7 +499,7 @@ impl ConnectionsPanel {
                         }
                         "Confirm sign-out" => {
                             if let Some(action) = this.confirmation.clone() {
-                                this.start(action, window, cx)
+                                this.start(action, window, cx);
                             }
                         }
                         "Copy sign-in link" => {
