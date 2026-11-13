@@ -19,13 +19,16 @@ pub fn enabled() -> bool {
     if api_key().is_none() {
         return false;
     }
-    if let Ok(v) = std::env::var("GROVE_TELEMETRY") {
-        let v = v.to_lowercase();
-        if v == "off" || v == "0" || v == "false" {
-            return false;
-        }
+    if disabled_by_environment() {
+        return false;
     }
     ENABLED.load(Ordering::Relaxed)
+}
+
+/// Explicit runtime override, independent of the saved preference and build key.
+pub fn disabled_by_environment() -> bool {
+    std::env::var("GROVE_TELEMETRY")
+        .is_ok_and(|value| matches!(value.to_lowercase().as_str(), "off" | "0" | "false"))
 }
 
 /// `None` (or empty) turns every send path into a no-op.

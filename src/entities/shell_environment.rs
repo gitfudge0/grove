@@ -1,6 +1,9 @@
 //! Refresh the launch environment independently of settings panel lifetime.
 
-use std::{sync::Arc, time::Duration};
+use std::{
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use futures::future::BoxFuture;
 use gpui::{AppContext as _, Context, Task};
@@ -22,6 +25,9 @@ pub struct ShellEnvironment {
     refresh_operation: RefreshOperation,
     _timer: Task<()>,
     refresh_task: Option<Task<()>>,
+    confirmation_task: Option<Task<()>>,
+    refreshed_at: Option<Instant>,
+    generation: u64,
 }
 
 impl ShellEnvironment {
@@ -44,17 +50,37 @@ impl ShellEnvironment {
             refresh_operation: operation,
             _timer: timer,
             refresh_task: None,
+            confirmation_task: None,
+            refreshed_at: None,
+            generation: 0,
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_fixture(&mut self, state: RefreshState, cx: &mut Context<Self>) {
+        self.refresh_task = None;
+        self.confirmation_task = None;
+        self.state = state;
+        self.generation += 1;
+        self.refreshed_at = (state == RefreshState::Refreshed).then(Instant::now);
+        cx.notify();
     }
 
     pub fn state(&self) -> RefreshState {
         self.state
     }
 
+    pub fn confirmation(&self) -> Option<(u64, Instant)> {
+        self.refreshed_at.map(|started| (self.generation, started))
+    }
+
     pub fn refresh(&mut self, cx: &mut Context<Self>) {
         if cfg!(windows) || self.state == RefreshState::Refreshing {
             return;
         }
+        self.confirmation_task = None;
+        self.refreshed_at = None;
+        self.generation = self.generation.wrapping_add(1);
         self.state = RefreshState::Refreshing;
         cx.notify();
         let operation = self.refresh_operation.clone();
@@ -67,6 +93,24 @@ impl ShellEnvironment {
                 } else {
                     RefreshState::Error
                 };
+                if this.state == RefreshState::Refreshed {
+                    this.refreshed_at = Some(Instant::now());
+                    let generation = this.generation;
+                    this.confirmation_task = Some(cx.spawn(async move |this, cx| {
+                        cx.background_executor()
+                            .timer(crate::views::status::CHECK_CONFIRMATION_LIFETIME)
+                            .await;
+                        let _ = this.update(cx, |this, cx| {
+                            if this.generation == generation
+                                && this.state == RefreshState::Refreshed
+                            {
+                                this.state = RefreshState::Idle;
+                                this.refreshed_at = None;
+                                cx.notify();
+                            }
+                        });
+                    }));
+                }
                 cx.notify();
             });
         }));
@@ -77,6 +121,47 @@ impl ShellEnvironment {
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[gpui::test]
+    fn confirmation_expires_and_new_work_supersedes_it(cx: &mut gpui::TestAppContext) {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let environment = cx.new(|cx| {
+            ShellEnvironment::with_operation(
+                Arc::new(move || {
+                    let call = calls.fetch_add(1, Ordering::SeqCst);
+                    Box::pin(async move {
+                        if call < 2 {
+                            Ok(())
+                        } else {
+                            Err("Failure".into())
+                        }
+                    })
+                }),
+                cx,
+            )
+        });
+        environment.update(cx, ShellEnvironment::refresh);
+        cx.run_until_parked();
+        assert!(environment.read_with(cx, |environment, _| environment.confirmation().is_some()));
+        cx.executor()
+            .advance_clock(crate::views::status::CHECK_CONFIRMATION_LIFETIME);
+        cx.run_until_parked();
+        assert_eq!(
+            environment.read_with(cx, |environment, _| environment.state()),
+            RefreshState::Idle
+        );
+        environment.update(cx, ShellEnvironment::refresh);
+        cx.run_until_parked();
+        environment.update(cx, ShellEnvironment::refresh);
+        cx.run_until_parked();
+        cx.executor()
+            .advance_clock(crate::views::status::CHECK_CONFIRMATION_LIFETIME);
+        cx.run_until_parked();
+        environment.read_with(cx, |environment, _| {
+            assert_eq!(environment.state(), RefreshState::Error);
+            assert!(environment.confirmation().is_none());
+        });
+    }
 
     #[gpui::test]
     fn manual_refresh_deduplicates_and_reports_success(cx: &mut gpui::TestAppContext) {

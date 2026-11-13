@@ -1513,3 +1513,36 @@ interactions remain untested; desktop interaction control is unavailable here.
 The original screenshot’s apparently plain label was not reproduced in the
 running application. Its saved response contained a valid HTML link and its file
 existed; the native component fixture renders that label as a functioning link.
+
+## Settings simplification and recovery
+
+The approved Settings direction removes the landing/default-agent controls without
+migrating their stored values, moves Archived projects last, and uses text-only
+preference choices. Focused Linux checks passed: 18 Settings tests (including
+click-to-Space diagnostics, retained launch preferences, archive ordering, nested
+navigation and 320px/rem24 refresh bounds), 22 upgrade tests, three environment
+refresh tests, 33 source conformance checks, five shared-component checks, five
+project-panel tests, five project-setup tests, four action-feedback tests and five
+telemetry tests. Strict all-target and production Clippy, formatting, the optimized
+production build, 85 reference-comparator checks and repository/tooling checks
+passed. Initial disclosure-focus and selector failures were repaired; geometry
+source guards were updated to inspect the extracted shared recipe owner.
+
+An isolated Linux X11 Settings fixture uses a separate application identity and
+configuration, with synthetic release/provider/error data. Native captures cover
+all ten page types, dark/light themes and enlarged-text layouts; the floating
+capture matrix measured 900px, 500px and 320px logical widths at display scale 2.
+Representative captures of every page type and recovery feedback were visually
+inspected. The initial tiled-window run did not honor requested widths and is not
+narrow-layout evidence. This is exploratory native inspection, not a certified
+measured HTML/GPUI reference. Refresh receipt expiry and stale-work protection are
+executor tests; the native captures use reduced motion and do not verify the
+animated transition frame by frame.
+
+Codex provider-row bounds and Claude provider-row bounds/diagnostics activation
+are verified through GPUI fixtures only. Live Codex and live Claude transport,
+permission/launch handoffs, real provider installation, real app-update network
+recovery, desktop pointer/keyboard traversal, measured contrast and macOS/Windows
+rendering remain untested for this change. Shared project preference-group coverage
+is regression-fixture coverage, not an OS-level form walkthrough. No installation
+or replacement of the user's application was performed.

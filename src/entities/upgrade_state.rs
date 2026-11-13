@@ -10,6 +10,7 @@ pub enum UpgradeState {
     Checking,
     UpToDate,
     Available(Release),
+    Skipped(Release),
     Error(String),
     Updating(Stage),
     Updated,
@@ -53,7 +54,8 @@ pub fn restart_available(state: &UpgradeState) -> bool {
     matches!(state, UpgradeState::Updated)
 }
 
-/// `manual` selects the error policy: manual surfaces the error inline, launch/periodic falls back to `Idle` silently.
+/// Manual checks rediscover skipped releases and surface errors inline; automatic
+/// checks retain the dismissal and fall back to `Idle` silently on failure.
 #[must_use]
 pub fn apply_check_result(
     result: Result<Release, String>,
@@ -63,8 +65,12 @@ pub fn apply_check_result(
 ) -> UpgradeState {
     match result {
         Ok(release) => {
-            if update_available(current, &release, skipped) {
-                UpgradeState::Available(release)
+            if update_available(current, &release, None) {
+                if !manual && skipped == Some(release.tag.as_str()) {
+                    UpgradeState::Skipped(release)
+                } else {
+                    UpgradeState::Available(release)
+                }
             } else {
                 UpgradeState::UpToDate
             }
@@ -84,7 +90,7 @@ pub fn apply_check_result(
 #[must_use]
 pub fn skip_version(state: &UpgradeState) -> (Option<String>, UpgradeState) {
     match state {
-        UpgradeState::Available(r) => (Some(r.tag.clone()), UpgradeState::UpToDate),
+        UpgradeState::Available(r) => (Some(r.tag.clone()), UpgradeState::Skipped(r.clone())),
         other => (None, other.clone()),
     }
 }
@@ -224,7 +230,9 @@ mod tests {
     #[test]
     fn a_skipped_tag_is_not_offered_but_a_newer_one_is() {
         let skipped = apply_check_result(Ok(release("v99.0.0")), false, "1.0.0", Some("v99.0.0"));
-        assert!(matches!(skipped, UpgradeState::UpToDate));
+        assert!(matches!(skipped, UpgradeState::Skipped(_)));
+        let manual = apply_check_result(Ok(release("v99.0.0")), true, "1.0.0", Some("v99.0.0"));
+        assert!(matches!(manual, UpgradeState::Available(_)));
         let newer = apply_check_result(Ok(release("v99.0.1")), false, "1.0.0", Some("v99.0.0"));
         assert!(matches!(newer, UpgradeState::Available(_)));
     }
@@ -241,10 +249,10 @@ mod tests {
     }
 
     #[test]
-    fn skipping_records_the_tag_and_lands_on_up_to_date() {
+    fn skipping_records_the_tag_and_remains_distinct_from_up_to_date() {
         let (tag, state) = skip_version(&UpgradeState::Available(release("v2.0.0")));
         assert_eq!(tag.as_deref(), Some("v2.0.0"));
-        assert!(matches!(state, UpgradeState::UpToDate));
+        assert!(matches!(state, UpgradeState::Skipped(_)));
     }
 
     #[test]

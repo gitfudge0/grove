@@ -4,7 +4,7 @@ use gpui::AnimationExt as _;
 
 pub(super) const DRAW: Duration = crate::views::status::CHECK_DRAW_DURATION;
 pub(super) const COLLAPSE: Duration = Duration::from_millis(220);
-pub(super) const HOLD: Duration = Duration::from_secs(3);
+pub(super) const HOLD: Duration = crate::views::status::CHECK_CONFIRMATION_HOLD;
 pub(super) const LIFETIME: Duration =
     Duration::from_millis((DRAW.as_millis() + HOLD.as_millis()) as u64);
 
