@@ -14,6 +14,8 @@ fn main() {
     }
 
     println!("cargo:icons-dir={}", icons_dir.display());
-    println!("cargo:rerun-if-changed=assets/icons");
+    // Watch the published absolute path too: a moved checkout can reuse Cargo
+    // fingerprints whose relative watches still match, but metadata is stale.
+    println!("cargo:rerun-if-changed={}", icons_dir.display());
     println!("cargo:rerun-if-changed=build.rs");
 }
