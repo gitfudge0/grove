@@ -1,4 +1,5 @@
 //! UI observable projection of the background Codex actor.
+use futures::StreamExt as _;
 use gpui::{AppContext as _, Context, Task};
 use grove_core::codex::{self, Action, Handle, SavedSession, Snapshot};
 use grove_core::composer_catalog::{self, Scope};
@@ -106,15 +107,22 @@ impl CodexSession {
     /// Capability discovery uses a temporary metadata-only provider handshake.
     pub fn draft(saved: SavedSession, args: Vec<String>, cx: &mut Context<Self>) -> Self {
         let cwd = saved.cwd.clone();
-        let (handle, receiver) = Handle::channel();
+        let (wake, mut wakes) = futures::channel::mpsc::channel(1);
+        let wake = std::sync::Mutex::new(wake);
+        let (handle, receiver) = Handle::channel_with_wake(std::sync::Arc::new(move || {
+            // Only a notification is bounded; commands remain in the actor queue.
+            let _ = wake
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .try_send(());
+        }));
         let mut state = Snapshot::new(saved);
         state.status = codex::Status::Idle;
-        let poll = cx.spawn(async move |this, cx| loop {
-            cx.background_executor()
-                .timer(Duration::from_millis(40))
-                .await;
-            if this.update(cx, CodexSession::drain_deferred).is_err() {
-                break;
+        let poll = cx.spawn(async move |this, cx| {
+            while wakes.next().await.is_some() {
+                if this.update(cx, CodexSession::drain_deferred).is_err() {
+                    break;
+                }
             }
         });
         let mut session = Self {
@@ -473,21 +481,23 @@ impl CodexSession {
         self.skill_watch = Some(cx.spawn(async move |this, cx| {
             let mut previous = None;
             loop {
-                let Ok(saved) = this.read_with(cx, |this, _| this.state.saved.clone()) else {
+                let Ok(request) = this.read_with(cx, |this, _| this.state.saved.clone()) else {
                     break;
                 };
-                let request = saved.clone();
                 let options = args.clone();
                 let old = previous.clone();
                 let (revision, catalog) = cx
                     .background_spawn(async move {
-                        let revision = composer_catalog::revision(&request, &options);
-                        let key = (Scope::new(&request, &options), revision);
-                        let catalog = if old.as_ref() != Some(&key) {
-                            Some(composer_catalog::discover(request, options))
-                        } else {
-                            None
-                        };
+                        let inputs = composer_catalog::inputs(&request, &options);
+                        let key = (Scope::new(&request, &options), inputs.revision());
+                        let catalog =
+                            if old.as_ref() != Some(&key) || inputs.models_require_refresh() {
+                                Some(composer_catalog::discover_with_inputs(
+                                    request, options, inputs,
+                                ))
+                            } else {
+                                None
+                            };
                         (key, catalog)
                     })
                     .await;
@@ -523,7 +533,7 @@ impl CodexSession {
                     previous = Some(revision);
                 }
                 cx.background_executor()
-                    .timer(Duration::from_secs(if successful { 2 } else { 30 }))
+                    .timer(Duration::from_secs(if successful { 5 } else { 30 }))
                     .await;
             }
         }));
@@ -854,6 +864,41 @@ impl Drop for CodexSession {
 #[cfg(test)]
 mod dashboard_tests {
     use super::*;
+
+    #[gpui::test]
+    fn draft_handle_commands_wake_without_advancing_timers(cx: &mut gpui::TestAppContext) {
+        for provider in [codex::Provider::Codex, codex::Provider::Claude] {
+            let session =
+                cx.update(|cx| cx.new(|cx| CodexSession::draft(saved(provider), Vec::new(), cx)));
+            cx.update(|cx| {
+                let handle = session.read(cx).handle.clone();
+                // More actions than wake slots must still all reach the draft.
+                for index in 0..20 {
+                    handle
+                        .send(Action::Draft(format!("draft {index}")))
+                        .unwrap();
+                }
+                handle
+                    .send(Action::DraftImages(vec!["retained-image".into()]))
+                    .unwrap();
+            });
+            cx.run_until_parked();
+            cx.update(|cx| {
+                assert_eq!(session.read(cx).state.saved.draft, "draft 19");
+                assert_eq!(
+                    session.read(cx).state.saved.draft_images,
+                    vec!["retained-image"]
+                );
+                session
+                    .read(cx)
+                    .handle
+                    .send(Action::Draft("second wake".into()))
+                    .unwrap();
+            });
+            cx.run_until_parked();
+            cx.update(|cx| assert_eq!(session.read(cx).state.saved.draft, "second wake"));
+        }
+    }
 
     #[gpui::test]
     fn dashboard_view_sends_ready_launch_as_first_turn(cx: &mut gpui::TestAppContext) {

@@ -57,6 +57,8 @@ pub(super) struct ModelPicker {
     retry_focus: [FocusHandle; 2],
     legacy_focus: FocusHandle,
     _search_events: Subscription,
+    #[cfg(test)]
+    catalog_fixture: Option<(codex::Provider, Vec<Value>, bool)>,
 }
 impl gpui::EventEmitter<PickerEvent> for ModelPicker {}
 fn index(provider: codex::Provider) -> usize {
@@ -134,6 +136,8 @@ impl ModelPicker {
             retry_focus: std::array::from_fn(|_| cx.focus_handle()),
             legacy_focus: cx.focus_handle(),
             _search_events: events,
+            #[cfg(test)]
+            catalog_fixture: None,
         };
         picker.search.focus_handle(cx).focus(window, cx);
         picker
@@ -156,9 +160,28 @@ impl ModelPicker {
     }
     pub(super) fn discover(&mut self, cx: &mut Context<Self>) {
         for provider in [codex::Provider::Codex, codex::Provider::Claude] {
-            if self.needs_provider(provider, cx)
-                && matches!(self.catalogs[index(provider)], Catalog::Unloaded)
-            {
+            let needs_catalog = matches!(self.catalogs[index(provider)], Catalog::Unloaded);
+            let stale = if matches!(self.catalogs[index(provider)], Catalog::Ready(_)) {
+                let mut saved = self.saved.clone();
+                saved.provider = provider;
+                let settings = &cx.global::<SettingsState>().store;
+                let args = provider.agent().launch_args_for_backend(
+                    true,
+                    settings.yolo_enabled,
+                    settings.chrome_enabled.unwrap_or(false),
+                );
+                let stale = grove_core::composer_catalog::models_require_refresh(&saved, &args);
+                #[cfg(test)]
+                let stale = self
+                    .catalog_fixture
+                    .as_ref()
+                    .filter(|(selected, _, _)| *selected == provider)
+                    .map_or(stale, |(_, _, stale)| *stale);
+                stale
+            } else {
+                false
+            };
+            if self.needs_provider(provider, cx) && (needs_catalog || stale) {
                 self.load(provider, false, cx);
             }
         }
@@ -201,15 +224,39 @@ impl ModelPicker {
             settings.chrome_enabled.unwrap_or(false),
         );
         if !retry {
-            if let Some(state) = grove_core::composer_catalog::cached_models(&saved, &args) {
-                self.catalogs[i] = Catalog::Ready(models(provider, state.clone()));
-                cx.emit(PickerEvent::CatalogUpdated(provider, state));
-                cx.notify();
-                return;
+            let remembered = grove_core::composer_catalog::cached_models(&saved, &args);
+            #[cfg(test)]
+            let remembered = self
+                .catalog_fixture
+                .as_ref()
+                .filter(|(selected, _, _)| *selected == provider)
+                .map(|(_, rows, _)| rows.clone())
+                .or(remembered);
+            if let Some(state) = remembered {
+                let stale = grove_core::composer_catalog::models_require_refresh(&saved, &args);
+                #[cfg(test)]
+                let stale = self
+                    .catalog_fixture
+                    .as_ref()
+                    .filter(|(selected, _, _)| *selected == provider)
+                    .map_or(stale, |(_, _, stale)| *stale);
+                self.restore_cached_models(provider, state, cx);
+                if !stale {
+                    return;
+                }
             }
         }
         self.refreshing[i] = true;
+        #[cfg(test)]
+        let fixture = self
+            .catalog_fixture
+            .as_ref()
+            .is_some_and(|(selected, _, _)| *selected == provider);
         let task = cx.background_spawn(async move {
+            #[cfg(test)]
+            if fixture {
+                return Err("offline catalog fixture".into());
+            }
             if retry {
                 grove_core::composer_catalog::invalidate(&saved, &args);
             }
@@ -224,6 +271,17 @@ impl ModelPicker {
         .detach();
         cx.notify();
     }
+    fn restore_cached_models(
+        &mut self,
+        provider: codex::Provider,
+        state: Vec<serde_json::Value>,
+        cx: &mut Context<Self>,
+    ) {
+        self.catalogs[index(provider)] = Catalog::Ready(models(provider, state.clone()));
+        cx.emit(PickerEvent::CatalogUpdated(provider, state));
+        cx.notify();
+    }
+
     fn complete_models(
         &mut self,
         provider: codex::Provider,
@@ -934,6 +992,81 @@ mod tests {
                         .all(|catalog| matches!(catalog, Catalog::Unloaded)),
                     "running Codex must not discover a Claude favorite"
                 );
+            });
+            gpui_component::Root::new(picker, window, cx).bordered(false)
+        });
+    }
+
+    #[gpui::test]
+    fn expired_cached_rows_remain_visible_during_background_refresh(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            cx.set_global(SettingsState::new(grove_core::storage::Store::default()));
+        });
+        let cwd = tempfile::tempdir().unwrap();
+        let (_, _) = cx.add_window_view(|window, cx| {
+            let picker = cx.new(|cx| {
+                let mut state = state();
+                state.saved.cwd = cwd.path().to_string_lossy().into_owned();
+                state.models.clear();
+                let mut picker = ModelPicker::new(&state, true, window, cx);
+                for provider in [codex::Provider::Codex, codex::Provider::Claude] {
+                    picker.filter = Filter::Provider(provider);
+                    picker.catalogs = [Catalog::Unloaded, Catalog::Unloaded];
+                    picker.catalog_fixture = Some((
+                        provider,
+                        vec![serde_json::json!({"model":"remembered"})],
+                        true,
+                    ));
+                    picker.discover(cx);
+                    assert!(
+                        picker.refreshing[index(provider)],
+                        "expired rows must continue into load's background task"
+                    );
+                    assert!(
+                        !picker.refreshing[index(if provider == codex::Provider::Codex {
+                            codex::Provider::Claude
+                        } else {
+                            codex::Provider::Codex
+                        })]
+                    );
+                    assert_eq!(picker.visible(cx)[0].id, "remembered");
+                    picker.complete_models(
+                        provider,
+                        picker.generations[index(provider)],
+                        Err("offline".into()),
+                        cx,
+                    );
+                    assert!(!picker.refreshing[index(provider)]);
+                    assert_eq!(picker.visible(cx)[0].id, "remembered");
+                    assert_eq!(
+                        picker.refresh_errors[index(provider)].as_deref(),
+                        Some("offline")
+                    );
+                    picker.refresh_errors[index(provider)] = None;
+                    picker.catalogs[index(provider)] = Catalog::Unloaded;
+                    picker.catalog_fixture =
+                        Some((provider, vec![serde_json::json!({"model":"fresh"})], false));
+                    picker.discover(cx);
+                    assert!(
+                        !picker.refreshing[index(provider)],
+                        "fresh cache must skip the background task"
+                    );
+                    assert_eq!(picker.visible(cx)[0].id, "fresh");
+                    picker.catalog_fixture.as_mut().unwrap().2 = true;
+                    picker.discover(cx);
+                    assert!(
+                        picker.refreshing[index(provider)],
+                        "a Ready catalog that ages must refresh too"
+                    );
+                    picker.complete_models(
+                        provider,
+                        picker.generations[index(provider)],
+                        Err("offline".into()),
+                        cx,
+                    );
+                }
+                picker
             });
             gpui_component::Root::new(picker, window, cx).bordered(false)
         });

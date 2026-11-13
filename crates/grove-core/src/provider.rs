@@ -3753,6 +3753,7 @@ pub struct Handle(
     pub(crate) Arc<AtomicU32>,
     pub(crate) Arc<AtomicBool>,
     pub(crate) Arc<AtomicU64>,
+    Option<Arc<dyn Fn() + Send + Sync>>,
 );
 impl Handle {
     /// Create the actor command channel independently of process startup.
@@ -3765,9 +3766,17 @@ impl Handle {
                 Arc::new(AtomicU32::new(0)),
                 Arc::new(AtomicBool::new(false)),
                 Arc::new(AtomicU64::new(1)),
+                None,
             ),
             receive,
         )
+    }
+    /// Wake an embedding host after each command is queued. The callback must be
+    /// nonblocking; hosts may coalesce notifications and drain the command queue.
+    pub fn channel_with_wake(wake: Arc<dyn Fn() + Send + Sync>) -> (Self, mpsc::Receiver<Action>) {
+        let (mut handle, receiver) = Self::channel();
+        handle.4 = Some(wake);
+        (handle, receiver)
     }
     pub fn submit(&self, text: String, images: Vec<String>) -> Result<u64, String> {
         let id = self.3.fetch_add(1, Ordering::Relaxed);
@@ -3815,7 +3824,11 @@ impl Handle {
     pub fn send(&self, action: Action) -> Result<(), String> {
         self.0
             .send(action)
-            .map_err(|_| "Provider session is disconnected".into())
+            .map_err(|_| "Provider session is disconnected".to_owned())?;
+        if let Some(wake) = &self.4 {
+            wake();
+        }
+        Ok(())
     }
     pub fn stop_completion(&self, forget: bool) -> mpsc::Receiver<()> {
         self.stop_with_outcome(forget, None)
@@ -4102,6 +4115,25 @@ pub(crate) fn recover_saved_for_test(saved: &SavedSession) -> SavedSession {
 #[cfg(test)]
 mod independent_conversation_tests {
     use super::*;
+    #[test]
+    fn command_wake_happens_after_enqueue_and_clones_retain_it() {
+        let observed = Arc::new(AtomicU64::new(0));
+        let wakes = observed.clone();
+        let (handle, receiver) = Handle::channel_with_wake(Arc::new(move || {
+            wakes.fetch_add(1, Ordering::Relaxed);
+        }));
+        handle.clone().send(Action::Draft("queued".into())).unwrap();
+        assert_eq!(observed.load(Ordering::Relaxed), 1);
+        assert!(matches!(receiver.try_recv().unwrap(), Action::Draft(text) if text == "queued"));
+        drop(receiver);
+        assert!(handle.send(Action::Draft("disconnected".into())).is_err());
+        assert_eq!(
+            observed.load(Ordering::Relaxed),
+            1,
+            "failed enqueue must not wake"
+        );
+    }
+
     #[test]
     fn new_session_preserves_preferences_and_clears_conversation_ownership() {
         for provider in [Provider::Codex, Provider::Claude] {

@@ -649,6 +649,9 @@ operations expose a keyboard-accessible count disclosure; they never rotate
 automatically. Idle and single-line loading retain the same slot height, while
 expanded activity and long diagnostics make room in normal flow. Project and
 worktree selectors, model/access menus and draft ownership remain unchanged.
+Fresh cached worktree results keep the composer ready on repeat visits. A
+background worktree refresh retains usable rows without restarting preparation;
+refresh failures still appear in the shared slot with Retry.
 Only Dashboard-originated first-message handoffs use this presentation; existing
 conversation connection/activity states retain their current owners. A provider
 catalog error is shown once, rather than repeated as a session notice.

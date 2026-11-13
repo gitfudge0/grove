@@ -11,9 +11,11 @@ use std::{
     fmt::Write as _,
     path::{Path, PathBuf},
     sync::{Mutex, OnceLock},
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-const VERSION: u8 = 1;
+const VERSION: u8 = 2;
+const MODEL_MAX_AGE: Duration = Duration::from_hours(24);
 const MAX_MODELS: u64 = 4 * 1024 * 1024;
 const MAX_ENTRIES: usize = 64;
 
@@ -26,6 +28,18 @@ pub(crate) struct Key {
 struct Entry {
     models: Vec<Value>,
     refresh: bool,
+    fetched_at: u64,
+}
+impl Entry {
+    fn fresh_at(&self, now: u64) -> bool {
+        !self.refresh && now >= self.fetched_at && now - self.fetched_at < MODEL_MAX_AGE.as_secs()
+    }
+}
+fn now_seconds() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
 }
 #[derive(Default)]
 struct Cache {
@@ -42,6 +56,7 @@ struct Persisted {
     version: u8,
     fingerprint: String,
     models: Vec<Value>,
+    fetched_at: u64,
 }
 
 fn add(hash: &mut Context, bytes: &[u8]) {
@@ -281,8 +296,16 @@ impl Key {
     }
 }
 
-pub(crate) fn revision(saved: &SavedSession, args: &[String]) -> Option<String> {
-    Key::new(saved, args).map(|key| key.fingerprint)
+pub(crate) fn revision_for_key(key: Option<&Key>) -> Option<(String, bool)> {
+    let key = key?;
+    let cache = cache()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let stale = cache
+        .entries
+        .get(&key.fingerprint)
+        .is_some_and(|entry| !entry.fresh_at(now_seconds()));
+    Some((key.fingerprint.clone(), stale))
 }
 
 pub(crate) fn load(key: &Key) -> Option<Vec<Value>> {
@@ -293,7 +316,7 @@ pub(crate) fn load(key: &Key) -> Option<Vec<Value>> {
         return None;
     }
     if let Some(entry) = cache.entries.get(&key.fingerprint) {
-        return (!entry.refresh).then(|| entry.models.clone());
+        return entry.fresh_at(now_seconds()).then(|| entry.models.clone());
     }
     if fs_err::metadata(&key.path).ok()?.len() > MAX_MODELS {
         return None;
@@ -314,9 +337,14 @@ pub(crate) fn load(key: &Key) -> Option<Vec<Value>> {
         Entry {
             models: models.clone(),
             refresh: false,
+            fetched_at: persisted.fetched_at,
         },
     );
-    Some(models)
+    cache
+        .entries
+        .get(&key.fingerprint)
+        .filter(|entry| entry.fresh_at(now_seconds()))
+        .map(|_| models)
 }
 
 pub(crate) fn cached(saved: &SavedSession, args: &[String]) -> Option<Vec<Value>> {
@@ -332,6 +360,23 @@ pub(crate) fn cached(saved: &SavedSession, args: &[String]) -> Option<Vec<Value>
         .get(fingerprint)
         .filter(|entry| !entry.refresh)
         .map(|entry| entry.models.clone())
+}
+
+/// A foreground-safe freshness check for remembered rows, without filesystem work.
+pub(crate) fn is_stale(saved: &SavedSession, args: &[String]) -> bool {
+    let cache = cache()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    cache
+        .aliases
+        .get(&Scope::new(saved, args))
+        .is_some_and(|fingerprint| {
+            cache.invalidated.contains(fingerprint)
+                || cache
+                    .entries
+                    .get(fingerprint)
+                    .is_some_and(|entry| !entry.fresh_at(now_seconds()))
+        })
 }
 
 pub(crate) fn requires_refresh(saved: &SavedSession, args: &[String]) -> bool {
@@ -362,6 +407,7 @@ pub(crate) fn remember(key: &Key, models: &[Value]) {
     if models.is_empty() {
         return;
     }
+    let fetched_at = now_seconds();
     {
         let mut cache = cache()
             .lock()
@@ -375,6 +421,7 @@ pub(crate) fn remember(key: &Key, models: &[Value]) {
             Entry {
                 models: models.to_vec(),
                 refresh: false,
+                fetched_at,
             },
         );
     }
@@ -382,6 +429,7 @@ pub(crate) fn remember(key: &Key, models: &[Value]) {
         version: VERSION,
         fingerprint: key.fingerprint.clone(),
         models: models.to_vec(),
+        fetched_at,
     };
     if let (Some(parent), Ok(bytes)) = (key.path.parent(), serde_json::to_vec(&saved)) {
         if fs_err::create_dir_all(parent).is_ok() {
@@ -400,6 +448,7 @@ pub(crate) fn seed_memory(saved: &SavedSession, args: &[String], models: Vec<Val
         Entry {
             models,
             refresh: false,
+            fetched_at: now_seconds(),
         },
     );
 }
@@ -440,7 +489,7 @@ mod tests {
         forget(&key);
         assert_eq!(load(&key), Some(models));
         let persisted: Value = serde_json::from_slice(&fs_err::read(&key.path).unwrap()).unwrap();
-        assert_eq!(persisted.as_object().unwrap().len(), 3);
+        assert_eq!(persisted.as_object().unwrap().len(), 4);
         assert!(persisted.get("saved").is_none());
         #[cfg(unix)]
         {
@@ -474,6 +523,48 @@ mod tests {
     }
 
     #[test]
+    fn freshness_boundary_and_clock_rollback_require_refresh() {
+        let entry = Entry {
+            models: vec![],
+            refresh: false,
+            fetched_at: 100,
+        };
+        assert!(entry.fresh_at(100));
+        assert!(entry.fresh_at(100 + MODEL_MAX_AGE.as_secs() - 1));
+        assert!(!entry.fresh_at(100 + MODEL_MAX_AGE.as_secs()));
+        assert!(!entry.fresh_at(99));
+    }
+
+    #[test]
+    fn expired_disk_rows_remain_displayable_but_cannot_satisfy_discovery() {
+        let directory = tempfile::tempdir().unwrap();
+        let key = key(directory.path());
+        let models = vec![json!({"model":"expired"})];
+        let persisted = Persisted {
+            version: VERSION,
+            fingerprint: key.fingerprint.clone(),
+            models: models.clone(),
+            fetched_at: now_seconds() - MODEL_MAX_AGE.as_secs(),
+        };
+        fs_err::write(&key.path, serde_json::to_vec(&persisted).unwrap()).unwrap();
+        assert!(load(&key).is_none());
+        assert_eq!(
+            cache().lock().unwrap().entries[&key.fingerprint].models,
+            models
+        );
+        assert_eq!(
+            revision_for_key(Some(&key)),
+            Some((key.fingerprint.clone(), true))
+        );
+        remember(&key, &[json!({"model":"fresh"})]);
+        assert_eq!(load(&key), Some(vec![json!({"model":"fresh"})]));
+        assert_eq!(
+            revision_for_key(Some(&key)),
+            Some((key.fingerprint.clone(), false))
+        );
+    }
+
+    #[test]
     fn corrupt_or_wrong_version_disk_catalog_is_a_cache_miss() {
         let directory = tempfile::tempdir().unwrap();
         let key = key(directory.path());
@@ -485,6 +576,7 @@ mod tests {
                 version: VERSION + 1,
                 fingerprint: key.fingerprint.clone(),
                 models: vec![json!({"model":"wrong"})],
+                fetched_at: now_seconds(),
             })
             .unwrap(),
         )
