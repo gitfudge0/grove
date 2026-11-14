@@ -903,6 +903,13 @@ impl Sidebar {
         self.open_dashboard_with_defaults(Some(defaults), window, cx);
         self.dashboard_timelines
             .adopt_session(self.active_workspace, id, cx.reduce_motion());
+        if cx.global::<SettingsState>().store.after_session_start
+            == grove_core::storage::AfterSessionStart::OpenSession
+        {
+            // Adoption and first-send ownership are identical in both modes. Navigation
+            // is immediate, so later provider readiness cannot steal focus back.
+            self.select_session_id(id, window, cx);
+        }
     }
     pub(super) fn refresh_dashboard_catalog(&mut self, cx: &mut Context<Self>) {
         let Some(d) = &self.dashboard else {
@@ -2030,6 +2037,7 @@ mod tests {
         cx: &mut gpui::TestAppContext,
         provider: grove_core::codex::Provider,
         reduced_motion: bool,
+        after_session_start: grove_core::storage::AfterSessionStart,
     ) {
         let repo = tempfile::tempdir().unwrap();
         let first = repo.path().join("first");
@@ -2043,7 +2051,10 @@ mod tests {
             cx.set_reduce_motion(reduced_motion);
             gpui_component::init(cx);
             cx.set_global(crate::zoom::CurrentPtyDims::default());
-            let mut store = grove_core::storage::Store::default();
+            let mut store = grove_core::storage::Store {
+                after_session_start,
+                ..Default::default()
+            };
             for (name, path) in [("First", &first), ("Selected", &selected)] {
                 let path = path.to_string_lossy().into_owned();
                 store.projects.push(grove_core::storage::Project {
@@ -2063,6 +2074,7 @@ mod tests {
         });
         cx.run_until_parked();
         let mut receivers = Vec::new();
+        let mut launched_sessions = Vec::new();
         cx.update(|window, cx| {
             sidebar.update(cx, |sidebar, cx| {
                 sidebar.open_dashboard(window, cx);
@@ -2123,12 +2135,25 @@ mod tests {
                             cx,
                         )
                     });
+                    launched_sessions.push(session.clone());
                     let view = cx.new(|cx| CodexView::new(session.clone(), window, cx));
                     sidebar.adopt_dashboard_launch(1, session.clone(), view.clone(), window, cx);
-                    assert!(
-                        sidebar.dashboard_open,
-                        "successful submit remains on Dashboard"
-                    );
+                    let open_session =
+                        after_session_start == grove_core::storage::AfterSessionStart::OpenSession;
+                    assert_eq!(sidebar.dashboard_open, !open_session);
+                    if open_session {
+                        let id = sidebar
+                            .runtime
+                            .read(cx)
+                            .registry
+                            .read(cx)
+                            .all()
+                            .last()
+                            .unwrap()
+                            .id;
+                        assert_eq!(sidebar.selection, Some(Selection::Session(id)));
+                        assert!(view.focus_handle(cx).is_focused(window));
+                    }
                     let d = sidebar.dashboard.as_ref().unwrap();
                     let next = &d.session.read(cx).state.saved;
                     assert_ne!(d.session, session);
@@ -2172,6 +2197,7 @@ mod tests {
                         session.read(cx).state.saved.draft,
                         format!("Independent prompt {turn}")
                     );
+                    sidebar.open_dashboard(window, cx);
                 }
                 assert_ne!(adopted_ids[0], adopted_ids[1]);
                 sidebar.open_dashboard(window, cx);
@@ -2182,26 +2208,92 @@ mod tests {
                 }
             });
         });
+        cx.update(|_, cx| {
+            for session in &launched_sessions {
+                session.update(cx, |session, cx| {
+                    session.state.status = grove_core::codex::Status::Idle;
+                    session.state.saved.thread_id = Some("ready-thread".into());
+                    cx.notify();
+                });
+            }
+        });
+        cx.run_until_parked();
+        for (turn, actions) in receivers.iter().enumerate() {
+            let submissions = actions
+                .try_iter()
+                .filter_map(|action| match action {
+                    grove_core::codex::Action::Submit { text, .. } => Some(text),
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(
+                submissions,
+                [format!("Independent prompt {}", turn + 1)],
+                "each adopted session sends exactly once after readiness"
+            );
+        }
     }
     #[gpui::test]
     fn dashboard_sequential_codex_submits_keep_fresh_composer_and_destination(
         cx: &mut gpui::TestAppContext,
     ) {
-        sequential_dashboard_adoption(cx, grove_core::codex::Provider::Codex, false);
+        sequential_dashboard_adoption(
+            cx,
+            grove_core::codex::Provider::Codex,
+            false,
+            grove_core::storage::AfterSessionStart::StayOnDashboard,
+        );
     }
     #[gpui::test]
     fn dashboard_sequential_claude_submits_keep_fresh_composer_and_destination(
         cx: &mut gpui::TestAppContext,
     ) {
-        sequential_dashboard_adoption(cx, grove_core::codex::Provider::Claude, false);
+        sequential_dashboard_adoption(
+            cx,
+            grove_core::codex::Provider::Claude,
+            false,
+            grove_core::storage::AfterSessionStart::StayOnDashboard,
+        );
     }
     #[gpui::test]
     fn dashboard_codex_reduced_motion_skips_entrance(cx: &mut gpui::TestAppContext) {
-        sequential_dashboard_adoption(cx, grove_core::codex::Provider::Codex, true);
+        sequential_dashboard_adoption(
+            cx,
+            grove_core::codex::Provider::Codex,
+            true,
+            grove_core::storage::AfterSessionStart::StayOnDashboard,
+        );
     }
     #[gpui::test]
     fn dashboard_claude_reduced_motion_skips_entrance(cx: &mut gpui::TestAppContext) {
-        sequential_dashboard_adoption(cx, grove_core::codex::Provider::Claude, true);
+        sequential_dashboard_adoption(
+            cx,
+            grove_core::codex::Provider::Claude,
+            true,
+            grove_core::storage::AfterSessionStart::StayOnDashboard,
+        );
+    }
+    #[gpui::test]
+    fn dashboard_codex_opens_adopted_session_and_preserves_fresh_composer(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        sequential_dashboard_adoption(
+            cx,
+            grove_core::codex::Provider::Codex,
+            false,
+            grove_core::storage::AfterSessionStart::OpenSession,
+        );
+    }
+    #[gpui::test]
+    fn dashboard_claude_opens_adopted_session_and_preserves_fresh_composer(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        sequential_dashboard_adoption(
+            cx,
+            grove_core::codex::Provider::Claude,
+            false,
+            grove_core::storage::AfterSessionStart::OpenSession,
+        );
     }
     fn worktree_round_trip(cx: &mut gpui::TestAppContext, provider: grove_core::codex::Provider) {
         let fixture = tempfile::tempdir().unwrap();

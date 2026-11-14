@@ -463,6 +463,15 @@ impl LandingPage {
     }
 }
 
+/// Destination after adopting a first message from the main composer.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AfterSessionStart {
+    #[default]
+    StayOnDashboard,
+    OpenSession,
+}
+
 #[derive(Clone, Default, Serialize, Deserialize)]
 pub struct Store {
     /// User writing preferences; Grove workflow and output contracts remain built in.
@@ -470,6 +479,8 @@ pub struct Store {
     pub prompt_overrides: std::collections::BTreeMap<String, String>,
     #[serde(default)]
     pub default_landing_page: LandingPage,
+    #[serde(default)]
+    pub after_session_start: AfterSessionStart,
     #[serde(default)]
     pub model_favorites: Vec<ModelFavorite>,
     #[serde(default)]
@@ -998,6 +1009,27 @@ pub(crate) mod tests {
             "archived project must round-trip as archived"
         );
         assert_eq!(recovered.recent_launches, original.recent_launches);
+    }
+
+    #[test]
+    fn after_session_start_defaults_and_round_trips() {
+        let legacy: Store = serde_json::from_str(r#"{"projects":[]}"#).unwrap();
+        assert_eq!(
+            legacy.after_session_start,
+            AfterSessionStart::StayOnDashboard
+        );
+        for preference in [
+            AfterSessionStart::StayOnDashboard,
+            AfterSessionStart::OpenSession,
+        ] {
+            let store = Store {
+                after_session_start: preference,
+                ..Default::default()
+            };
+            let restored: Store =
+                serde_json::from_str(&serde_json::to_string(&store).unwrap()).unwrap();
+            assert_eq!(restored.after_session_start, preference);
+        }
     }
 
     #[test]
