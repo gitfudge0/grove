@@ -3265,7 +3265,6 @@ mod tests {
 
     #[gpui::test]
     fn after_session_start_choices_update_saved_preference(cx: &mut gpui::TestAppContext) {
-        cx.update(setup);
         struct NavigationHost(Entity<SettingsPanel>);
         impl Render for NavigationHost {
             fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
@@ -3275,6 +3274,7 @@ mod tests {
                     .child(self.0.clone())
             }
         }
+        cx.update(setup);
         let mut panel = None;
         let (_, cx) = cx.add_window_view(|_, cx| {
             let runtime = cx.new(Runtime::new);
@@ -3302,24 +3302,24 @@ mod tests {
                 assert_eq!(
                     cx.global::<SettingsState>().store.after_session_start,
                     expected
-                )
+                );
             });
         }
         // Traverse through the app's actual unhandled-Tab route, not direct focus.
         cx.update(|window, cx| {
             panel.read(cx).after_session_start_focus[0]
                 .clone()
-                .focus(window, cx)
+                .focus(window, cx);
         });
         cx.simulate_keystrokes("tab");
         draw(cx);
         cx.update(|window, cx| {
-            assert!(panel.read(cx).after_session_start_focus[1].is_focused(window))
+            assert!(panel.read(cx).after_session_start_focus[1].is_focused(window));
         });
         cx.simulate_keystrokes("shift-tab");
         draw(cx);
         cx.update(|window, cx| {
-            assert!(panel.read(cx).after_session_start_focus[0].is_focused(window))
+            assert!(panel.read(cx).after_session_start_focus[0].is_focused(window));
         });
         for (index, key, expected) in [
             (1, "enter", AfterSessionStart::OpenSession),
@@ -3328,7 +3328,7 @@ mod tests {
             cx.update(|window, cx| {
                 panel.read(cx).after_session_start_focus[index]
                     .clone()
-                    .focus(window, cx)
+                    .focus(window, cx);
             });
             cx.simulate_keystrokes(key);
             draw(cx);

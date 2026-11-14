@@ -1,3 +1,35 @@
+## Question decision review (November 2026)
+
+Native questions now show every question in numbered plan-style sections, with
+explicit review before send, request-local drafts and review invalidation,
+secret-redacted summaries and next-unanswered navigation. Elicitation choices
+share the quiet treatment; tool disclosures include observed exit codes.
+
+Linux checks passed six question GPUI fixtures, the custom-answer arrow-navigation
+fixture, the async-metadata review/send fixture, 27 tool fixtures (two opt-in
+captures ignored), 16 core question-contract tests and 33 source conformance
+checks. Mixed-agent controls, approval response/URL separation and the affected
+settings fixture also passed. Formatting, all-target Clippy and source-tooling
+checks passed after mechanical test-only lint cleanup.
+The source conformance run initially exposed an outdated exact-string
+assertion already present on the base branch; it now checks the existing stronger
+source-index guard. The custom-answer arrow fixture caught incorrect vendor-button
+focus wiring introduced by the redesign; switching to its explicit focus-handle
+API restored keyboard navigation.
+
+**Codex:** a production-actor smoke received a live two-choice question,
+acknowledged the answer and preserved a separately edited conversation draft.
+This verifies transport/receipt behavior, not native widgets driving a live actor.
+**Claude:** shared typed native fixtures passed; live transport remains untested
+because the installed CLI reports signed out. No credentials were changed.
+
+Native Linux appearance remains unverified: the isolated capture attempt produced
+four entirely black images at dark/light, narrow and enlarged-rem settings,
+then failed with the previously documented InputState teardown-handle leak.
+These images establish no visual fidelity. macOS and Windows runtime, browser
+completion and elicitation live boundaries remain untested. Evidence is retained
+in the original checkout under `.grove-artifacts/question-shipping/`.
+
 # Verification and known gaps
 
 ## Pending transcript message ordering (November 2026)

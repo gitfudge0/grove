@@ -998,63 +998,6 @@ pub fn question_choice(
         )
 }
 
-/// Expandable question-list row, retaining neutral open and keyboard focus states.
-pub fn question_disclosure(
-    id: impl Into<gpui::ElementId>,
-    label: String,
-    summary: String,
-    expanded: bool,
-) -> Stateful<Div> {
-    div()
-        .id(id)
-        .role(gpui::Role::Button)
-        .cursor_pointer()
-        .aria_label(label.clone())
-        .group("neutral-control")
-        .aria_expanded(expanded)
-        .aria_description(if expanded {
-            "Expanded. Activate to collapse"
-        } else {
-            "Collapsed. Activate to expand"
-        })
-        .tab_index(0)
-        .tab_stop(true)
-        .w_full()
-        .min_w_0()
-        .flex()
-        .items_center()
-        .gap(rpx(SPACE_SM))
-        .px(rpx(SPACE_3XL))
-        .py(rpx(SPACE_2XL))
-        .border_t_1()
-        .border_color(c::BORDER_SOFT())
-        .text_color(c::FG_DIM())
-        .when(expanded, |row| row.bg(c::BG_HOVER()).text_color(c::FG()))
-        .hover(|row| row.bg(c::BG_HOVER()).text_color(c::FG()))
-        .focus_visible(|row| row.bg(c::BG_HOVER()))
-        .child(crate::icons::icon(
-            if expanded { "chev-down" } else { "chev-right" },
-            ICON_SM,
-            if expanded { c::FG() } else { c::FG_DIM() },
-        ))
-        .child(
-            div()
-                .flex_1()
-                .min_w_0()
-                .flex()
-                .flex_col()
-                .gap(rpx(SPACE_XS))
-                .child(div().child(label))
-                .child(
-                    div()
-                        .text_size(rpx(TEXT_SMALL))
-                        .text_color(if expanded { c::FG() } else { c::FG_DIM() })
-                        .group_hover("neutral-control", |text| text.text_color(c::FG()))
-                        .child(summary),
-                ),
-        )
-}
-
 /// Neutral Settings action and choice geometry. Selection never changes its border.
 pub fn settings_control(
     id: impl Into<gpui::ElementId>,

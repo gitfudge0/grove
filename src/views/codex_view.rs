@@ -4,9 +4,9 @@ use super::{
     components::{
         attached_validation, form_action, header_control, header_control_frame,
         header_control_with_label_tooltip, header_control_with_tooltip, preference_choices,
-        project_field_well, question_choice, question_disclosure, settings_control, shimmer_label,
-        task_mark, task_meter, tooltip, tooltip_content, transcript_action,
-        truncation_safe_label_width, TaskPhase,
+        project_field_well, question_choice, settings_control, shimmer_label, task_mark,
+        task_meter, tooltip, tooltip_content, transcript_action, truncation_safe_label_width,
+        TaskPhase,
     },
     rpx,
     tokens::*,
@@ -977,8 +977,9 @@ struct QuestionReceipt {
 }
 
 struct QuestionGroupDraft {
+    reviewing: bool,
+    row_anchors: Vec<gpui::ScrollAnchor>,
     questions: Vec<QuestionDraft>,
-    expanded: Option<usize>,
     row_focus: Vec<FocusHandle>,
     anchor: usize,
     ack_after: u64,
@@ -4000,6 +4001,24 @@ impl CodexView {
                             shimmer,
                             cx,
                         )),
+                )
+                .when_some(tool["exitCode"].as_i64(), |row, code| {
+                    row.child(
+                        div()
+                            .flex_shrink_0()
+                            .text_size(rpx(TEXT_SMALL))
+                            .text_color(if code == 0 {
+                                c::FG_DIM()
+                            } else {
+                                c::FORM_ERROR()
+                            })
+                            .child(format!("· exit {code}")),
+                    )
+                })
+                .aria_description(
+                    tool["exitCode"]
+                        .as_i64()
+                        .map_or_else(String::new, |code| format!("Exit code {code}")),
                 )
                 .aria_expanded(tool_expanded)
                 .child(
@@ -12696,6 +12715,9 @@ impl CodexView {
                             .flex()
                             .flex_col()
                             .gap(rpx(SPACE_SM))
+                            .border_t_1()
+                            .border_color(c::BORDER_SOFT())
+                            .pt(rpx(SPACE_LG))
                             .child(div().child(format!(
                                 "{}{}",
                                 field.title,
@@ -12937,6 +12959,10 @@ impl CodexView {
             multiple,
             selected,
         )
+        .when(!selected, |row| {
+            row.bg(gpui::transparent_black())
+                .border_color(gpui::transparent_black())
+        })
         .when_some(focus, |row, focus| row.track_focus(&focus))
         .when(submitting, |row| {
             row.cursor_default().opacity(OPACITY_DISABLED)
@@ -13440,8 +13466,9 @@ impl CodexView {
         for request in &state.questions {
             let key = question_key(state, request);
             if let Some(draft) = self.question_drafts.get_mut(&key) {
-                if state.error.is_some() {
+                if state.error.is_some() && draft.submitting {
                     draft.submitting = false;
+                    draft.reviewing = false;
                     draft.pending_receipt = None;
                 }
                 continue;
@@ -13474,7 +13501,18 @@ impl CodexView {
                             input.auto_grow(1, 4)
                         }
                     });
-                    let subscription = cx.subscribe(&input, |_, _, _: &InputEvent, cx| cx.notify());
+                    let input_key = key.clone();
+                    let subscription =
+                        cx.subscribe(&input, move |this, _, event: &InputEvent, cx| {
+                            if matches!(event, InputEvent::Change) {
+                                if let Some(draft) = this.question_drafts.get_mut(&input_key) {
+                                    if !draft.submitting {
+                                        draft.reviewing = false;
+                                    }
+                                }
+                            }
+                            cx.notify();
+                        });
                     QuestionDraft {
                         selected: HashSet::new(),
                         choice_focus: (0..question.options.len()
@@ -13490,10 +13528,13 @@ impl CodexView {
             self.question_drafts.insert(
                 key,
                 QuestionGroupDraft {
+                    reviewing: false,
+                    row_anchors: request
+                        .questions
+                        .iter()
+                        .map(|_| gpui::ScrollAnchor::for_handle(self.scroll.clone()))
+                        .collect(),
                     questions,
-                    expanded: request.questions.iter().position(|question| {
-                        !matches!(&question.kind, codex::QuestionKind::Number(number) if number.default_value.is_some())
-                    }).or(Some(0)),
                     row_focus: request
                         .questions
                         .iter()
@@ -13559,7 +13600,9 @@ impl CodexView {
         if group.submitting {
             return;
         }
+        group.reviewing = false;
         let draft = &mut group.questions[question_index];
+        let was_custom = draft.custom;
         if !multiple {
             draft.selected.clear();
             draft.custom = false;
@@ -13570,9 +13613,11 @@ impl CodexView {
                 draft.selected.remove(&index);
             }
         } else {
-            draft.custom = !draft.custom;
+            draft.custom = !was_custom;
             if draft.custom {
                 draft.input.focus_handle(cx).focus(window, cx);
+            } else if let Some(focus) = draft.choice_focus.last() {
+                focus.focus(window, cx);
             }
         }
         cx.notify();
@@ -13656,11 +13701,7 @@ impl CodexView {
         if group.submitting {
             return;
         }
-        group.expanded = if group.expanded == Some(index) {
-            None
-        } else {
-            Some(index)
-        };
+        group.row_anchors[index].scroll_to(window, cx);
         group.row_focus[index].focus(window, cx);
         cx.notify();
     }
@@ -13798,6 +13839,12 @@ impl CodexView {
             .count();
         let validation = request.validate(&answers);
         let ready = !submitting && validation.is_ok();
+        let reviewing = draft.reviewing;
+        let next_index = request
+            .questions
+            .iter()
+            .position(|question| !question_has_answer(question, &answers));
+        let next_key = key.clone();
         let mut group = div()
             .id(("agent-question-group", request_index))
             .role(gpui::Role::Group)
@@ -13812,84 +13859,141 @@ impl CodexView {
             .min_w_0()
             .flex()
             .flex_col()
-            .rounded(rpx(RADIUS_GROUP))
-            .border_1()
-            .border_color(c::BORDER())
-            .bg(c::BG_RAIL())
-            .overflow_hidden()
+            .gap(rpx(SPACE_LG))
             .child(
                 div()
-                    .px(rpx(SPACE_3XL))
-                    .py(rpx(SPACE_2XL))
-                    .text_size(rpx(TEXT_SMALL))
-                    .text_color(c::FG())
-                    .child(format!(
-                        "{} needs your input · {answered} of {} answered · draft",
-                        state
-                            .interaction_agent(&request.id)
-                            .unwrap_or(state.saved.provider.label()),
-                        request.questions.len(),
-                    )),
+                    .flex()
+                    .flex_wrap()
+                    .items_center()
+                    .gap(rpx(SPACE_LG))
+                    .child(status::label(
+                        format!("question-status-{request_index}"),
+                        StatusKind::NeedsInput,
+                        "Needs your input",
+                        ICON_SM,
+                        cx,
+                    ))
+                    .child(
+                        div()
+                            .text_size(rpx(TEXT_SMALL))
+                            .text_color(c::FG_DIM())
+                            .child(
+                                state
+                                    .interaction_agent(&request.id)
+                                    .unwrap_or(state.saved.provider.label())
+                                    .to_owned(),
+                            ),
+                    ),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_wrap()
+                    .items_center()
+                    .justify_between()
+                    .gap(rpx(SPACE_LG))
+                    .child(
+                        div()
+                            .text_size(rpx(TEXT_SMALL))
+                            .text_color(c::FG_DIM())
+                            .child(format!(
+                                "{answered} of {} answered · {}",
+                                request.questions.len(),
+                                if reviewing { "review" } else { "draft" }
+                            )),
+                    )
+                    .child(
+                        transcript_action(
+                            gpui::SharedString::from(format!("questions-next-{request_index}")),
+                            "Next unanswered",
+                            false,
+                            window,
+                            cx,
+                        )
+                        .icon(
+                            gpui_component::Icon::default()
+                                .path("icons/chev-down.svg")
+                                .size(rpx(ICON_SM)),
+                        )
+                        .debug_selector(move || format!("questions-next-{request_index}"))
+                        .disabled(submitting || reviewing || next_index.is_none())
+                        .on_click(cx.listener(
+                            move |this, _, window, cx| {
+                                if let Some(index) = next_index {
+                                    this.toggle_question(&next_key, index, window, cx);
+                                }
+                            },
+                        )),
+                    ),
             );
         if let Some(title) = &request.title {
             group = group.child(
                 div()
-                    .px(rpx(SPACE_3XL))
-                    .pb(rpx(SPACE_2XL))
+                    .pb(rpx(SPACE_LG))
                     .font_weight(gpui::FontWeight::SEMIBOLD)
                     .child(title.clone()),
             );
         }
         for (question_index, question) in request.questions.iter().enumerate() {
             let question_draft = &draft.questions[question_index];
-            let expanded = draft.expanded == Some(question_index);
-            let click_key = key.clone();
-            let keyboard_key = key.clone();
-            group = group.child(
-                question_disclosure(
-                    gpui::SharedString::from(format!(
-                        "question-row-{request_index}-{question_index}"
-                    )),
-                    format!("{}. {}", question_index + 1, question.text),
-                    question_answer_summary(question, &answers),
-                    expanded,
-                )
-                .debug_selector(move || format!("question-row-{request_index}-{question_index}"))
-                .track_focus(&draft.row_focus[question_index])
-                .when(submitting, gpui::Styled::cursor_default)
-                .on_click(cx.listener(move |this, _, window, cx| {
-                    this.toggle_question(&click_key, question_index, window, cx);
-                }))
-                .on_key_down(cx.listener(
-                    move |this, event: &gpui::KeyDownEvent, window, cx| {
-                        if action_key(event) {
-                            this.toggle_question(&keyboard_key, question_index, window, cx);
-                            cx.stop_propagation();
-                        }
-                    },
-                )),
-            );
-            if !expanded {
+            if reviewing {
+                group = group.child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(rpx(SPACE_SM))
+                        .border_t_1()
+                        .border_color(c::BORDER_SOFT())
+                        .py(rpx(SPACE_LG))
+                        .child(
+                            div()
+                                .text_size(rpx(TEXT_SMALL))
+                                .text_color(c::FG_DIM())
+                                .child(question.text.clone()),
+                        )
+                        .child(div().child(question_answer_summary(question, &answers))),
+                );
                 continue;
             }
             let mut field = div()
                 .id(gpui::SharedString::from(format!(
                     "question-{request_index}-{question_index}"
                 )))
-                .role(if question.multiple {
-                    gpui::Role::Group
-                } else {
-                    gpui::Role::RadioGroup
-                })
+                .role(gpui::Role::Group)
                 .aria_label(question.text.clone())
                 .w_full()
                 .min_w_0()
                 .flex()
                 .flex_col()
                 .gap(rpx(SPACE_LG))
-                .px(rpx(SPACE_3XL))
-                .pb(rpx(SPACE_3XL))
-                .bg(c::FIELD_FILL())
+                .border_t_1()
+                .border_color(c::BORDER_SOFT())
+                .py(rpx(SPACE_2XL))
+                .child(
+                    div()
+                        .flex()
+                        .items_start()
+                        .gap(rpx(SPACE_LG))
+                        .child(
+                            div()
+                                .flex_shrink_0()
+                                .text_size(rpx(TEXT_SMALL))
+                                .text_color(c::FG_DIM())
+                                .child(format!("{:02}", question_index + 1)),
+                        )
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .text_size(rpx(TEXT_BODY))
+                                .child(question.text.clone()),
+                        ),
+                )
+                .anchor_scroll(Some(draft.row_anchors[question_index].clone()))
+                .track_focus(&draft.row_focus[question_index])
+                .tab_index(0)
+                .debug_selector(move || format!("question-row-{request_index}-{question_index}"))
+                .focus_visible(|style| style.bg(c::BG_HOVER()))
                 .when(!question.header.is_empty(), |field| {
                     field.child(
                         div()
@@ -13951,6 +14055,10 @@ impl CodexView {
                         multiple,
                         question_draft.selected.contains(&option_index),
                     )
+                    .when(!question_draft.selected.contains(&option_index), |row| {
+                        row.bg(gpui::transparent_black())
+                            .border_color(gpui::transparent_black())
+                    })
                     .track_focus(&question_draft.choice_focus[option_index])
                     .debug_selector(move || {
                         format!("question-option-{request_index}-{question_index}-{option_index}")
@@ -14004,16 +14112,26 @@ impl CodexView {
                 let multiple = question.multiple;
                 let choice_count = question.options.len();
                 field = field.child(
-                    question_choice(
+                    transcript_action(
                         gpui::SharedString::from(format!(
                             "question-other-{request_index}-{question_index}"
                         )),
-                        "Other".into(),
-                        String::new(),
-                        multiple,
-                        question_draft.custom,
+                        if question_draft.custom {
+                            "Use suggested answers"
+                        } else {
+                            "Write my own answer"
+                        },
+                        false,
+                        window,
+                        cx,
                     )
-                    .track_focus(&question_draft.choice_focus[question.options.len()])
+                    .icon(
+                        gpui_component::Icon::default()
+                            .path("icons/edit.svg")
+                            .size(rpx(ICON_SM)),
+                    )
+                    .disabled(submitting)
+                    .with_focus_handle(question_draft.choice_focus[question.options.len()].clone())
                     .when(submitting, |row| {
                         row.cursor_default().opacity(OPACITY_DISABLED)
                     })
@@ -14128,19 +14246,34 @@ impl CodexView {
                 .child(
                     transcript_action(
                         gpui::SharedString::from(format!("questions-cancel-{request_index}")),
-                        "Cancel questions",
+                        if reviewing {
+                            "Edit answers"
+                        } else {
+                            "Cancel questions"
+                        },
                         false,
                         window,
                         cx,
                     )
                     .icon(
                         gpui_component::Icon::default()
-                            .path("icons/close.svg")
+                            .path(if reviewing {
+                                "icons/edit.svg"
+                            } else {
+                                "icons/close.svg"
+                            })
                             .size(rpx(ICON_SM)),
                     )
                     .debug_selector(move || format!("questions-cancel-{request_index}"))
                     .disabled(submitting)
                     .on_click(cx.listener(move |this, _, _, cx| {
+                        if let Some(group) = this.question_drafts.get_mut(&cancel_key) {
+                            if group.reviewing {
+                                group.reviewing = false;
+                                cx.notify();
+                                return;
+                            }
+                        }
                         this.answer_questions(&cancel_key, cancel_id.clone(), true, cx);
                     })),
                 )
@@ -14149,8 +14282,10 @@ impl CodexView {
                         gpui::SharedString::from(format!("questions-submit-{request_index}")),
                         if submitting {
                             "Sending…"
-                        } else {
+                        } else if reviewing {
                             "Send answers"
+                        } else {
+                            "Review response"
                         },
                         true,
                         window,
@@ -14164,6 +14299,13 @@ impl CodexView {
                     .debug_selector(move || format!("questions-submit-{request_index}"))
                     .disabled(!ready)
                     .on_click(cx.listener(move |this, _, _, cx| {
+                        if let Some(group) = this.question_drafts.get_mut(&submit_key) {
+                            if !group.reviewing {
+                                group.reviewing = true;
+                                cx.notify();
+                                return;
+                            }
+                        }
                         this.answer_questions(&submit_key, submit_id.clone(), false, cx);
                     })),
                 ),
@@ -15715,7 +15857,7 @@ mod tests {
             cx.update(|window, cx| {
                 view.update(cx, |view, cx| {
                     view.input.update(cx, |input, cx| {
-                        input.set_value("Original launched prompt", window, cx)
+                        input.set_value("Original launched prompt", window, cx);
                     });
                     view.images = vec!["original-image".into()];
                     view.reference = Some(reference.clone());
@@ -15729,7 +15871,7 @@ mod tests {
                     });
                     view.launch_dashboard(window, cx);
                     view.input.focus_handle(cx).focus(window, cx);
-                })
+                });
             });
             draw(cx);
             cx.simulate_keystrokes("x");
@@ -15753,7 +15895,7 @@ mod tests {
                         .update(cx, |session, _| session.state.status = Status::Failed);
                     view.flush_dashboard_submission(window, cx);
                     assert!(!view.dashboard_pending);
-                })
+                });
             });
             draw(cx);
             cx.simulate_keystrokes("x");
@@ -15768,7 +15910,7 @@ mod tests {
                         session.state.saved.thread_id = Some("late-ready".into());
                         cx.notify();
                     });
-                })
+                });
             });
             cx.run_until_parked();
             assert!(
@@ -16714,7 +16856,7 @@ mod tests {
             }, |window,cx| {
                 window.set_window_title("Grove plans QA");
                 let provider = if std::env::var("GROVE_PLAN_CAPTURE_PROVIDER").as_deref() == Ok("claude") { codex::Provider::Claude } else { codex::Provider::Codex };
-                let state = if std::env::var_os("GROVE_PLAN_OVERVIEW_CAPTURE").is_some() { overview_plan_snapshot(provider) } else if std::env::var_os("GROVE_PLAN_REQUEST_CAPTURE").is_some() { plan_request_snapshot(provider) } else { decision_plan_snapshot(provider) };
+                let state = if std::env::var_os("GROVE_QUESTION_CAPTURE").is_some() { question_review_snapshot(provider) } else if std::env::var_os("GROVE_PLAN_OVERVIEW_CAPTURE").is_some() { overview_plan_snapshot(provider) } else if std::env::var_os("GROVE_PLAN_REQUEST_CAPTURE").is_some() { plan_request_snapshot(provider) } else { decision_plan_snapshot(provider) };
                 let session=cx.new(|cx|CodexSession::from_connection(state,connection,cx));
                 let view=cx.new(|cx|CodexView::new(session,window,cx));
                 chat=Some(view.clone());
@@ -16730,7 +16872,7 @@ mod tests {
                     cx.update_window(window.into(),|_,window,cx| {
                         window.resize(gpui::size(gpui::px(width),gpui::px(900.)));
                         window.set_rem_size(gpui::px(rem));
-                        if custom && std::env::var_os("GROVE_PLAN_REQUEST_CAPTURE").is_none() {chat.update(cx,|view,cx| {
+                        if custom && std::env::var_os("GROVE_PLAN_REQUEST_CAPTURE").is_none() && std::env::var_os("GROVE_QUESTION_CAPTURE").is_none() {chat.update(cx,|view,cx| {
                             view.begin_plan_composer(super::super::native_plan::NativePlanEvent::Compose {
                                 plan_id:"invites".into(),revision_id:"r1".into(),target:super::super::native_plan::PlanComposerTarget::CustomAnswer{decision_id:"access".into(),prompt:"Who can invite?".into()}
                             },window,cx);
@@ -16742,6 +16884,7 @@ mod tests {
                                 plan.update(cx, |plan,cx| plan.configure_overview_capture(std::env::var_os("GROVE_PLAN_OVERVIEW_OPEN_DETAIL").is_some(),window,cx));
                             }
                         }); }
+                        if std::env::var_os("GROVE_QUESTION_CAPTURE").is_some() { chat.update(cx, |view,cx| { view.scroll.scroll_to_top_of_item(0); cx.notify(); }); }
                         window.refresh();
                     }).unwrap();
                     cx.background_executor().timer(std::time::Duration::from_millis(800)).await;
@@ -22833,6 +22976,7 @@ mod tests {
                             if expanded { view.expanded.insert(key); } else { view.expanded.remove(&key); }
                             cx.notify();
                         });
+
                         window.refresh();
                     }).unwrap();
                     cx.background_executor().timer(std::time::Duration::from_millis(800)).await;
@@ -25069,6 +25213,13 @@ mod tests {
         let submit = cx.debug_bounds("questions-submit-0").unwrap();
         cx.simulate_click(submit.center(), gpui::Modifiers::default());
         draw(cx);
+        assert!(view.read_with(cx, |view, _| view
+            .question_drafts
+            .values()
+            .all(|group| group.reviewing && !group.submitting)));
+        let submit = cx.debug_bounds("questions-submit-0").unwrap();
+        cx.simulate_click(submit.center(), gpui::Modifiers::default());
+        draw(cx);
         let epoch = view.read_with(cx, |view, cx| view.session.read(cx).state.interaction_epoch);
         let answer = actions_at_epoch(&actions, epoch)
             .into_iter()
@@ -25170,7 +25321,7 @@ mod tests {
             });
         });
         draw(cx);
-        assert!(cx.debug_bounds("question-input-0-0").is_none());
+        assert!(cx.debug_bounds("question-input-0-0").is_some());
         assert!(cx.debug_bounds("question-input-0-1").is_some());
         let key = view.read_with(cx, |view, cx| {
             question_key(&view.session.read(cx).state, &request)
@@ -25208,6 +25359,12 @@ mod tests {
         });
         draw(cx);
         assert!(cx.debug_bounds("questions-validation-0").is_none());
+        let submit = cx.debug_bounds("questions-submit-0").unwrap();
+        cx.simulate_click(submit.center(), gpui::Modifiers::default());
+        draw(cx);
+        assert!(actions_at_epoch(&actions, epoch)
+            .into_iter()
+            .all(|action| !matches!(action, Action::AnswerQuestions(_, _))));
         let submit = cx.debug_bounds("questions-submit-0").unwrap();
         cx.simulate_click(submit.center(), gpui::Modifiers::default());
         draw(cx);
@@ -25594,6 +25751,116 @@ mod tests {
             assert_eq!(view.question_receipts[0].anchor, anchor);
             assert_eq!(view.question_receipts[0].answers[0].1, "Provided securely");
         });
+    }
+
+    fn question_review_snapshot(provider: codex::Provider) -> codex::Snapshot {
+        let mut state = snapshot();
+        state.saved.provider = provider;
+        state.status = Status::Waiting;
+        state.saved.draft = "Keep my conversation draft".into();
+        state.saved.items.push(json!({"type":"agentMessage","id":"release-question","text":"Choose how the release should work before continuing."}));
+        let mut request = codex::QuestionRequest::from_codex(json!("review-release"), &json!({"questions":[
+            {"id":"audience","question":"Who receives the first release?","header":"Single choice","isOther":true,"options":[{"label":"Pilot workspaces","description":"Validate with a smaller audience first.","preview":"Internal workspaces → observe → decide whether to expand."},{"label":"All workspaces","description":"Make the release available to everyone immediately."}]},
+            {"id":"checks","question":"Which checks gate the release?","header":"Multiple choice","options":[{"label":"Unit tests"},{"label":"Native UI inspection"}]},
+            {"id":"criteria","question":"What would make this release successful?","header":"Free text"},
+            {"id":"credential","question":"Provide a test credential","header":"Secret answer","isSecret":true},
+            {"id":"duration","question":"How long should the pilot run?","header":"Number"}
+        ]})).unwrap();
+        request.title = Some("Release decisions".into());
+        request.questions[1].multiple = true;
+        request.questions[4].kind = codex::QuestionKind::Number(codex::QuestionNumber {
+            min: 1.,
+            max: 14.,
+            step: Some(1.),
+            default_value: Some(7.),
+            unit: Some("days".into()),
+        });
+        state.questions.push(request);
+        state
+    }
+
+    #[gpui::test]
+    fn question_review_keeps_all_types_and_request_local_edits_for_both_providers(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (view, cx, actions, _) = fixture(cx);
+        for provider in [codex::Provider::Codex, codex::Provider::Claude] {
+            cx.update(|_, cx| {
+                view.update(cx, |view, cx| {
+                    view.session.update(cx, |session, cx| {
+                        session.state = question_review_snapshot(provider).into();
+                        let mut second = session.state.questions[0].clone();
+                        second.id = json!("independent");
+                        session.state.questions.push(second);
+                        cx.notify();
+                    });
+                    cx.notify();
+                });
+            });
+            draw(cx);
+            for selector in [
+                "question-row-0-0",
+                "question-row-0-1",
+                "question-row-0-2",
+                "question-row-0-3",
+                "question-row-0-4",
+            ] {
+                assert!(
+                    cx.debug_bounds(selector).is_some(),
+                    "{provider:?}: all question types render without a picker"
+                );
+            }
+            let keys = view.read_with(cx, |view, cx| {
+                view.session
+                    .read(cx)
+                    .state
+                    .questions
+                    .iter()
+                    .map(|r| question_key(&view.session.read(cx).state, r))
+                    .collect::<Vec<_>>()
+            });
+            cx.update(|window, cx| {
+                view.update(cx, |view, cx| {
+                    view.select_question_choice(&keys[0], 0, None, false, window, cx);
+                    assert!(view.question_drafts[&keys[0]].questions[0].custom);
+                    view.select_question_choice(&keys[0], 0, None, false, window, cx);
+                    assert!(
+                        !view.question_drafts[&keys[0]].questions[0].custom,
+                        "suggested answers must disable custom mode"
+                    );
+                    for key in &keys {
+                        view.question_drafts.get_mut(key).unwrap().reviewing = true;
+                    }
+                    let input = view.question_drafts[&keys[0]].questions[2].input.clone();
+                    input.update(cx, |_, cx| cx.emit(InputEvent::Focus));
+                });
+            });
+            draw(cx);
+            assert!(
+                view.read_with(cx, |view, _| keys
+                    .iter()
+                    .all(|key| view.question_drafts[key].reviewing)),
+                "focus alone must not invalidate review"
+            );
+            cx.update(|window, cx| {
+                view.update(cx, |view, cx| {
+                    let input = view.question_drafts[&keys[0]].questions[2].input.clone();
+                    input.update(cx, |input, cx| {
+                        input.set_value("A measurable outcome", window, cx);
+                        cx.emit(InputEvent::Change);
+                    });
+                });
+            });
+            draw(cx);
+            view.read_with(cx, |view, _| {
+                assert!(!view.question_drafts[&keys[0]].reviewing);
+                assert!(
+                    view.question_drafts[&keys[1]].reviewing,
+                    "another request retains its review"
+                );
+            });
+            assert!(actions.try_iter().all(|a| !matches!(a,Action::Interaction{action,..} if matches!(*action,Action::AnswerQuestions(_, _)))));
+        }
     }
 
     #[gpui::test]
