@@ -60,7 +60,7 @@ Editable text inputs accept native file drops. While local files are over an ena
 | Full form field | `form_field` | Embedded supporting label above a DM Sans value in a filled well; semantic error attached below. |
 | Project flow field | `project_form_field`, `project_field_well` | Match the existing project canvas recipe; editable and readonly values share the well. |
 | Action button | `form_action`, `transcript_action`, `dense_action_with_colors` | One size: the complete smaller dense recipe, including label, glyph, gap, padding, radius, and vendor inner size tier. Semantic colors may differ; form actions do not grow. |
-| Questions/settings | `question_choice`, `question_disclosure`, `settings_control` | Neutral selection/open treatment with component-owned keyboard focus; owner supplies interaction semantics. |
+| Questions/settings | `question_choice`, `settings_control` | Neutral selection/open treatment with component-owned keyboard focus; owner supplies interaction semantics. |
 | Preferences/readonly/errors | `boolean_choices`, `readonly_value`, `attached_validation` | Owner supplies accessible role/input; readonly content remains literal and selectable; validation joins its field in normal flow. |
 | Task/status content | `task_mark`, `task_meter`, shared status primitives | Reuse the same semantic status and progress representation across owning views. |
 
@@ -698,3 +698,10 @@ When a focused preparation disclosure or Retry action disappears after async
 completion, focus returns to the writing field. Completion never steals focus
 from another control. Dashboard handoff observation does not extend a launched
 session's lifetime.
+
+
+## Question decision review
+
+Native Codex and Claude question requests retain their source-attached transcript identity and drafts. Every question in a request is visible together in numbered sections, with prompt-first hierarchy, quiet unselected choices and neutral selection. Next unanswered scrolls to and focuses the first incomplete section. Custom answers use an explicit edit action and the request-owned input, preserving the unrelated conversation draft. Single choice custom answers replace the selected suggestion; multiple choice retains its existing additive answer semantics. Numeric limits, secret masking and provider option descriptions/previews remain visible and authoritative.
+
+Review response shows the assembled answers before sending; secrets show only a secure-provided summary. Edit answers returns to the same drafts. Review never dispatches a response. Send answers retains the existing request/turn checks, duplicate-send lock and acknowledgment-only receipt. Input changes invalidate only that request's review; focus and another request's edits do not. Failure preserves answers and returns to editing. Field/selection/focus updates are immediate input feedback, without decorative motion. Elicitation fields use the same compact neutral section/choice rhythm while permissions and browser completion retain their distinct source-owned response semantics. Tool rows retain their operation glyph, literal input/output disclosure, local failure treatment and observed exit code when available; no retry is inferred.

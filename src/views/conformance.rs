@@ -377,11 +377,7 @@ fn r8_dense_controls_share_geometry() {
 #[test]
 fn button_cursor_policy_covers_shared_recipes_and_vendor_states() {
     let components = source("src/views/components.rs");
-    for name in [
-        "inline_disclosure_base",
-        "question_choice",
-        "question_disclosure",
-    ] {
+    for name in ["inline_disclosure_base", "question_choice"] {
         let body = components
             .split(&format!("fn {name}("))
             .nth(1)
@@ -548,13 +544,6 @@ fn text_icon_action_regressions_use_the_leading_vendor_slot() {
 #[test]
 fn disclosure_buttons_keep_icons_before_their_labels() {
     for (file, start, end, icon, label) in [
-        (
-            "src/views/components.rs",
-            "pub fn question_disclosure(",
-            "pub fn settings_control(",
-            ".child(crate::icons::icon(",
-            ".child(label)",
-        ),
         (
             "src/views/codex_view.rs",
             ".id(\"codex-task-strip\")",
@@ -825,7 +814,7 @@ fn subagents_stay_in_session_right_panel_and_preview_is_read_only() {
         .unwrap();
     let message_row = message_row.split_whitespace().collect::<Vec<_>>().join(" ");
     let guarded_edit = message_row
-        .split("if !self.transcript_only() && approval.is_none() {")
+        .split("if !self.transcript_only() && approval.is_none() && source_index.is_some() {")
         .nth(1)
         .expect("editing requires a main conversation without an approval receipt")
         .split("let keyboard_key = key.clone();")
