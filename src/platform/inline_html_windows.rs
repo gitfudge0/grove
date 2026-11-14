@@ -59,6 +59,7 @@ thread_local! {
 }
 
 struct State {
+    capture: Cell<bool>,
     source: RefCell<Option<String>>,
     view: RefCell<Option<WebView>>,
     status: Cell<LoadStatus>,
@@ -80,6 +81,7 @@ pub struct Document {
 impl Document {
     pub fn new(source: &str) -> Option<Self> {
         let state = Rc::new(State {
+            capture: Cell::new(false),
             source: RefCell::new(Some(source.to_owned())),
             view: RefCell::new(None),
             status: Cell::new(LoadStatus::Loading),
@@ -147,7 +149,7 @@ impl Document {
         // No authored URL/HTML at construction: all native filters below must succeed first.
         let view = WebViewBuilder::new_with_web_context(&mut context)
             .with_incognito(true)
-            .with_visible(false)
+            .with_visible(owner.capture.get())
             .with_focused(false)
             .with_devtools(false)
             .with_clipboard(false)
@@ -825,7 +827,9 @@ pub fn hide_all() {
     DOCUMENTS.with(|documents| {
         documents.borrow_mut().retain(|weak| {
             if let Some(state) = weak.upgrade() {
-                hide_state(&state);
+                if !state.capture.get() {
+                    hide_state(&state);
+                }
                 true
             } else {
                 false
@@ -916,4 +920,213 @@ pub fn open_in_browser(url: String) -> impl std::future::Future<Output = Result<
             .map_err(|error| format!("Couldn’t open HTML in the default browser: {error}"))
     })();
     std::future::ready(result)
+}
+
+/// Independent nonactivating viewport. Initialization runs after the GPUI borrow ends.
+pub struct Capture {
+    document: Document,
+    host: HostWindow,
+    result: Rc<RefCell<Option<Result<(Vec<u8>, serde_json::Value), String>>>>,
+    pending: Rc<Cell<bool>>,
+    metrics_ready: Rc<Cell<bool>>,
+    width: u32,
+    height: u32,
+}
+impl Capture {
+    pub fn new(source: &str, width: u32, height: u32) -> Result<Self, String> {
+        use windows::Win32::UI::WindowsAndMessaging::{
+            CreateWindowExW, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_POPUP, WS_VISIBLE,
+        };
+        let hwnd = unsafe {
+            CreateWindowExW(
+                WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW,
+                w!("STATIC"),
+                w!("Grove screenshot"),
+                WS_POPUP | WS_VISIBLE,
+                -30000,
+                -30000,
+                width as i32,
+                height as i32,
+                None,
+                None,
+                None,
+                None,
+            )
+        }
+        .map_err(|e| e.to_string())?;
+        let document = Document::new(source).ok_or("Could not create capture document")?;
+        document.state.capture.set(true);
+        let timer = unsafe { SetTimer(None, 0, 1, Some(initialize_after_render)) };
+        if timer == 0 {
+            unsafe {
+                let _ = windows::Win32::UI::WindowsAndMessaging::DestroyWindow(hwnd);
+            }
+            return Err("Could not schedule screenshot initialization".into());
+        }
+        document.state.initializing.set(true);
+        INITIALIZATIONS.with(|map| {
+            map.borrow_mut()
+                .insert(timer, (Rc::downgrade(&document.state), HostWindow(hwnd)))
+        });
+        Ok(Self {
+            document,
+            host: HostWindow(hwnd),
+            result: Rc::new(RefCell::new(None)),
+            pending: Rc::new(Cell::new(false)),
+            metrics_ready: Rc::new(Cell::new(false)),
+            width,
+            height,
+        })
+    }
+    pub fn poll(&self) -> Option<Result<(Vec<u8>, serde_json::Value), String>> {
+        if let Some(result) = self.result.borrow_mut().take() {
+            return Some(result);
+        }
+        if self.document.state.status.get() == LoadStatus::Failed {
+            return Some(Err("WebView2 screenshot document failed to load".into()));
+        }
+        if self.document.state.status.get() != LoadStatus::Ready || self.pending.replace(true) {
+            return None;
+        }
+        let view = self.document.state.view.borrow();
+        let Some(view) = view.as_ref() else {
+            self.pending.set(false);
+            return None;
+        };
+        let native = view.webview();
+        if !self.metrics_ready.get() {
+            let metrics = Rc::downgrade(&self.metrics_ready);
+            let pending = Rc::downgrade(&self.pending);
+            let result = Rc::downgrade(&self.result);
+            let activation_native = native.clone();
+            let params = windows::core::HSTRING::from(serde_json::json!({"width":self.width,"height":self.height,"deviceScaleFactor":1,"mobile":false}).to_string());
+            let started = unsafe {
+                native.CallDevToolsProtocolMethod(
+                    w!("Emulation.setDeviceMetricsOverride"),
+                    &params,
+                    &CallDevToolsProtocolMethodCompletedHandler::create(Box::new(
+                        move |status, _| {
+                            if let (Some(metrics), Some(pending), Some(result)) =
+                                (metrics.upgrade(), pending.upgrade(), result.upgrade())
+                            {
+                                if status.is_ok() {
+                                    metrics.set(true);
+                                    // Fit/scroll only after the requested CSS viewport exists.
+                                    // The shared capture source deliberately defers activation here.
+                                    let completed_pending = Rc::downgrade(&pending);
+                                    let completed_result = Rc::downgrade(&result);
+                                    let started = activation_native.ExecuteScript(
+                                        w!("window.dispatchEvent(new Event('grove:activate-view'));"),
+                                        &ExecuteScriptCompletedHandler::create(Box::new(move |status, _| {
+                                            if let Some(pending) = completed_pending.upgrade() {
+                                                pending.set(false);
+                                            }
+                                            if status.is_err() {
+                                                if let Some(result) = completed_result.upgrade() {
+                                                    *result.borrow_mut() = Some(Err("WebView2 screenshot frame could not initialize".into()));
+                                                }
+                                            }
+                                            Ok(())
+                                        })),
+                                    );
+                                    if let Err(error) = started {
+                                        *result.borrow_mut() = Some(Err(error.to_string()));
+                                    }
+                                } else {
+                                    *result.borrow_mut() = Some(Err(
+                                        "WebView2 screenshot viewport could not initialize".into(),
+                                    ));
+                                }
+                            }
+                            Ok(())
+                        },
+                    )),
+                )
+            };
+            if let Err(error) = started {
+                return Some(Err(error.to_string()));
+            }
+            return None;
+        }
+        let result = Rc::downgrade(&self.result);
+        let pending = Rc::downgrade(&self.pending);
+        let screenshot_native = native.clone();
+        let script: Vec<u16> = "(()=>{if(globalThis.__groveInitialViewReady===false||document.readyState!=='complete'||document.fonts.status!=='loaded'||!Array.from(document.images).every(i=>i.complete))return false;return {contentHeight:Math.ceil(document.body ? document.body.getBoundingClientRect().height : 0),consoleMessages:(globalThis.__groveCaptureConsole||[]).slice(0,32).map(m=>({level:String(m.level).slice(0,32),text:String(m.text).slice(0,512)}))}})()\0".encode_utf16().collect();
+        let started = unsafe {
+            native.ExecuteScript(
+                windows::core::PCWSTR(script.as_ptr()),
+                &ExecuteScriptCompletedHandler::create(Box::new(move |status, value| {
+                    let (Some(result), Some(pending)) = (result.upgrade(), pending.upgrade())
+                    else {
+                        return Ok(());
+                    };
+                    if status.is_err() {
+                        *result.borrow_mut() =
+                            Some(Err("WebView2 capture readiness failed".into()));
+                        return Ok(());
+                    }
+                    if value.len() > 65536 {
+                        *result.borrow_mut() =
+                            Some(Err("Capture diagnostics exceed 64 KiB".into()));
+                        return Ok(());
+                    }
+                    let metadata: serde_json::Value =
+                        serde_json::from_str(&value).unwrap_or_default();
+                    if !metadata.is_object() {
+                        pending.set(false);
+                        return Ok(());
+                    }
+                    let result = Rc::downgrade(&result);
+                    let failed_result = result.clone();
+                    let started = screenshot_native.CallDevToolsProtocolMethod(
+                        w!("Page.captureScreenshot"),
+                        w!("{\"format\":\"png\",\"captureBeyondViewport\":false}"),
+                        &CallDevToolsProtocolMethodCompletedHandler::create(Box::new(
+                            move |status, value| {
+                                let Some(result) = result.upgrade() else {
+                                    return Ok(());
+                                };
+                                let parsed = (|| {
+                                    status.map_err(|e| e.to_string())?;
+                                    let response: serde_json::Value =
+                                        serde_json::from_str(&value).map_err(|e| e.to_string())?;
+                                    use base64::Engine;
+                                    let encoded = response["data"]
+                                        .as_str()
+                                        .ok_or("WebView2 returned no PNG")?;
+                                    if encoded.len() > 24 * 1024 * 1024 {
+                                        return Err("Screenshot exceeds 16 MiB".into());
+                                    }
+                                    let png = base64::engine::general_purpose::STANDARD
+                                        .decode(encoded)
+                                        .map_err(|e| e.to_string())?;
+                                    Ok((png, metadata.clone()))
+                                })();
+                                *result.borrow_mut() = Some(parsed);
+                                Ok(())
+                            },
+                        )),
+                    );
+                    if let Err(error) = started {
+                        if let Some(result) = failed_result.upgrade() {
+                            *result.borrow_mut() = Some(Err(error.to_string()));
+                        }
+                    }
+                    Ok(())
+                })),
+            )
+        };
+        if let Err(error) = started {
+            return Some(Err(error.to_string()));
+        }
+        None
+    }
+}
+impl Drop for Capture {
+    fn drop(&mut self) {
+        self.document.state.view.borrow_mut().take();
+        unsafe {
+            let _ = windows::Win32::UI::WindowsAndMessaging::DestroyWindow(self.host.0);
+        }
+    }
 }

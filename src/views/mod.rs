@@ -24,7 +24,7 @@ mod codex_view;
 pub(crate) use codex_view::CodexView;
 pub mod components;
 mod file_browser;
-mod inline_html;
+pub(crate) mod inline_html;
 mod mermaid;
 mod native_plan;
 mod review_summary;

@@ -8,13 +8,13 @@ pub enum LoadStatus {
     Failed,
 }
 
-#[cfg(all(target_os = "windows", not(test)))]
+#[cfg(target_os = "windows")]
 #[path = "inline_html_windows.rs"]
-mod backend;
+pub(super) mod backend;
 
 #[cfg(all(target_os = "linux", not(test)))]
 #[path = "inline_html_linux.rs"]
-mod backend;
+pub(super) mod backend;
 
 pub struct NativeDocument {
     #[cfg(all(any(target_os = "windows", target_os = "linux"), not(test)))]

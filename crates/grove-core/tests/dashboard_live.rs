@@ -11,6 +11,8 @@ use std::{
 
 fn draft(provider: Provider, cwd: &str) -> SavedSession {
     SavedSession {
+        html_policy: grove_core::visuals::HtmlPolicy::Explicit,
+        visuals: Vec::new(),
         claude_subagents: HashMap::default(),
         session_review: grove_core::provider::SessionReview::default(),
         rich_plans: grove_core::rich_plan::PlanStore::default(),

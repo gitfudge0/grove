@@ -55,6 +55,8 @@ fn main() -> Result<(), String> {
     grove_core::env_path::ensure_login_path();
     let key = grove_core::identity::random_id()?;
     let saved = SavedSession {
+        html_policy: grove_core::visuals::HtmlPolicy::Explicit,
+        visuals: Vec::new(),
         claude_subagents: std::collections::HashMap::default(),
         session_review: grove_core::provider::SessionReview::default(),
         rich_plans: grove_core::rich_plan::PlanStore::default(),

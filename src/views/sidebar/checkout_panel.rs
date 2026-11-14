@@ -4832,6 +4832,8 @@ mod tests {
             let (handle, actions) = grove_core::codex::Handle::channel();
             let (_updates, receive) = std::sync::mpsc::channel();
             let saved = grove_core::codex::SavedSession {
+                html_policy: grove_core::visuals::HtmlPolicy::Legacy,
+                visuals: Vec::new(),
                 session_review: grove_core::codex::SessionReview::default(),
                 rich_plans: grove_core::rich_plan::PlanStore::default(),
                 side_chats: std::collections::HashMap::default(),
@@ -4928,6 +4930,8 @@ mod tests {
             let (handle, actions) = grove_core::codex::Handle::channel();
             let (_updates, receive) = std::sync::mpsc::channel();
             let saved = grove_core::codex::SavedSession {
+                html_policy: grove_core::visuals::HtmlPolicy::Legacy,
+                visuals: Vec::new(),
                 session_review: grove_core::codex::SessionReview::default(),
                 rich_plans: grove_core::rich_plan::PlanStore::default(),
                 side_chats: std::collections::HashMap::default(),
@@ -5886,6 +5890,8 @@ mod tests {
                 let (handle, _actions) = grove_core::codex::Handle::channel();
                 let (_updates, receive) = std::sync::mpsc::channel();
             let saved = grove_core::codex::SavedSession {
+                html_policy: grove_core::visuals::HtmlPolicy::Legacy,
+                visuals: Vec::new(),
                 session_review: grove_core::codex::SessionReview::default(),
                 rich_plans: grove_core::rich_plan::PlanStore::default(),
                 side_chats: std::collections::HashMap::default(),
@@ -6058,6 +6064,8 @@ mod tests {
             grove_core::codex::Provider::Claude,
         ] {
             let saved = grove_core::codex::SavedSession {
+                html_policy: grove_core::visuals::HtmlPolicy::Legacy,
+                visuals: Vec::new(),
                 session_review: grove_core::codex::SessionReview::default(),
                 rich_plans: grove_core::rich_plan::PlanStore::default(),
                 side_chats: std::collections::HashMap::default(),
@@ -6382,6 +6390,8 @@ mod tests {
             let (handle, _actions) = grove_core::codex::Handle::channel();
             let (_updates, receive) = std::sync::mpsc::channel();
             let saved = grove_core::codex::SavedSession {
+                html_policy: grove_core::visuals::HtmlPolicy::Legacy,
+                visuals: Vec::new(),
                 session_review: grove_core::codex::SessionReview::default(),
                 rich_plans: grove_core::rich_plan::PlanStore::default(),
                 side_chats: std::collections::HashMap::default(),

@@ -6074,9 +6074,42 @@ impl Render for CodexView {
                 continue;
             }
             let tool = is_tool_item(item);
+            let has_visual =
+                |index: usize| {
+                    state.saved.items.get(index).is_some_and(|item| {
+                        state.saved.visuals.iter().any(|r| item["id"] == r.item_id)
+                    })
+                };
+            if tool && has_visual(index) {
+                let focus = self.ensure_control_focus(&format!("visual-tool-{index}"), window, cx);
+                let mut publication = div()
+                    .id(("codex-visual-publication", index))
+                    .debug_selector(move || format!("codex-visual-publication-{index}"))
+                    .w_full()
+                    .max_w(rpx(CHAT_MAX_W))
+                    .flex()
+                    .flex_col()
+                    .gap(rpx(SPACE_LG))
+                    .child(self.render_tool_row(index, &state, false, &focus, window, cx));
+                for reference in state
+                    .saved
+                    .visuals
+                    .iter()
+                    .filter(|r| item["id"] == r.item_id)
+                {
+                    publication = publication.child(
+                        self.html
+                            .update(cx, |html, cx| html.published(reference, window, cx)),
+                    );
+                }
+                messages = messages.child(publication);
+                message_child += 1;
+                continue;
+            }
             if tool {
                 if index > 0
                     && is_tool_item(&state.saved.items[index - 1])
+                    && !has_visual(index - 1)
                     && (state.saved.items[index - 1]["type"] == "reasoning")
                         == (kind == "reasoning")
                     && !self.has_question_anchor(index)
@@ -6086,7 +6119,8 @@ impl Render for CodexView {
                 let end = state.saved.items[index..]
                     .iter()
                     .position(|item| {
-                        !is_tool_item(item)
+                        state.saved.visuals.iter().any(|r| item["id"] == r.item_id)
+                            || !is_tool_item(item)
                             || (item["type"] == "reasoning") != (kind == "reasoning")
                     })
                     .map_or(state.saved.items.len(), |offset| index + offset);
@@ -15438,6 +15472,8 @@ mod tests {
     }
     pub(super) fn snapshot() -> Snapshot {
         let mut state = Snapshot::new(SavedSession {
+            html_policy: grove_core::visuals::HtmlPolicy::Legacy,
+            visuals: Vec::new(),
             session_review: grove_core::codex::SessionReview::default(),
             rich_plans: grove_core::rich_plan::PlanStore::default(),
             side_chats: HashMap::default(),
@@ -26176,6 +26212,79 @@ mod tests {
             let position = body.origin + gpui::point(gpui::px(8.), gpui::px(8.));
             cx.simulate_click(position, gpui::Modifiers::default());
             assert_eq!(cx.opened_url().as_deref(), Some(expected), "{target}");
+        }
+    }
+
+    #[gpui::test]
+    fn explicit_html_fences_stay_code_for_codex_and_claude(cx: &mut gpui::TestAppContext) {
+        for provider in [codex::Provider::Codex, codex::Provider::Claude] {
+            let (view, cx, _, updates) = fixture(cx);
+            let mut response = snapshot();
+            response.saved.provider = provider;
+            response.saved.html_policy = grove_core::visuals::HtmlPolicy::Explicit;
+            response.saved.items.push(serde_json::json!({"type":"agentMessage","id":"html-example","text":"```html\n<!doctype html><html><body>Example</body></html>\n```"}));
+            updates.send(response).unwrap();
+            cx.executor()
+                .advance_clock(std::time::Duration::from_millis(40));
+            draw(cx);
+            assert!(cx.debug_bounds("html-artifact").is_none());
+            assert_eq!(
+                view.read_with(cx, |view, cx| view.html.read(cx).artifact_count()),
+                0
+            );
+        }
+    }
+
+    #[gpui::test]
+    fn publications_remain_visible_with_collapsed_work_and_do_not_duplicate(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        for provider in [codex::Provider::Codex, codex::Provider::Claude] {
+            let (view, cx, _, updates) = fixture(cx);
+            let mut response = snapshot();
+            response.saved.provider = provider;
+            response.saved.html_policy = grove_core::visuals::HtmlPolicy::Explicit;
+            response.saved.items.push(serde_json::json!({"id":"published-tool","type":"mcpToolCall","server":"grove_visuals","tool":"render_html","status":"completed","arguments":{"title":"Chart"}}));
+            response.saved.visuals.push(grove_core::visuals::Reference {
+                scope: "0".repeat(64),
+                publication_id: "1".repeat(64),
+                visual_id: "1".repeat(64),
+                revision_id: "1".repeat(64),
+                source_digest: "2".repeat(64),
+                title: "Chart".into(),
+                item_id: "published-tool".into(),
+                turn_id: "turn".into(),
+                presentation: grove_core::visuals::PresentationOptions::default(),
+            });
+            response.saved.items.push(serde_json::json!({"id":"answer","type":"agentMessage","text":"Published chart. [Source](chart.html)"}));
+            updates.send(response.clone()).unwrap();
+            cx.executor()
+                .advance_clock(std::time::Duration::from_millis(40));
+            draw(cx);
+            assert!(cx.debug_bounds("html-publication-attachment").is_some());
+            let publication = cx.debug_bounds("codex-visual-publication-0").unwrap();
+            let answer = cx.debug_bounds("codex-message-anchor-1").unwrap();
+            assert_eq!(publication.left(), answer.left());
+            assert_eq!(publication.size.width, answer.size.width);
+            assert_eq!(
+                view.read_with(cx, |view, cx| view.html.read(cx).artifact_count()),
+                1
+            );
+            updates.send(response.clone()).unwrap();
+            cx.executor()
+                .advance_clock(std::time::Duration::from_millis(40));
+            draw(cx);
+            assert_eq!(
+                view.read_with(cx, |view, cx| view.html.read(cx).artifact_count()),
+                1
+            );
+            // A removed source event does not leave its native artifact in the transcript.
+            response.saved.items.clear();
+            updates.send(response).unwrap();
+            cx.executor()
+                .advance_clock(std::time::Duration::from_millis(40));
+            draw(cx);
+            assert!(cx.debug_bounds("html-publication-attachment").is_none());
         }
     }
 

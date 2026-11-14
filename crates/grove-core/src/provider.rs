@@ -322,6 +322,10 @@ pub struct SavedSideChat {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SavedSession {
+    #[serde(default)]
+    pub html_policy: crate::visuals::HtmlPolicy,
+    #[serde(default)]
+    pub visuals: Vec<crate::visuals::Reference>,
     /// App-owned review receipt; independent of focus/unread acknowledgment.
     #[serde(default)]
     pub session_review: SessionReview,
@@ -681,6 +685,8 @@ impl SavedSession {
     pub fn empty(key: String, provider: Provider, project: String, cwd: String) -> Self {
         Self {
             session_review: crate::provider::SessionReview::default(),
+            html_policy: crate::visuals::HtmlPolicy::Explicit,
+            visuals: Vec::new(),
             rich_plans: crate::rich_plan::PlanStore::default(),
             side_chats: std::collections::HashMap::default(),
             fork_origin: None,
@@ -739,6 +745,8 @@ impl SavedSession {
         saved.items.clear();
         saved.claude_subagents.clear();
         saved.rich_plans = crate::rich_plan::PlanStore::default();
+        saved.visuals.clear();
+        saved.html_policy = crate::visuals::HtmlPolicy::Explicit;
         saved.side_chats.clear();
         saved.work_periods.clear();
         saved.session_review.pending = None;
@@ -2272,6 +2280,7 @@ impl Snapshot {
         saved.session_review.summary.clear();
         saved.claude_subagents.clear();
         saved.rich_plans = crate::rich_plan::PlanStore::default();
+        saved.visuals.clear();
         saved.draft.clear();
         saved.draft_images.clear();
         saved.draft_reference = None;
@@ -4062,6 +4071,8 @@ pub(crate) fn load_from_dir(dir: &std::path::Path) -> Result<Recovery, String> {
                 if valid_key(&session.key)
                     && path.file_stem().and_then(|x| x.to_str()) == Some(&session.key) =>
             {
+                let mut session = session;
+                crate::visuals::recover(&mut session);
                 recovery.sessions.push(session);
             }
             _ => recovery.warnings.push(format!(

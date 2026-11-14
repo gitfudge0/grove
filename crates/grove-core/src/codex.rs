@@ -172,6 +172,7 @@ fn side_chat_args() -> Vec<String> {
 
 struct Process {
     activity: crate::activity_mcp::Server,
+    visuals: crate::visuals_mcp::Server,
     child: Child,
     input: ChildStdin,
     lines: mpsc::Receiver<Result<Value, String>>,
@@ -195,6 +196,7 @@ fn spawn_profile(
     ownership: Option<crate::provider_ownership::ThreadOwnership>,
 ) -> Result<Process, String> {
     let activity = crate::activity_mcp::Server::start()?;
+    let visuals = crate::visuals_mcp::Server::start()?;
     let mut argv = Vec::new();
     if side_chat {
         argv.push("--no-daemon".into());
@@ -279,6 +281,7 @@ fn spawn_profile(
     });
     Ok(Process {
         activity,
+        visuals,
         child,
         input,
         lines,
@@ -470,6 +473,7 @@ impl Actor {
             process
                 .activity
                 .set_context_items(&self.state.saved.items, self.state.turn_id.clone());
+            process.visuals.sync(&mut self.state, self.side_chat);
         }
         self.needs_save = true;
         let _ = self.updates.send(self.state.clone());
@@ -610,6 +614,12 @@ impl Actor {
             "tools.update_plan.enabled": true
         }});
         if let Some(process) = self.process.as_ref().filter(|_| !self.side_chat) {
+            params["config"]["mcp_servers.grove_visuals"] = json!({
+                "url": process.visuals.url(),
+                "http_headers": {"Authorization": format!("Bearer {}", process.visuals.token())},
+                "enabled_tools": ["render_html", "preview_html"],
+                "startup_timeout_sec": 10, "tool_timeout_sec": 30
+            });
             params["config"]["mcp_servers.grove_activity"] = json!({
                 "url": process.activity.url(),
                 "http_headers": {"Authorization": format!("Bearer {}", process.activity.token())},
@@ -628,7 +638,7 @@ impl Actor {
             },
             crate::agent_guidance::WORKFLOW_GUIDANCE,
             crate::tasks::CODEX_GUIDANCE,
-            crate::reports::REPORT_GUIDANCE,
+            crate::reports::guidance(self.state.saved.html_policy),
             crate::activity::GUIDANCE,
             crate::describe_skill::GUIDANCE,
             format!(
@@ -3450,6 +3460,11 @@ impl Actor {
             {
                 self.dirty = true;
             }
+            if let Some(process) = &self.process {
+                if process.visuals.sync(&mut self.state, self.side_chat) {
+                    self.dirty = true;
+                }
+            }
             self.advance_stop(Instant::now());
             self.expire_subagent_reads();
             self.poll_subagents();
@@ -3532,6 +3547,7 @@ mod tests {
         let (_, lines) = mpsc::channel();
         actor.process = Some(Process {
             activity: crate::activity_mcp::Server::start().unwrap(),
+            visuals: crate::visuals_mcp::Server::start().unwrap(),
             child,
             input,
             lines,
@@ -3704,6 +3720,8 @@ mod tests {
     use super::*;
     fn saved() -> SavedSession {
         SavedSession {
+            html_policy: crate::visuals::HtmlPolicy::Legacy,
+            visuals: Vec::new(),
             session_review: SessionReview::default(),
             claude_subagents: HashMap::default(),
             rich_plans: crate::rich_plan::PlanStore::default(),
@@ -4471,6 +4489,7 @@ mod tests {
         let (_, lines) = mpsc::channel();
         actor.process = Some(Process {
             activity: crate::activity_mcp::Server::start().unwrap(),
+            visuals: crate::visuals_mcp::Server::start().unwrap(),
             child,
             input,
             lines,
@@ -6475,6 +6494,7 @@ mod tests {
         let (_, lines) = mpsc::channel();
         Process {
             activity: crate::activity_mcp::Server::start().unwrap(),
+            visuals: crate::visuals_mcp::Server::start().unwrap(),
             child,
             input,
             lines,
@@ -7287,6 +7307,7 @@ mod tests {
         let (_, lines) = mpsc::channel();
         actor.process = Some(Process {
             activity: crate::activity_mcp::Server::start().unwrap(),
+            visuals: crate::visuals_mcp::Server::start().unwrap(),
             child,
             input,
             lines,
@@ -7428,6 +7449,7 @@ mod tests {
         let (_, lines) = mpsc::channel();
         actor.process = Some(Process {
             activity: crate::activity_mcp::Server::start().unwrap(),
+            visuals: crate::visuals_mcp::Server::start().unwrap(),
             child,
             input,
             lines,
@@ -7825,6 +7847,7 @@ mod tests {
         let (_, lines) = mpsc::channel();
         actor.process = Some(Process {
             activity: crate::activity_mcp::Server::start().unwrap(),
+            visuals: crate::visuals_mcp::Server::start().unwrap(),
             child,
             input,
             lines,
@@ -7953,6 +7976,7 @@ mod tests {
         let (_, lines) = mpsc::channel();
         actor.process = Some(Process {
             activity: crate::activity_mcp::Server::start().unwrap(),
+            visuals: crate::visuals_mcp::Server::start().unwrap(),
             child,
             input,
             lines,
@@ -8090,6 +8114,7 @@ mod tests {
         let (_, lines) = mpsc::channel();
         actor.process = Some(Process {
             activity: crate::activity_mcp::Server::start().unwrap(),
+            visuals: crate::visuals_mcp::Server::start().unwrap(),
             child,
             input,
             lines,

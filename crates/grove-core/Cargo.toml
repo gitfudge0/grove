@@ -16,6 +16,8 @@ serde = { version = "1", features = ["derive", "rc"] }
 serde_json.workspace = true
 toml = "0.8.23"
 markdown = "1.0.0"
+html5ever = "0.27"
+markup5ever_rcdom = "0.3"
 image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "webp"] }
 base64.workspace = true
 dirs.workspace = true
@@ -35,6 +37,9 @@ syntect = { version = "5", default-features = false, features = ["default-syntax
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Storage_FileSystem"] }
 
 [lints]
 workspace = true
