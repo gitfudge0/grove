@@ -66,6 +66,46 @@ comparison tables for tradeoffs. Supporting technical detail can follow those
 essentials. Do not author a separate HTML plan or claim/exhibit tree. Limits
 remain 1 MiB per document and 64 KiB per text field.
 
+### Native overview and expandable detail
+
+For an implementation plan, an optional `presentation` object makes the first read compact while preserving complete Markdown detail:
+
+```json
+{
+  "outcome": "Connect your agent without losing the current draft.",
+  "flow": [
+    {"title": "Choose agent", "detail": "Codex or Claude"},
+    {"title": "Sign in", "detail": "Provider browser consent"},
+    {"title": "Return", "detail": "Verify the account"}
+  ],
+  "included": ["Account sign-in and recovery"],
+  "deferred": ["API-key entry"],
+  "risks": ["Browser completion must be verified with the provider."],
+  "success_criteria": ["Cancel preserves the conversation draft."],
+  "revision_changes": []
+}
+```
+
+This is part of the existing version-1 plan envelope, alongside `markdown` and
+`decisions`, not a separate plan format or approval authority. The outcome permits
+1200 bytes; flow permits eight steps with titles of 160 bytes and details of 500
+bytes. Each list permits twelve nonblank entries of 1000 bytes. Risks and success
+criteria are required and nonempty. Describe a lack of known material risk
+explicitly rather than hiding the risk section. Import rejects invalid presentation
+and presentation without Markdown. The overall document/text limits still apply.
+
+The native conversation shows outcome, flow, scope, risks, success criteria and
+all decision choices before individually expandable Markdown detail sections.
+Option descriptions state consequences and tradeoffs. A finalized revision can
+show `revision_changes` as an authored summary; it is not an automatic diff.
+Update both layers when answers change scope or success criteria. Existing
+finalization and exact-revision approval checks remain authoritative, including
+the requirement for updated Markdown. Copy and the read-only reference include
+all presentation content and complete Markdown, irrespective of fold state.
+Older envelopes without this optional object retain their full Markdown reading
+experience. Folding uses local per-revision UI state and resets when the native
+view is recreated; it does not persist an answer or change the plan snapshot.
+
 Top-level `decisions` are optional. A decision's optional `section` names the
 Markdown heading beside which it belongs. Recommendations are not selected
 answers. Every decision supports **Write my own answer** through the existing

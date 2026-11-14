@@ -13,6 +13,7 @@ pub(super) enum Action {
     Expand,
     Earlier,
     Next,
+    ToggleSection(usize),
     Update,
     Change,
     Approve,
@@ -47,6 +48,13 @@ pub(super) struct Projection {
     pub registry: std::rc::Weak<RefCell<Projection>>,
 }
 impl Projection {
+    #[cfg(test)]
+    pub(super) fn focus_handle(&self, key: &str) -> Option<FocusHandle> {
+        self.handles.get(key).cloned()
+    }
+    pub(super) fn invalidate(&mut self) {
+        self.measurement = None;
+    }
     pub fn begin(&mut self) {
         self.controls.clear();
         self.active_text.clear();
