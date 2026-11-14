@@ -22,6 +22,10 @@ typedef struct {
     WebKitUserContentFilterStore *store;
     GCancellable *cancel;
     gchar *source, *filter_dir;
+    GByteArray *capture_png;
+    int capture_state;
+    gboolean capture;
+    gchar *capture_metadata;
 } GroveLinuxHtml;
 static GList *documents;
 /* Wheel input over an integrated report, in parent-window physical pixels and
@@ -40,6 +44,8 @@ static void release(GroveLinuxHtml *doc) {
         } g_dir_close(dir); }
         g_rmdir(doc->filter_dir);
     }
+    if (doc->capture_png) g_byte_array_unref(doc->capture_png);
+    g_free(doc->capture_metadata);
     g_free(doc->source); g_free(doc->filter_dir); g_free(doc);
 }
 static gboolean policy(WebKitWebView *web, WebKitPolicyDecision *decision,
@@ -164,7 +170,8 @@ void *grove_html_linux_create(const unsigned char *bytes, size_t length, unsigne
     GdkDisplay *gdk = gdk_display_get_default();
     if (!GDK_IS_X11_DISPLAY(gdk)) return NULL;
     GroveLinuxHtml *doc = g_new0(GroveLinuxHtml, 1);
-    doc->refs = 1; doc->display = gdk_x11_display_get_xdisplay(gdk); doc->parent = parent;
+    doc->refs = 1; doc->display = gdk_x11_display_get_xdisplay(gdk); doc->parent = parent ? parent : DefaultRootWindow(doc->display);
+    parent = doc->parent;
     doc->source = g_strndup((const gchar *)bytes, length);
     doc->clip = XCreateSimpleWindow(doc->display, parent, 0, 0, 1, 1, 0, 0, 0);
     /* GTK owns its native window and event registration. Reparent only its XID;
@@ -361,7 +368,7 @@ void grove_html_linux_show(void *handle, unsigned long parent, double x, double 
     doc->visible = TRUE;
 }
 void grove_html_linux_hide_all(void) {
-    for (GList *item = documents; item; item = item->next) grove_html_linux_hide(item->data);
+    for (GList *item = documents; item; item = item->next) { GroveLinuxHtml *doc = item->data; if (!doc->capture) grove_html_linux_hide(doc); }
 }
 void grove_html_linux_pump(void) {
     if (!initialized) return;
@@ -383,3 +390,77 @@ void grove_html_linux_destroy(void *handle) {
     g_clear_object(&doc->cancel); g_clear_object(&doc->store);
     release(doc);
 }
+
+/* Isolated offscreen capture uses the exact production document policy. */
+void *grove_html_linux_capture_create(const unsigned char *bytes, size_t length, unsigned width, unsigned height) {
+    GroveLinuxHtml *doc = grove_html_linux_create(bytes, length, 0);
+    if (!doc) return NULL;
+    doc->capture = TRUE;
+    XSetWindowAttributes capture_attributes = {0}; capture_attributes.override_redirect = True;
+    XChangeWindowAttributes(doc->display, doc->clip, CWOverrideRedirect, &capture_attributes);
+    gtk_window_set_accept_focus(GTK_WINDOW(doc->host), FALSE);
+    gtk_window_resize(GTK_WINDOW(doc->host), width, height);
+    gtk_widget_set_size_request(GTK_WIDGET(doc->web), width, height);
+    gtk_widget_show_all(doc->host);
+    XMoveResizeWindow(doc->display, doc->clip, -30000, -30000, width, height);
+    XResizeWindow(doc->display, doc->inner, width, height);
+    XMapWindow(doc->display, doc->clip); XFlush(doc->display);
+    return doc;
+}
+static cairo_status_t capture_png_write(void *closure, const unsigned char *bytes, unsigned length) {
+    GByteArray *data = closure;
+    if (data->len + length > 16 * 1024 * 1024) return CAIRO_STATUS_WRITE_ERROR;
+    g_byte_array_append(data, bytes, length); return CAIRO_STATUS_SUCCESS;
+}
+static void capture_done(GObject *web, GAsyncResult *result, gpointer data) {
+    GroveLinuxHtml *doc = data; GError *error = NULL;
+    cairo_surface_t *surface = webkit_web_view_get_snapshot_finish(WEBKIT_WEB_VIEW(web), result, &error);
+    if (!doc->disposed) {
+        if (surface && !error) {
+            doc->capture_png = g_byte_array_new();
+            doc->capture_state = cairo_surface_write_to_png_stream(surface, capture_png_write, doc->capture_png) == CAIRO_STATUS_SUCCESS ? 2 : -1;
+        } else doc->capture_state = -1;
+    }
+    if (surface) cairo_surface_destroy(surface);
+    g_clear_error(&error); release(doc);
+}
+static void capture_ready(GObject *web, GAsyncResult *result, gpointer data) {
+    GroveLinuxHtml *doc = data; GError *error = NULL;
+#if WEBKIT_CHECK_VERSION(2, 40, 0)
+    JSCValue *value = webkit_web_view_evaluate_javascript_finish(WEBKIT_WEB_VIEW(web), result, &error);
+#else
+    WebKitJavascriptResult *js = webkit_web_view_run_javascript_finish(WEBKIT_WEB_VIEW(web), result, &error);
+    JSCValue *value = js ? webkit_javascript_result_get_js_value(js) : NULL;
+#endif
+    if (!doc->disposed) {
+        gchar *metadata = value && !error ? jsc_value_to_string(value) : NULL;
+        gboolean ready = metadata && metadata[0] == '{' && strnlen(metadata, 65537) <= 65536;
+        if (ready) doc->capture_metadata = metadata; else g_free(metadata);
+        doc->capture_state = 0;
+        if (ready) {
+            doc->capture_state = 1; doc->refs++;
+            webkit_web_view_get_snapshot(doc->web, WEBKIT_SNAPSHOT_REGION_VISIBLE, WEBKIT_SNAPSHOT_OPTIONS_NONE, doc->cancel, capture_done, doc);
+        }
+    }
+#if WEBKIT_CHECK_VERSION(2, 40, 0)
+    if (value) g_object_unref(value);
+#else
+    if (js) webkit_javascript_result_unref(js);
+#endif
+    g_clear_error(&error); release(doc);
+}
+int grove_html_linux_capture_poll(void *handle) {
+    GroveLinuxHtml *doc = handle;
+    if (doc->status == 2) return -1;
+    if (doc->status == 1 && doc->capture_state == 0) {
+        doc->capture_state = 1; doc->refs++;
+        run_script(doc, "(()=>{if(globalThis.__groveInitialViewReady===false||document.readyState!=='complete'||document.fonts.status!=='loaded'||!Array.from(document.images).every(i=>i.complete))return false;return JSON.stringify({contentHeight:Math.ceil(document.body ? document.body.getBoundingClientRect().height : 0),consoleMessages:(globalThis.__groveCaptureConsole||[]).slice(0,32).map(m=>({level:String(m.level).slice(0,32),text:String(m.text).slice(0,512)}))})})()", capture_ready, doc);
+    }
+    return doc->capture_state == 2 ? (int)doc->capture_png->len : (doc->capture_state < 0 ? -1 : 0);
+}
+void grove_html_linux_capture_copy(void *handle, unsigned char *out, size_t length) {
+    GroveLinuxHtml *doc = handle;
+    if (doc->capture_png && length == doc->capture_png->len) memcpy(out, doc->capture_png->data, length);
+}
+
+const char *grove_html_linux_capture_metadata(void *handle) { return ((GroveLinuxHtml *)handle)->capture_metadata; }

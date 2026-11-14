@@ -255,6 +255,20 @@ if(changed){{for(const query of state.queries.values())query.refresh();window.di
     )
 }
 
+fn document_preferences_script(
+    window: &Window,
+    report: bool,
+    expanded: bool,
+    reduced: bool,
+) -> String {
+    let mut script = preference_script(reduced);
+    if report {
+        script.push(';');
+        script.push_str(&report_script(window, expanded));
+    }
+    script
+}
+
 fn sandboxed(source: &str, reduced: bool) -> String {
     // The first policy is parsed before ANY author bytes, including malformed
     // heads, base tags and author policies. Subsequent CSP policies only tighten it.
@@ -498,6 +512,20 @@ fn expanded(artifact: &Entity<HtmlArtifact>, cx: &App) -> bool {
         .is_some_and(|weak| weak.entity_id() == artifact.entity_id())
 }
 
+pub(super) fn dismiss_expanded(window: &mut Window, cx: &mut App) -> bool {
+    let Some(ui) = cx.try_global::<HtmlUi>() else {
+        return false;
+    };
+    if ui.blocked {
+        return false;
+    }
+    let Some(artifact) = ui.expanded.as_ref().and_then(gpui::WeakEntity::upgrade) else {
+        return false;
+    };
+    artifact.update(cx, |artifact, cx| artifact.toggle_expand(window, cx));
+    true
+}
+
 pub(super) fn render_expanded(_window: &mut Window, cx: &mut App) -> Option<AnyElement> {
     let artifact = cx.try_global::<HtmlUi>()?.expanded.as_ref()?.upgrade()?;
     let blocked = cx.global::<HtmlUi>().blocked;
@@ -523,6 +551,7 @@ pub(super) struct OpenLocalFile(pub super::file_browser::FileTarget);
 impl gpui::EventEmitter<OpenLocalFile> for HtmlSession {}
 
 pub(super) struct HtmlSession {
+    legacy: bool,
     artifacts: HashMap<String, Entity<HtmlArtifact>>,
     extensions: HashMap<String, MarkdownExtensions>,
     file_focus: HashMap<(String, String), FocusHandle>,
@@ -591,6 +620,7 @@ impl HtmlSession {
     }
     pub(super) fn new(cwd: PathBuf, scroll: ScrollHandle) -> Self {
         Self {
+            legacy: true,
             artifacts: HashMap::new(),
             extensions: HashMap::new(),
             file_focus: HashMap::new(),
@@ -635,6 +665,11 @@ impl HtmlSession {
                 cx.refresh_windows();
             }
         }
+        let legacy = state.saved.html_policy == grove_core::visuals::HtmlPolicy::Legacy;
+        if self.legacy != legacy {
+            self.extensions.clear();
+            self.legacy = legacy;
+        }
         self.identity = Some(identity);
         self.cwd = cwd;
         self.roots = state
@@ -647,6 +682,9 @@ impl HtmlSession {
             for artifact in self.artifacts.values() {
                 artifact.update(cx, |_, cx| cx.notify());
             }
+        }
+        if !self.legacy {
+            return;
         }
         let final_message = state
             .saved
@@ -686,8 +724,9 @@ impl HtmlSession {
         let owner = message.to_owned();
         let links = session.clone();
         let link_owner = owner.clone();
+        let legacy = self.legacy;
         let extensions = super::mermaid::extensions()
-            .block_parser(parse)
+            .block_parser(move |node, cx| if legacy { parse(node, cx) } else { None })
             .block_renderer("grove-html", move |node, window, cx| {
                 let Some(block) = node.data::<DocumentBlock>() else {
                     return div().into_any_element();
@@ -1010,6 +1049,36 @@ impl HtmlSession {
         }
         cx.notify();
     }
+    pub(super) fn published(
+        &mut self,
+        reference: &grove_core::visuals::Reference,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let key = format!("published:{}:{}", reference.scope, reference.publication_id);
+        let owner = cx.entity().downgrade();
+        let artifact = self
+            .artifacts
+            .entry(key)
+            .or_insert_with(|| {
+                cx.new(|cx| {
+                    let mut artifact = HtmlArtifact::new(
+                        String::new(),
+                        String::new(),
+                        None,
+                        owner,
+                        self.paused.clone(),
+                        self.scroll.clone(),
+                        cx,
+                    );
+                    artifact.publication = Some(reference.clone());
+                    artifact.read_publication(cx);
+                    artifact
+                })
+            })
+            .clone();
+        inline_card(artifact, window, cx)
+    }
     pub(super) fn has_linked(&self, message: &str) -> bool {
         self.opened
             .get(message)
@@ -1107,6 +1176,7 @@ impl Version {
 }
 
 struct Surface {
+    initialized: Cell<bool>,
     native: NativeDocument,
     generation: Cell<u64>,
 }
@@ -1123,6 +1193,8 @@ impl Drop for SurfaceLease {
 }
 
 struct HtmlArtifact {
+    publication: Option<grove_core::visuals::Reference>,
+    publication_failed: bool,
     version: Version,
     path: Option<PathBuf>,
     owner: EntityId,
@@ -1141,6 +1213,7 @@ struct HtmlArtifact {
     return_offset: Option<Point<Pixels>>,
     expand_focus: FocusHandle,
     return_focus: FocusHandle,
+    expanded_focus: FocusHandle,
     external_return_focus: Option<FocusHandle>,
     anchor: gpui::ScrollAnchor,
     reveal: bool,
@@ -1160,6 +1233,8 @@ impl HtmlArtifact {
     ) -> Self {
         let anchor = gpui::ScrollAnchor::for_handle(scroll.clone());
         let mut artifact = Self {
+            publication: None,
+            publication_failed: false,
             anchor,
             reveal: false,
             report: false,
@@ -1187,14 +1262,50 @@ impl HtmlArtifact {
             return_offset: None,
             expand_focus: cx.focus_handle().tab_stop(true),
             return_focus: cx.focus_handle().tab_stop(true),
+            expanded_focus: cx.focus_handle(),
             external_return_focus: None,
         };
-        if artifact.path.is_some() {
+        if artifact.path.is_none() && artifact.version.active.is_empty() {
+            // Published bytes load asynchronously; do not create an empty native document.
+        } else if artifact.path.is_some() {
             artifact.read_file(cx);
         } else {
             artifact.load(cx);
         }
         artifact
+    }
+    fn read_publication(&mut self, cx: &mut Context<Self>) {
+        let Some(reference) = self.publication.clone() else {
+            return;
+        };
+        if self.loading_file {
+            return;
+        }
+        self.surface = None;
+        self.error = None;
+        self.loading_file = true;
+        let read = cx
+            .background_executor()
+            .spawn(async move { grove_core::visuals::read(&reference) });
+        cx.spawn(async move |this, cx| {
+            let result = read.await;
+            let _ = this.update(cx, |this, cx| {
+                this.loading_file = false;
+                match result {
+                    Ok(source) => {
+                        this.version.markdown = format!("```html\n{source}\n```");
+                        this.version.active = source;
+                        this.load(cx);
+                    }
+                    Err(error) => {
+                        this.publication_failed = true;
+                        this.error = Some(error);
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
     }
     fn read_file(&mut self, cx: &mut Context<Self>) {
         let Some(path) = self.path.clone() else {
@@ -1243,8 +1354,17 @@ impl HtmlArtifact {
         self.poll = None;
         self.last_status = None;
         self.started = None;
-        if self.version.active.len() > MAX_HTML_BYTES {
+        if self.version.active.len()
+            > if self.publication.is_some() {
+                grove_core::visuals::BUNDLE_LIMIT
+            } else {
+                MAX_HTML_BYTES
+            }
+        {
             self.error = Some("HTML document exceeds the preview limit".into());
+            return;
+        }
+        if self.publication.is_some() && !expanded(&cx.entity(), cx) {
             return;
         }
         let Some(native) =
@@ -1254,6 +1374,7 @@ impl HtmlArtifact {
             return;
         };
         self.surface = Some(Rc::new(Surface {
+            initialized: Cell::new(false),
             native,
             generation: Cell::new(0),
         }));
@@ -1322,7 +1443,24 @@ impl HtmlArtifact {
             let ui = cx.global_mut::<HtmlUi>();
             ui.expanded = Some(entity);
             ui.owner = Some(self.owner);
-            self.return_focus.focus(window, cx);
+            if self.publication.is_some()
+                && self.surface.is_none()
+                && !self.loading_file
+                && !self.publication_failed
+            {
+                self.load(cx);
+            }
+            self.expanded_focus.focus(window, cx);
+            // The expanded header is deferred and has no focus path until paint.
+            let owner = cx.entity().downgrade();
+            window.on_next_frame(move |window, cx| {
+                let _ = owner.update(cx, |this, cx| {
+                    if expanded(&cx.entity(), cx) && !cx.global::<HtmlUi>().blocked {
+                        NativeDocument::focus_host(window);
+                        this.expanded_focus.focus(window, cx);
+                    }
+                });
+            });
         }
         let current = cx.entity_id();
         let _ = self.session.update(cx, |session, cx| {
@@ -1371,7 +1509,8 @@ fn document_action(
 
 impl Render for HtmlArtifact {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        if self.error.is_none() {
+        let expanded = expanded(&cx.entity(), cx);
+        if self.error.is_none() && (self.publication.is_none() || expanded) {
             if let Some(surface) = &self.surface {
                 if let Err(error) = surface.native.prepare(window) {
                     self.error = Some(error);
@@ -1384,7 +1523,6 @@ impl Render for HtmlArtifact {
                 }
             }
         }
-        let expanded = expanded(&cx.entity(), cx);
         if self.reveal && !expanded {
             self.reveal = false;
             self.anchor.scroll_to(window, cx);
@@ -1485,10 +1623,7 @@ impl Render for HtmlArtifact {
         }
         let report = self.report;
         if self.last_status == Some(LoadStatus::Ready) {
-            let mut script = preference_script(cx.reduce_motion());
-            if report {
-                script.push_str(&report_script(window, expanded));
-            }
+            let script = document_preferences_script(window, report, expanded, cx.reduce_motion());
             if script != self.report_theme {
                 if let Some(surface) = &self.surface {
                     surface.native.report_theme(&script, report && !expanded);
@@ -1497,10 +1632,15 @@ impl Render for HtmlArtifact {
             }
         }
         let title = self
-            .path
+            .publication
             .as_ref()
-            .and_then(|path| path.file_name())
-            .and_then(|name| name.to_str())
+            .map(|r| r.title.as_str())
+            .or_else(|| {
+                self.path
+                    .as_ref()
+                    .and_then(|path| path.file_name())
+                    .and_then(|name| name.to_str())
+            })
             .unwrap_or("HTML document")
             .to_owned();
         let mut header = super::components::content_header()
@@ -1530,7 +1670,7 @@ impl Render for HtmlArtifact {
                     .min_w_0()
                     .truncate()
                     .text_size(rpx(TEXT_SMALL))
-                    .when(!report || expanded, |label| label.child(title)),
+                    .when(!report || expanded, |label| label.child(title.clone())),
             )
             .child(
                 document_action("html-preview", "Preview", "unified", window, cx)
@@ -1594,52 +1734,154 @@ impl Render for HtmlArtifact {
                     .on_click(cx.listener(Self::toggle_expand_click)),
             );
         }
-        let browser_action = recovery_action(
-            "html-open-browser",
-            "Open in browser",
-            "external-link",
-            window,
-            cx,
-        )
-        .disabled(self.loading_file)
-        .on_click(cx.listener(|this, _, _, cx| {
-            let target = if let Some(path) = &this.path {
-                Ok(path.clone())
-            } else {
-                // Keep exported documents available after the browser handoff.
-                (|| -> Result<PathBuf, String> {
-                    use std::io::Write;
-                    let mut file = tempfile::Builder::new()
-                        .prefix("grove-document-")
-                        .suffix(".html")
-                        .tempfile()
-                        .map_err(|e| e.to_string())?;
-                    file.write_all(this.version.active.as_bytes())
-                        .map_err(|e| e.to_string())?;
-                    let (_, path) = file.keep().map_err(|e| e.to_string())?;
-                    Ok(path)
-                })()
-            };
-            this.recovery_error = None;
-            cx.spawn(async move |this, cx| {
-                let result = match target {
-                    Ok(path) => match gpui::http_client::Url::from_file_path(path) {
-                        Ok(url) => {
-                            crate::platform::inline_html::open_in_browser(url.to_string()).await
-                        }
-                        Err(()) => Err("Invalid document path".to_owned()),
-                    },
-                    Err(error) => Err(error),
-                };
-                if let Err(error) = result {
-                    let _ = this.update(cx, |this, cx| {
-                        this.recovery_error = Some(format!("Couldn’t open in browser: {error}"));
-                        cx.notify();
-                    });
+        let browser_action = if self.publication.is_some() && !expanded {
+            document_action(
+                "html-open-browser",
+                "Open in browser",
+                "external-link",
+                window,
+                cx,
+            )
+        } else {
+            recovery_action(
+                "html-open-browser",
+                "Open in browser",
+                "external-link",
+                window,
+                cx,
+            )
+        };
+        let browser_action = browser_action
+            .debug_selector(|| "html-artifact-browser".into())
+            .disabled(self.loading_file || self.publication_failed)
+            .on_click(cx.listener(|this, _, _, cx| {
+                if this.loading_file || this.publication_failed {
+                    return;
                 }
-            })
-            .detach();
-        }));
+                let target = if let Some(path) = &this.path {
+                    Ok(path.clone())
+                } else {
+                    // Keep exported documents available after the browser handoff.
+                    (|| -> Result<PathBuf, String> {
+                        use std::io::Write;
+                        let mut file = tempfile::Builder::new()
+                            .prefix("grove-document-")
+                            .suffix(".html")
+                            .tempfile()
+                            .map_err(|e| e.to_string())?;
+                        file.write_all(this.version.active.as_bytes())
+                            .map_err(|e| e.to_string())?;
+                        // Browser exports have no native host to signal the initial canvas frame.
+                        file.write_all(
+                        b"<script>window.dispatchEvent(new Event('grove:activate-view'));</script>",
+                    )
+                    .map_err(|e| e.to_string())?;
+                        let (_, path) = file.keep().map_err(|e| e.to_string())?;
+                        Ok(path)
+                    })()
+                };
+                this.recovery_error = None;
+                cx.spawn(async move |this, cx| {
+                    let result = match target {
+                        Ok(path) => match gpui::http_client::Url::from_file_path(path) {
+                            Ok(url) => {
+                                crate::platform::inline_html::open_in_browser(url.to_string()).await
+                            }
+                            Err(()) => Err("Invalid document path".to_owned()),
+                        },
+                        Err(error) => Err(error),
+                    };
+                    if let Err(error) = result {
+                        let _ = this.update(cx, |this, cx| {
+                            this.recovery_error =
+                                Some(format!("Couldn’t open in browser: {error}"));
+                            cx.notify();
+                        });
+                    }
+                })
+                .detach();
+            }));
+        if self.publication.is_some() && !expanded {
+            return div()
+                .id("html-publication-attachment")
+                .debug_selector(|| "html-publication-attachment".into())
+                .w_full()
+                .min_w_0()
+                .flex()
+                .flex_col()
+                .gap(rpx(SPACE_SM))
+                .p(rpx(SPACE_SM))
+                .border_1()
+                .border_color(c::BORDER())
+                .rounded(rpx(RADIUS_GROUP))
+                .anchor_scroll(Some(self.anchor.clone()))
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(rpx(SPACE_SM))
+                        .w_full()
+                        .min_w_0()
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .truncate()
+                                .debug_selector(|| "html-artifact-title".into())
+                                .text_size(rpx(TEXT_SMALL))
+                                .child(title),
+                        )
+                        .child(
+                            div()
+                                .flex_shrink_0()
+                                .text_size(rpx(TEXT_SMALL))
+                                .text_color(c::FG_DIM())
+                                .child("Artifact"),
+                        )
+                        .child(
+                            document_action(
+                                "html-publication-open",
+                                "Open artifact",
+                                "zen",
+                                window,
+                                cx,
+                            )
+                            .debug_selector(|| "html-publication-open".into())
+                            .with_focus_handle(self.expand_focus.clone())
+                            .disabled(self.loading_file || self.publication_failed)
+                            .on_click(cx.listener(Self::toggle_expand_click)),
+                        )
+                        .child(browser_action),
+                )
+                .when(self.loading_file, |card| {
+                    card.child(
+                        div()
+                            .text_size(rpx(TEXT_SMALL))
+                            .text_color(c::FG_DIM())
+                            .child("Loading artifact…"),
+                    )
+                })
+                .when_some(
+                    self.error.clone().filter(|_| self.publication_failed),
+                    |card, error| {
+                        card.child(
+                            div()
+                                .text_size(rpx(TEXT_SMALL))
+                                .text_color(c::FORM_ERROR())
+                                .child(error),
+                        )
+                    },
+                )
+                .when_some(self.recovery_error.clone(), |card, error| {
+                    card.child(
+                        div()
+                            .text_size(rpx(TEXT_SMALL))
+                            .text_color(c::FORM_ERROR())
+                            .child(error),
+                    )
+                })
+                .into_any_element();
+        }
         let version_notice = self.version.pending.is_some().then(|| div().p(rpx(SPACE_LG)).text_size(rpx(TEXT_SMALL)).text_color(c::FG_DIM()).child("A new version is available. Load new version resets this document’s edits, tab and scroll."));
         let mut body = div()
             .id("html-document-body")
@@ -1670,24 +1912,32 @@ impl Render for HtmlArtifact {
                         ICON_SM,
                         cx,
                     )))
-                    .child(
-                        transcript_action("html-retry", "Retry preview", false, window, cx)
-                            .icon(
-                                gpui_component::Icon::default()
-                                    .path("icons/refresh.svg")
-                                    .size(rpx(ICON_SM)),
-                            )
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                if this.version.active.is_empty() && this.path.is_some() {
-                                    this.read_file(cx);
-                                } else {
-                                    this.load(cx);
-                                }
-                                cx.notify();
-                            })),
-                    );
+                    .when(!self.publication_failed, |body| {
+                        body.child(
+                            transcript_action("html-retry", "Retry preview", false, window, cx)
+                                .icon(
+                                    gpui_component::Icon::default()
+                                        .path("icons/refresh.svg")
+                                        .size(rpx(ICON_SM)),
+                                )
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    if this.publication.is_some() && this.version.active.is_empty()
+                                    {
+                                        this.read_publication(cx);
+                                    } else if this.version.active.is_empty() && this.path.is_some()
+                                    {
+                                        this.read_file(cx);
+                                    } else {
+                                        this.load(cx);
+                                    }
+                                    cx.notify();
+                                })),
+                        )
+                    });
             }
-            body = body.child(source_view(&self.version.markdown, 0, window));
+            if !self.version.markdown.is_empty() {
+                body = body.child(source_view(&self.version.markdown, 0, window));
+            }
         } else if let Some(surface) = &self.surface {
             if surface.native.status() == LoadStatus::Loading {
                 body = body.child(
@@ -1705,6 +1955,7 @@ impl Render for HtmlArtifact {
                 artifact: cx.entity_id(),
                 surface: surface.clone(),
                 paused: self.paused.clone(),
+                integrated: report && !expanded,
             });
         }
         div()
@@ -1715,9 +1966,17 @@ impl Render for HtmlArtifact {
             .min_h_0()
             .when(expanded, gpui::Styled::h_full)
             .when(!expanded, |card| {
+                if self.publication_failed {
+                    return card.h_auto();
+                }
                 card.h(if report && !self.source && self.error.is_none() {
                     // Measured CSS pixels are logical pixels; the cap follows UI zoom.
-                    let cap = rpx(REPORT_MAX_HEIGHT).to_pixels(window.rem_size());
+                    let cap = rpx(if self.publication.is_some() {
+                        INLINE_HEIGHT
+                    } else {
+                        REPORT_MAX_HEIGHT
+                    })
+                    .to_pixels(window.rem_size());
                     gpui::px(self.report_height).min(cap)
                         + rpx(CONTROL_H + SPACE_LG).to_pixels(window.rem_size())
                 } else {
@@ -1748,8 +2007,18 @@ impl Render for HtmlArtifact {
                     .flex()
                     .flex_shrink_0()
                     .p(rpx(SPACE_SM))
+                    .gap(rpx(SPACE_SM))
                     .child(browser_action),
             )
+            .when(expanded, |card| {
+                card.track_focus(&self.expanded_focus)
+                    .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
+                        if event.keystroke.key == "escape" {
+                            this.toggle_expand(window, cx);
+                            cx.stop_propagation();
+                        }
+                    }))
+            })
             .when_some(self.recovery_error.clone(), |card, error| {
                 card.child(
                     div()
@@ -1777,6 +2046,7 @@ fn surface_is_selected(artifact: EntityId, expanded: Option<EntityId>) -> bool {
 }
 
 struct NativeElement {
+    integrated: bool,
     artifact: EntityId,
     surface: Rc<Surface>,
     paused: Rc<Cell<bool>>,
@@ -1854,6 +2124,12 @@ impl gpui::Element for NativeElement {
         let generation = self.surface.generation.get().wrapping_add(1);
         self.surface.generation.set(generation);
         self.surface.native.show(bounds, *clip, window);
+        if !self.surface.initialized.replace(true) {
+            self.surface.native.report_theme(
+                "window.dispatchEvent(new Event('grove:activate-view'));",
+                self.integrated,
+            );
+        }
         let panel = cx.try_global::<HtmlUi>().and_then(|ui| ui.exclusion);
         let tooltip = gpui_component::Root::try_read(window, cx)
             .and_then(|root| root.native_surface_exclusion(cx));
@@ -1912,6 +2188,7 @@ mod tests {
                         .style(super::super::codex_view::markdown_style(window))
                         .selectable(true),
                 )
+                .children(render_expanded(window, cx))
         }
     }
     fn link_fixture(
@@ -1940,6 +2217,119 @@ mod tests {
         cx.update(|window, cx| {
             window.draw(cx).clear();
         });
+    }
+
+    #[gpui::test]
+    fn publication_attachment_is_compact_for_every_presentation(cx: &mut gpui::TestAppContext) {
+        use grove_core::visuals::{Presentation, PresentationOptions, Reference};
+        let (fixture, cx) = link_fixture(cx);
+        fixture.update(cx, |fixture, cx| {
+            fixture.text = "```html\n<html><body>Visual</body></html>\n```".into();
+            cx.notify();
+        });
+        draw_links(cx);
+        let artifact = fixture.read_with(cx, |fixture, cx| {
+            fixture
+                .session
+                .read(cx)
+                .artifacts
+                .values()
+                .next()
+                .unwrap()
+                .clone()
+        });
+        for mode in [
+            Presentation::Inline,
+            Presentation::Dashboard,
+            Presentation::Canvas,
+            Presentation::Document,
+        ] {
+            for width in [280., 900.] {
+                fixture.update(cx, |fixture, cx| {
+                    fixture.width = Some(gpui::px(width));
+                    cx.notify();
+                });
+                cx.update(|_window, cx| {
+                    artifact.update(cx, |artifact, cx| {
+                        let (width, height) = mode.viewport();
+                        artifact.publication = Some(Reference {
+                            scope: "0".repeat(64),
+                            publication_id: "1".repeat(64),
+                            visual_id: "1".repeat(64),
+                            revision_id: "1".repeat(64),
+                            source_digest: "2".repeat(64),
+                            title: "A deliberately long artifact title ".repeat(20),
+                            item_id: "tool".into(),
+                            turn_id: "turn".into(),
+                            presentation: PresentationOptions {
+                                mode,
+                                width,
+                                height,
+                                preview_region: None,
+                            },
+                        });
+                        artifact.surface = None;
+                        artifact.report_height = 10_000.;
+                        cx.notify();
+                    });
+                });
+                draw_links(cx);
+                let bounds = cx.debug_bounds("html-publication-attachment").unwrap();
+                assert!(f32::from(bounds.size.height) < 64.);
+                let open = cx.debug_bounds("html-publication-open").unwrap();
+                let browser = cx.debug_bounds("html-artifact-browser").unwrap();
+                let title = cx.debug_bounds("html-artifact-title").unwrap();
+                assert_eq!(open.top(), browser.top());
+                assert!(title.right() <= open.left());
+                assert!(open.right() <= browser.left());
+                assert!(browser.right() <= bounds.right());
+                assert!(f32::from(bounds.size.width) <= width);
+                assert!(cx.debug_bounds("html-document-body").is_none());
+                assert!(artifact.read_with(cx, |artifact, _| artifact.surface.is_none()));
+                assert_eq!(
+                    artifact.read_with(cx, |artifact, _| artifact
+                        .publication
+                        .as_ref()
+                        .unwrap()
+                        .presentation
+                        .width),
+                    mode.viewport().0
+                );
+            }
+        }
+    }
+
+    #[gpui::test]
+    fn expanded_html_escape_uses_its_own_focus_scope(cx: &mut gpui::TestAppContext) {
+        let (fixture, cx) = link_fixture(cx);
+        fixture.update(cx, |fixture, cx| {
+            fixture.text = "```html\n<html><body>Retained source</body></html>\n```".into();
+            cx.notify();
+        });
+        draw_links(cx);
+        let artifact = fixture.read_with(cx, |fixture, cx| {
+            fixture
+                .session
+                .read(cx)
+                .artifacts
+                .values()
+                .next()
+                .unwrap()
+                .clone()
+        });
+        cx.update(|window, cx| {
+            artifact.update(cx, |artifact, cx| artifact.toggle_expand(window, cx));
+        });
+        draw_links(cx);
+        draw_links(cx);
+        assert!(cx.debug_bounds("html-expanded-overlay").is_some());
+        cx.simulate_keystrokes("escape");
+        draw_links(cx);
+        assert!(cx.debug_bounds("html-expanded-overlay").is_none());
+        assert!(artifact.read_with(cx, |artifact, _| artifact
+            .version
+            .active
+            .contains("Retained source")));
     }
 
     #[gpui::test]
@@ -2155,6 +2545,85 @@ mod tests {
         });
     }
 
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[ignore = "opens an isolated native UI and captures the production screenshot pipeline"]
+    fn native_visual_preview_pipeline() {
+        use base64::Engine as _;
+        use gpui::AppContext as _;
+        assert!(std::env::var_os("GROVE_CONFIG_DIR").is_some());
+        let output = PathBuf::from(std::env::var("GROVE_VISUAL_CAPTURE_DIR").unwrap());
+        assert!(output.is_absolute());
+        fs_err::create_dir_all(&output).unwrap();
+        gpui_platform::application().with_assets(crate::assets::Assets).run(move |cx| {
+            gpui_component::init(cx);
+            crate::fonts::register(cx).unwrap();
+            c::sync_component_theme(cx);
+            cx.set_reduce_motion(true);
+            let mut retained = None;
+            let window = cx.open_window(gpui::WindowOptions::default(), |window, cx| {
+                window.set_window_title("Grove native visual capture QA");
+                window.set_rem_size(gpui::px(16.));
+                let session = cx.new(|_| HtmlSession::new(std::env::current_dir().unwrap(), ScrollHandle::new()));
+                let fixture = cx.new(|cx| {
+                    let subscription = cx.subscribe(&session, |_, _, _: &OpenLocalFile, _| {});
+                    LinkFixture { session, text: "Native screenshot pipeline QA".into(), width: None, _subscription: subscription, opened: Rc::default() }
+                });
+                retained = Some(fixture.clone());
+                cx.new(|cx| gpui_component::Root::new(fixture, window, cx).bordered(false))
+            }).unwrap();
+            let fixture = retained.unwrap();
+            grove_core::visual_preview::enable();
+            cx.spawn(async move |cx| {
+                for (width, light) in [(728, false), (360, true)] {
+                    cx.update_window(window.into(), |_, window, cx| {
+                        grove_core::theme::set_by_name(if light { c::DEFAULT_LIGHT_THEME } else { c::DEFAULT_DARK_THEME });
+                        c::sync_component_theme(cx);
+                        window.set_rem_size(gpui::px(if light { 20. } else { 16. }));
+                    }).unwrap();
+                    let input: grove_core::visuals::Input = serde_json::from_value(serde_json::json!({"title":"Native preview QA","html":"<!doctype html><html><head><style>body{padding:var(--grove-gap)}h1{font-size:var(--grove-title)}.bar{height:24px;background:var(--grove-info);width:70%;margin-bottom:var(--grove-gap)}input{font:inherit;color:var(--grove-fg);background:var(--grove-surface);border:1px solid var(--grove-border)}</style></head><body><h1>Native visual preview</h1><div class='bar'></div><input value='Retained input'><script>console.warn('Preview diagnostic');fetch('https://example.com/blocked').catch(()=>console.error('Network blocked'))</script></body></html>"})).unwrap();
+                    let html = grove_core::visuals::prepare(&input, Path::new("/tmp"), &[], false).unwrap();
+                    let expected_digest = grove_core::visuals::digest(html.as_bytes());
+                    let (send, receive) = std::sync::mpsc::sync_channel(1);
+                    std::thread::spawn(move || {
+                        let result = grove_core::visual_preview::capture(html, width, 560, &std::sync::atomic::AtomicBool::new(false), &std::sync::atomic::AtomicBool::new(false));
+                        let _ = send.send(result);
+                    });
+                    let deadline = std::time::Instant::now() + Duration::from_secs(22);
+                    let result = loop {
+                        cx.update_window(window.into(), |_, window, cx| {
+                            crate::platform::visual_capture::pump_native();
+                            pump_capture(window, cx);
+                        }).unwrap();
+                        if let Ok(result) = receive.try_recv() { break result.unwrap(); }
+                        assert!(std::time::Instant::now() < deadline, "capture pipeline timed out");
+                        cx.background_executor().timer(Duration::from_millis(16)).await;
+                    };
+                    assert_eq!(result["source_digest"], expected_digest);
+                    assert_eq!(result["width"], width);
+                    let content_height = result["contentHeight"].as_f64().unwrap();
+                    assert!(content_height > 0. && content_height < 500., "capture must measure content in standards mode, not the viewport: {content_height}");
+                    let messages = result["consoleMessages"].as_array().unwrap();
+                    assert!(messages.iter().any(|m| m["text"] == "Preview diagnostic"));
+                    assert!(messages.iter().any(|m| m["text"] == "Network blocked"));
+                    let png = base64::engine::general_purpose::STANDARD.decode(result["png"].as_str().unwrap()).unwrap();
+                    assert!(png.starts_with(b"\x89PNG"));
+                    let pixels = image::load_from_memory(&png).unwrap().to_rgba8();
+                    let background = pixels.get_pixel(0, 0);
+                    if light { assert!(background[0] > 230 && background[1] > 230 && background[2] > 230); }
+                    else { assert!(background[0] < 60 && background[1] < 60 && background[2] < 60, "display preference/theme composition must actually apply: {background:?}"); }
+
+                    fs_err::write(output.join(format!("preview-{width}.png")), png).unwrap();
+                    let mut metadata = result; metadata.as_object_mut().unwrap().remove("png");
+                    fs_err::write(output.join(format!("preview-{width}.json")), serde_json::to_vec_pretty(&metadata).unwrap()).unwrap();
+                }
+                cx.update_window(window.into(), |_, window, _| window.remove_window()).unwrap();
+                drop(fixture);
+                cx.update(|cx| cx.quit());
+            }).detach();
+        });
+    }
+
     #[gpui::test]
     fn os_text_scale_keeps_native_and_report_sizes_aligned(cx: &mut gpui::TestAppContext) {
         struct Fixture;
@@ -2237,6 +2706,7 @@ mod tests {
             fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
                 div().size_full().when(self.mounted, |root| {
                     root.child(NativeElement {
+                        integrated: false,
                         artifact: cx.entity_id(),
                         surface: self.surface.clone(),
                         paused: Rc::new(Cell::new(false)),
@@ -2248,6 +2718,7 @@ mod tests {
         let probe = visible.clone();
         let (fixture, cx) = cx.add_window_view(|_, _| SurfaceFixture {
             surface: Rc::new(Surface {
+                initialized: Cell::new(false),
                 native: NativeDocument::with_visibility_probe(probe),
                 generation: Cell::new(0),
             }),
@@ -2901,4 +3372,61 @@ mod tests {
             gpui_component::Theme::global_mut(cx).font_size = previous_font;
         });
     }
+}
+
+// A capture owns an independent native document, never a live transcript surface.
+struct PendingCapture {
+    request: grove_core::visual_preview::Request,
+    native: crate::platform::visual_capture::Capture,
+    started: std::time::Instant,
+}
+thread_local! {
+    static CAPTURE: std::cell::RefCell<Option<PendingCapture>> = const { std::cell::RefCell::new(None) };
+}
+pub(crate) fn pump_capture(window: &Window, cx: &App) {
+    use base64::Engine;
+    use std::sync::atomic::Ordering;
+    CAPTURE.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        if slot.is_none() {
+            if let Some(request) = grove_core::visual_preview::next() {
+                if request.cancelled.load(Ordering::Relaxed) { return; }
+                // Same CSP, fonts, theme and reduced-motion policy as the displayed document.
+                let diagnostics = r"<script>(()=>{const messages=[];Object.defineProperty(globalThis,'__groveCaptureConsole',{value:messages});for(const level of ['log','warn','error']){const original=console[level];console[level]=(...args)=>{if(messages.length<32)messages.push({level,text:args.map(x=>{try{return String(x)}catch{return '[unreadable]'}}).join(' ').slice(0,512)});original.apply(console,args)}}addEventListener('error',e=>{if(messages.length<32)messages.push({level:'error',text:String(e.message).slice(0,512)})})})();</script>";
+                let theme = document_preferences_script(window, true, false, cx.reduce_motion()).replace("</script", "<\\/script");
+                // WebView2 installs its CSS viewport asynchronously after navigation.
+                // Its capture backend activates the initial frame after that override.
+                let activation = if cfg!(target_os = "windows") { "" } else {
+                    "(()=>{const activate=()=>window.dispatchEvent(new Event('grove:activate-view'));if(document.readyState==='complete')activate();else addEventListener('load',activate,{once:true});})();"
+                };
+                let source = format!("{}<script>{theme};{activation}</script>", sandboxed(&format!("{diagnostics}{}", request.html), cx.reduce_motion()));
+                match crate::platform::visual_capture::Capture::new(&source, request.width, request.height) {
+                    Ok(native) => *slot = Some(PendingCapture { request, native, started: std::time::Instant::now() }),
+                    Err(error) => { let _ = request.reply.send(Err(error)); },
+                }
+            }
+        }
+        let Some(pending) = slot.as_ref() else { return; };
+        if pending.request.cancelled.load(Ordering::Relaxed) || pending.started.elapsed() > Duration::from_secs(18) {
+            let _ = pending.request.reply.send(Err("Native capture cancelled or timed out waiting for load/fonts/layout".into()));
+            slot.take(); return;
+        }
+        // Give layout and paint a bounded settling interval after native creation.
+        if pending.started.elapsed() < Duration::from_millis(250) { return; }
+        if let Some(result) = pending.native.poll() {
+            let result = result.map(|(png, metadata)| {
+                let pixel_width = png.get(16..20).and_then(|b| b.try_into().ok()).map(u32::from_be_bytes);
+                let pixel_height = png.get(20..24).and_then(|b| b.try_into().ok()).map(u32::from_be_bytes);
+                serde_json::json!({
+                    "png":base64::engine::general_purpose::STANDARD.encode(png),
+                    "width":pending.request.width,"capturedHeight":pending.request.height,
+                    "pixelWidth":pixel_width,"pixelHeight":pixel_height,
+                    "contentHeight":metadata["contentHeight"],"consoleMessages":metadata["consoleMessages"],
+                    "source_digest":pending.request.digest
+                })
+            });
+            let _ = pending.request.reply.send(result);
+            slot.take();
+        }
+    });
 }

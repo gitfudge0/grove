@@ -3221,10 +3221,12 @@ dependencies = [
  "chrono",
  "dirs 5.0.1",
  "fs-err",
+ "html5ever 0.27.0",
  "image",
  "keyring",
  "libc",
  "markdown",
+ "markup5ever_rcdom",
  "portable-pty",
  "ring",
  "semver",
@@ -3237,6 +3239,7 @@ dependencies = [
  "tracing",
  "ureq",
  "url",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

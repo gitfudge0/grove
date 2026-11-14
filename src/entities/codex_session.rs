@@ -1154,6 +1154,8 @@ mod dashboard_tests {
 
     fn saved(provider: codex::Provider) -> SavedSession {
         SavedSession {
+            html_policy: grove_core::visuals::HtmlPolicy::Legacy,
+            visuals: Vec::new(),
             claude_subagents: std::collections::HashMap::default(),
             session_review: grove_core::codex::SessionReview::default(),
             rich_plans: grove_core::rich_plan::PlanStore::default(),

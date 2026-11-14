@@ -352,6 +352,7 @@ pub(crate) fn connect_side_chat(mut saved: SavedSession) -> Connection {
 
 struct Process {
     activity: crate::activity_mcp::Server,
+    visuals: crate::visuals_mcp::Server,
     child: Child,
     input: ChildStdin,
     lines: mpsc::Receiver<Result<Value, String>>,
@@ -440,7 +441,7 @@ fn launch_command_profile(
         guidance.push_str("\n\n");
         guidance.push_str(crate::tasks::CLAUDE_GUIDANCE);
         guidance.push_str("\n\n");
-        guidance.push_str(crate::reports::REPORT_GUIDANCE);
+        guidance.push_str(crate::reports::guidance(saved.html_policy));
         guidance.push_str("\n\n");
         guidance.push_str(crate::activity::GUIDANCE);
         guidance.push_str("\n\n");
@@ -557,6 +558,7 @@ fn spawn_profile(
     side_chat: bool,
 ) -> Result<Process, String> {
     let activity = crate::activity_mcp::Server::start()?;
+    let visuals = crate::visuals_mcp::Server::start()?;
     // CLI variadic options keep their last occurrence. Preserve every caller MCP
     // source while adding the private, process-lifetime reporting endpoint.
     let mut merged = Vec::new();
@@ -582,6 +584,9 @@ fn spawn_profile(
             json!({"mcpServers":{"grove_activity":{
                 "type":"http", "url":activity.url(),
                 "headers":{"Authorization":format!("Bearer {}",activity.token())}
+            },"grove_visuals":{
+                "type":"http", "url":visuals.url(),
+                "headers":{"Authorization":format!("Bearer {}",visuals.token())}
             }}})
             .to_string(),
         );
@@ -652,6 +657,7 @@ fn spawn_profile(
     });
     Ok(Process {
         activity,
+        visuals,
         child,
         input,
         lines,
@@ -1398,6 +1404,12 @@ impl Actor {
             // The UI consumes complete state, so intermediate protocol deltas
             // need not each clone the accumulated conversation. A bounded batch
             // also lets actions and publication run during continuous output.
+            if let Some(process) = &self.process {
+                if process.visuals.sync(&mut self.state, self.side_chat) {
+                    self.dirty = true;
+                    self.publish();
+                }
+            }
             self.poll_context_query();
             self.poll_mcp_status();
             if self.receive_batch() {
@@ -1588,6 +1600,7 @@ impl Actor {
             process
                 .activity
                 .set_context_items(&self.state.saved.items, self.state.turn_id.clone());
+            process.visuals.sync(&mut self.state, self.side_chat);
         }
         let mut snapshot = self.state.clone();
         snapshot.can_redirect = self.initialized
@@ -3806,6 +3819,19 @@ impl Actor {
                 // user's existing permission decisions.
                 if request["tool_name"] == "mcp__grove_activity__report_activity"
                     && crate::activity::validate_report(&request["input"]).is_ok()
+                {
+                    return self.respond(
+                        id,
+                        json!({"behavior":"allow","updatedInput":request["input"]}),
+                    );
+                }
+                // Private visual tools enforce host-read permissions and root ownership
+                // in their own session-bound endpoint; they grant no provider capability.
+                if matches!(
+                    request["tool_name"].as_str(),
+                    Some("mcp__grove_visuals__render_html" | "mcp__grove_visuals__preview_html")
+                ) && serde_json::from_value::<crate::visuals::Input>(request["input"].clone())
+                    .is_ok()
                 {
                     return self.respond(
                         id,
@@ -6787,6 +6813,7 @@ mod tests {
         let (_, lines) = mpsc::channel();
         actor.process = Some(Process {
             activity: crate::activity_mcp::Server::start().unwrap(),
+            visuals: crate::visuals_mcp::Server::start().unwrap(),
             child,
             input,
             lines,

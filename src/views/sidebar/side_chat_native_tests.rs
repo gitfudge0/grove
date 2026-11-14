@@ -32,6 +32,8 @@ impl Render for NativeSideChat {
 
 fn saved(path: &str, provider: grove_core::codex::Provider) -> grove_core::codex::SavedSession {
     grove_core::codex::SavedSession {
+        html_policy: grove_core::visuals::HtmlPolicy::Legacy,
+        visuals: Vec::new(),
         session_review: grove_core::codex::SessionReview::default(),
                         rich_plans: grove_core::rich_plan::PlanStore::default(),
         side_chats: HashMap::from([(

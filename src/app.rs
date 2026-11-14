@@ -17,6 +17,26 @@ pub fn resolve_zoom(store: &Store) -> f32 {
 }
 
 pub fn boot(cx: &mut gpui::App) {
+    cx.background_executor()
+        .spawn(async {
+            let _ = grove_core::visuals::cleanup();
+        })
+        .detach();
+    grove_core::visual_preview::enable();
+    cx.spawn(async move |cx| loop {
+        cx.background_executor()
+            .timer(std::time::Duration::from_millis(32))
+            .await;
+        cx.update(|cx| {
+            if let Some(handle) = cx.windows().first().copied() {
+                let _ = handle.update(cx, |_, window, cx| {
+                    crate::views::inline_html::pump_capture(window, cx);
+                });
+            }
+        });
+    })
+    .detach();
+
     // GTK owns WebKit's asynchronous loading, input and IPC, including while a
     // retained document is hidden. Dispatch it on GPUI's foreground thread.
     #[cfg(all(target_os = "linux", not(test)))]

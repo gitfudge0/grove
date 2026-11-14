@@ -1658,9 +1658,10 @@ impl Render for Shell {
             )
             .capture_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
                 if event.keystroke.key == "escape"
-                    && this
+                    && (this
                         .workspaces
                         .update(cx, |manager, cx| manager.dismiss_hover_menu(window, cx))
+                        || super::inline_html::dismiss_expanded(window, cx))
                 {
                     window.prevent_default();
                     cx.stop_propagation();

@@ -803,6 +803,8 @@ impl Runtime {
             }
         };
         let saved = grove_core::codex::SavedSession {
+            html_policy: grove_core::visuals::HtmlPolicy::Explicit,
+            visuals: Vec::new(),
             session_review: grove_core::codex::SessionReview::default(),
             rich_plans: grove_core::rich_plan::PlanStore::default(),
             side_chats: HashMap::default(),
@@ -2292,6 +2294,8 @@ mod tests {
                 )
             });
             let saved = grove_core::codex::SavedSession {
+                html_policy: grove_core::visuals::HtmlPolicy::Explicit,
+                visuals: Vec::new(),
                 session_review: grove_core::codex::SessionReview::default(),
                 rich_plans: grove_core::rich_plan::PlanStore::default(),
                 side_chats: HashMap::default(),

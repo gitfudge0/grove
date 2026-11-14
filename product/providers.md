@@ -179,3 +179,20 @@ Login/logout execute provider-owned commands with literal argument vectors in a 
 MCP sign-out requires authoritative signed-out/needs-auth status. Claude CLI connected status does not independently report its auth method; a successful, verified OAuth attempt can retain capability for the exact current context in memory, without reading credential stores. Restart or changed configuration discards that proof. Configurations that cannot be safely fingerprinted cannot grant mutation authority.
 
 `provider_connections_smoke PROVIDER CWD status|servers` exercises production discovery without changing credentials. Its `fixture-login`, `fixture-cancel` and `fixture-clear SERVER` modes require `GROVE_CONNECTIONS_ISOLATED_FIXTURE`, isolated provider homes/configurations and a localhost OAuth fixture; they refuse non-loopback authorization URLs and never print auth URLs, codes or raw interaction output. These modes are verification tooling, not account-login automation.
+
+## HTML publication tools
+
+Codex and Claude register a separate authenticated process-local `grove_visuals`
+MCP endpoint alongside metadata-only `grove_activity`. Visual calls bind to a
+uniquely matching observed root tool event, stable request ID and active turn;
+unattributed child calls are unsupported. Existing user MCP registrations survive.
+The endpoint checks effective host-read permission itself; tool approval does not
+grant path access. Turn changes cancel pending captures, shutdown cancels endpoint
+work, and atomic commit precedes tool success. Saved publication references live
+in shared session state and reconcile against private durable bundles on reload.
+
+`cargo run -p grove-core --example visuals_smoke -- codex|claude EMPTY_CWD`
+requires disposable `GROVE_CONFIG_DIR` and authenticated provider CLIs. It exercises
+real tool discovery/calls, publication and reference reload; without the native UI
+loop it checks truthful preview unavailability, not screenshot success. It answers
+no approval requests. Run native capture/UI checks separately.

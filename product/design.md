@@ -262,7 +262,31 @@ The sent-message Edit action opens a pane-local confirmation attached to the act
 
 ## Reports and native plans
 
-Nonblocking project menus and tooltips preserve the live HTML surface outside their measured overlay bounds; overlays retain pointer and keyboard ownership. Blocking confirmations keep background HTML inert. All HTML documents include a persistent, labeled Open in browser button with a leading external-link icon, including inline reports and fenced documents. Inline previews omit the editing toolbar; fenced documents export their HTML to a local file for browser handoff. Expanded documents retain their controls and return navigation. Integrated reports additionally render as a canvas without an enclosing card/border, with content-measured height subject to the shared cap. The exact `<!-- grove:integrated-report -->` marker enables Grove theme/font/zoom integration. Explicit Open in browser links open externally without inline expansion. Preference updates, including Reduce motion on ordinary HTML and reports, preserve the live document and input state. Check macOS, Linux, and Windows paths when platform behavior changes; one platform’s rendering does not establish parity elsewhere.
+New conversations publish HTML as durable artifacts through explicit publication.
+HTML fences remain code; ordinary HTML file links open the file viewer. Existing
+conversations retain their saved legacy rendering policy. Published visuals stay
+attached to their source tool event and visible independently of collapsed work
+details. The transcript shows a single-line artifact row with a truncating title, muted
+Artifact label and fixed trailing icon-only Open artifact and Open in browser
+actions. Both actions retain accessible names, keyboard access and explanatory
+tooltips. The transcript contains no live HTML surface or automatic screenshot.
+All presentation modes use this same attachment treatment. Open enters the dedicated
+native document viewer; Back returns to the source attachment and restores focus.
+The live document is created on demand and retained across return/reopening, so
+reader input and canvas camera state survive navigation. Source-file changes never
+replace a saved publication. Missing/corrupt bundle failures show a source-attached
+explanation without a futile Retry; browser handoff is disabled until bytes load.
+
+Agent-requested screenshot previews remain available through isolated native
+capture using the same theme/fonts/zoom, reduced-motion and offline rules. They
+must not steal focus or mutate a live document. Capture dimensions, diagnostics and
+unavailable/timeout states are reported truthfully; publication does not imply a
+successful screenshot or native display. Presentation hints and width/height
+specify the authored preview viewport, not transcript size. Cooperating canvases
+receive the one-time grove:initial-view event and own their camera, pan and zoom.
+Legacy automatic HTML retains its earlier presentation for compatibility.
+
+Nonblocking project menus and tooltips preserve the live HTML surface outside their measured overlay bounds; overlays retain pointer and keyboard ownership. Blocking confirmations keep background HTML inert. HTML viewers and legacy inline documents include a persistent, labeled Open in browser button with a leading external-link icon. Artifact rows use the icon-only version with an accessible name and tooltip. Inline previews omit the editing toolbar; fenced documents export their HTML to a local file for browser handoff. Expanded documents retain their controls and return navigation. Integrated reports render without an enclosing card/border. Legacy reports use content-measured height subject to their cap; published visuals use compact transcript attachments and a dedicated viewer. The exact `<!-- grove:integrated-report -->` marker enables Grove theme/font/zoom integration. Explicit Open in browser links open externally without inline expansion. Preference updates, including Reduce motion on ordinary HTML and reports, preserve the live document and input state. Check macOS, Linux, and Windows paths when platform behavior changes; one platform’s rendering does not establish parity elsewhere.
 
 Oversized HTML previews and native plan files use compact, content-height warning cards with the affected filename, actual size and applicable limit. HTML offers Open in browser and Reveal file; plans offer Reveal file. Recovery uses the registered-root path rules. Deterministic size failures do not offer Retry or reserve an empty preview frame; other failures retain their supported recovery. Plan asset size failures identify the asset and its own limit rather than describing every rejection as an oversized plan JSON.
 

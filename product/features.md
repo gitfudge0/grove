@@ -136,6 +136,64 @@ widths, zoom, focus, draft restoration and read-only plan references; report
 unavailable platforms and live checks explicitly.
 
 
+## Explicit HTML visual publication
+
+Published HTML artifacts appear as single-line transcript rows with a truncating
+title, muted Artifact label and two icon-only actions: Open artifact and Open in
+browser. The actions retain accessible names and tooltips. Every presentation mode opens live HTML in the
+dedicated document viewer; the transcript contains no live HTML or automatic
+thumbnail capture. Back restores the conversation and the viewer retains input
+and camera state when reopened. The `presentation` hint (`inline`, `dashboard`,
+`canvas`, `document`) and width/height remain authoring and agent-preview metadata.
+Optional `preview_region` supplies a scroll origin or a cooperating canvas frame
+through the one-time `grove:initial-view` event. Agent-requested native screenshot
+previews remain available without publishing an artifact.
+
+New Codex and Claude conversations publish HTML artifacts through the private
+`grove_visuals.render_html` tool. Fenced HTML stays code and ordinary local HTML
+links open the file viewer; Open in browser links remain external. Older saved
+conversations without `html_policy` retain legacy automatic previews. Forks
+inherit their source policy, resume preserves it, and independent new conversations
+use explicit publication. Native Markdown plans remain a separate feature.
+
+`render_html` accepts exactly one of complete inline `html` or an absolute local
+`path`, a title and a stable `request_id`. An optional `visual_id` creates a new
+immutable revision; it never edits an earlier reply. Each call must match one
+observed root tool event in the active owning turn. Calls without reliable root
+ownership, including inherited child-agent calls, fail with an explicit error.
+Read-only side conversations receive no visual tools. User MCP sources are
+preserved when Grove registers its separate authenticated session-local endpoint.
+
+Publication commits the offline document and reference atomically before returning
+success. The tool event anchors the visual; normal tool receipts remain available,
+and visuals remain visible when work details are collapsed. Saved references load
+private bundles after restart, fork and source deletion. Recovery reconciles a
+commit whose acknowledgement was interrupted, provided its source event remains.
+Rewinds hide removed anchors. Conservative cleanup scans saved records, archives
+and journals, retaining active-session retry records and recent orphan commits;
+unknown/unreadable roots prevent sweeping. Private bundles are not repository artifacts.
+
+Source documents are limited to 2 MiB and prepared bundles to 10 MiB. Authorized
+local PNG, JPEG and WebP images are embedded after root, regular-file, identity,
+size and decoding checks (at most 64 assets). Inline CSS, JavaScript, fonts and SVG;
+external dependencies and network/file loading are unsupported. Direct host reads
+require positively acknowledged effective bypass permissions; otherwise pass
+inline HTML with data assets. An MCP registration never broadens provider access.
+
+`preview_html` accepts the same inputs and returns a PNG image, source digest,
+viewport/content dimensions, actual raster dimensions and bounded available
+console diagnostics. It publishes nothing. Capture uses isolated nonactivating
+native webviews with the same offline preparation, fonts, theme and motion policy
+as inline rendering. Widths 240–1600 and heights 80–2000 are supported; use 360 and
+728 for narrow/desktop checks. Capture concurrency, readiness and timeouts are
+bounded. Cancellation/teardown discards the temporary document; unavailable native
+capture does not disable publication. No browser download is required.
+
+macOS capture uses WebKit snapshots, Linux uses WebKitGTK snapshots, and Windows
+uses WebView2 screenshot capture. Platform source coverage is not runtime parity;
+see `verification.md` for observed and unavailable checks. A headless core actor has
+no native capture loop and returns an unavailable error rather than a fake image.
+
 ## Integrated HTML reports
 
 An agent can return a report that reads as part of the conversation rather than
@@ -145,8 +203,9 @@ a framed document. Ordinary HTML previews are unchanged.
 
 A complete HTML document (`<!doctype html>` or `<html>` through `</html>`, at
 most 2 MiB) opts in with the exact comment `<!-- grove:integrated-report -->`.
-It reaches the transcript the same way as any HTML preview: a closed fenced
-`html` block, or a Markdown link to a local `.html` file.
+In legacy conversations it reaches the transcript through a closed fenced
+`html` block or a Markdown link to a local `.html` file. Explicitly published
+visuals receive the report marker automatically during preparation.
 
 Grove injects one `<style id="grove-report-theme">` element and replaces its
 contents whenever appearance or UI zoom changes, without reloading the document.
@@ -171,8 +230,9 @@ sample.
 
 ### Behaviour
 
-- Inline, the report has no frame or title; a compact action row keeps Preview,
-  Source, Reload (fenced reports), Expand and browser actions.
+- Legacy inline reports have no frame, title or editing toolbar; Open in browser
+  remains visible. Published artifacts use the single-line artifact row described
+  above. The dedicated viewer retains Preview, Source, Reload and return controls.
 - The native view is sized to the measured body height, capped at eight times
   the standard preview height. Expand shows longer reports in full.
 - Wheel input over an inline report scrolls the conversation. Expanded, the

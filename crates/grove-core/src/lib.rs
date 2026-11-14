@@ -62,3 +62,7 @@ pub mod change_result_store;
 pub mod conversation_result;
 
 pub mod connections;
+
+pub mod visual_preview;
+pub mod visuals;
+mod visuals_mcp;

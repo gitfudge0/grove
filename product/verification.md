@@ -1638,3 +1638,136 @@ Remaining coverage must be reported separately for Codex and Claude: real user-a
 Linux verification passed 949 core tests (10 manual/live tests ignored), 19 Settings tests and all 33 UI source-conformance checks. The Settings focus regression covers completion from the redirect input, Send and Copy-link actions without stealing unrelated focus. Both production connection adapters completed MCP OAuth, credential clearing, cancellation and fresh status checks against a controlled localhost server. One Claude clearing run encountered the CLI's credential-store error; a separate explicit retry succeeded. Real account status was checked read-only; user credentials were not changed.
 
 The existing side-chat composer-layout assertion failed identically on clean base `1664662` and the feature checkout; no unrelated layout repair was included. Native Linux captures established provider branding, compact actions, connected/signed-out layouts and narrow enlarged-rem wrapping. Waiting/light and sign-out-confirmation/narrow captures still contained prior frames after bounded repaint attempts, so those two visual states remain unverified. GPUI focus/render assertions do not replace that missing screenshot evidence.
+
+
+## Explicit HTML visual publication (2026-11-14)
+
+The r2 implementation adds private visual MCP tools, immutable publication bundles,
+legacy/explicit conversation policy, tool-event rendering and native screenshot
+capture. The 16 focused core regressions passed, covering snapshot retry/integrity,
+source and asset deletion, revision/fork lineage, recovery, conservative cleanup,
+file-root and opened-descriptor checks, cancellation at atomic persistence, and
+exact provider event provenance. Review findings in Unix path verification, fork
+revision lookup and commit cancellation were repaired and independently re-reviewed.
+
+Codex: live tool discovery, publication and saved-reference reload were verified
+with `visuals_smoke`; a separate live call through the isolated native app returned
+a PNG and metadata successfully. Claude: fixture/provider-binding checks passed,
+but live verification remains untested because the CLI reported “Not logged in”.
+Fixtures do not establish Claude’s live provider boundary.
+
+Linux: the real WebKitGTK capture probe passed at 728/360 widths, with focus
+preservation, blocked network diagnostics and cancellation teardown. The isolated
+native preview pipeline passed dark/light and rem-size checks, PNG/digest/diagnostic
+assertions, actual themed pixels and content-height measurement. Production native
+inspection confirmed source-attached rendering, theme application and preserved
+input through expansion and the Back control. The dedicated GPUI Escape
+regression passed, but the native X11 Escape probe left the expanded view open;
+Escape/return-focus remains unresolved pending interactive QA.
+macOS WebKit and Windows WebView2 capture implementations are source-only coverage
+here: neither native runtime nor cross-platform compilation was available locally.
+Windows native provider conversations remain unsupported by the existing runtime.
+Browser launch, overlay combinations and keyboard routing from a focused native
+HTML field were not fully exercised in this run.
+
+The final HTML fixture selection passed 33 tests (two native fixtures ignored by default),
+the publication/column fixture passed for Codex and Claude, and 33 UI conformance
+checks passed. Full core runs had 960 passes, ten ignored and the previously
+recorded tmux startup-environment failure; that test passed individually. Source
+checks and artifact policy passed before the final delivery review; final PR/CI
+results are recorded in the PR. These observations do not establish platform parity.
+
+### Presentation-aware visual previews
+
+Published references now retain inline/dashboard/canvas/document presentation,
+independent layout dimensions and an optional initial frame. Existing published
+references without these fields get bounded dashboard previews; legacy automatic
+fences and links retain their earlier policy. Eighteen focused core tests, 34 HTML
+fixtures (two ignored), all 33 conformance checks, both Clippy passes, formatting
+and artifact validation passed. The ignored real Linux native preview pipeline
+also passed after the activation/readiness change.
+
+Four examples were published through real Codex tools using the isolated
+visuals_gallery driver; each returned one saved reference with the requested
+presentation. A first synthetic seeding attempt was replaced because native
+provider startup treated those entries as fresh conversations. Claude has not
+been retested live for these parameters; its previous authentication blocker
+remains. macOS/Windows changes to capture readiness are source-only coverage.
+Merge and installation remain deferred at the user's request.
+
+Native Linux inspection of the presentation update confirmed bounded dashboard
+and canvas thumbnails, the selected canvas frame, opening the dashboard live
+and returning with Back. Canvas zoom changed from 59% to 70% in the live view and remained 70%
+after Back and reopening the same visual.
+The earlier Escape issue remains unresolved; browser handoff of the new initial
+frame, full pan/keyboard behavior, and light/narrow/zoom combinations in the
+production app remain unverified. The native pipeline fixture separately covers
+light/dark capture and changed rem sizes.
+
+
+### HTML artifact attachments
+
+The later QA direction supersedes automatic transcript thumbnails and live inline
+publication modes: every published HTML reference now renders a compact attachment
+with Open and Open in browser. Live webviews are created only on demand in the
+dedicated viewer; agent-requested preview_html capture remains available. Saved
+legacy conversations keep their earlier parsing/rendering policy.
+
+The updated HTML suite passed 28 tests (two native/manual cases ignored), including
+all four presentation modes at narrow/wide widths with a long title and no native
+transcript body. All 33 source conformance checks and workspace all-target Clippy
+passed. These fixtures do not establish live provider or native interaction parity.
+Codex's existing four real publications are reused for QA; no new live publication
+call was made for this UI change. Claude remains untested live because login was
+unavailable; macOS/Windows native behavior remains untested. The previously observed
+native Escape issue remains unresolved. Merge and installation remain deferred.
+
+The final local-profile Linux build passed and was relaunched with the existing
+isolated QA configuration. Native inspection confirmed the compact attachment in
+an actual saved Codex conversation, opened its published dropdown picker, selected
+Apple, observed Back returning to the same source attachment, then reopened and
+confirmed Apple remained selected. Evidence is in the ignored visual-ui-app
+attachment captures. The four gallery conversations and subsequent user-authored
+QA content were preserved. Light/narrow/zoom combinations and browser handoff were
+not exercised for this attachment change; neither was new live tool publication.
+
+
+### Single-line artifact rows
+
+Published HTML uses the Artifact name. Its transcript row now keeps a truncating
+title, muted Artifact label and two fixed icon-only Open artifact/Open in browser
+controls on one line. Accessible names, tooltips, focus handles and loading/error
+recovery remain intact. The HTML suite passed 28 tests (two ignored), including
+long-title/narrow-width action alignment; all 33 conformance tests and workspace
+all-target Clippy passed. This UI-only follow-up did not invoke new live Codex or
+Claude tools; Codex saved artifacts are reused for native QA, while Claude live
+coverage remains login-blocked. macOS/Windows and the existing Escape gap remain
+unverified/unresolved. Merge and installation remain deferred.
+
+The final local build passed and isolated Linux QA was relaunched. Native Dark
+inspection at the actual 1402-pixel-wide QA window confirmed the title, Artifact
+label and two icon-only controls on one line; clicking Open entered the live saved
+canvas viewer. Browser handoff, tooltip hover, light theme and changed zoom were
+not exercised in this follow-up. The existing saved QA conversations were retained.
+
+
+### Final artifact delivery review
+
+Fresh independent core and native source reviews passed after correcting the
+shared Codex/Claude publication fixture's obsolete selector and deferring Windows
+capture's initial-frame activation until its requested CSS viewport is installed.
+The old selector failure was reproduced; the corrected shared fixture passed.
+Windows viewport ordering was verified by source tracing only, not runtime.
+The final source also describes tool success as a saved artifact that the reader
+opens, rather than claiming a live inline document has loaded.
+
+Final local checks passed 966 core tests with ten manual cases ignored and the
+previously recorded tmux environment test excluded; that test passed separately
+in isolation. Both final Clippy passes succeeded. Eighteen focused visual tests and 34 HTML tests passed
+(two native/manual cases ignored in the HTML selection), and the real Linux native
+screenshot pipeline passed again after the capture-order change. Formatting,
+reference-comparator mutation tests, repository/tooling tests and artifact policy
+passed. PR CI is source-only by repository policy; main-branch Rust/platform jobs
+run after merge. Existing Claude login, macOS/Windows runtime, native Escape and
+broader keyboard/overlay verification gaps remain explicit. Remote merge is now
+authorized by the user; this shipping request does not authorize app installation.

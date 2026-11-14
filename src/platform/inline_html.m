@@ -43,6 +43,10 @@
 @property(nonatomic) BOOL initialNavigation;
 @property(nonatomic) BOOL disposed;
 @property(nonatomic) uint64_t paintGeneration;
+@property(nonatomic, strong) NSWindow *captureWindow;
+@property(nonatomic, strong) NSData *capturePNG;
+@property(nonatomic, strong) NSString *captureMetadata;
+@property(nonatomic) int captureState;
 @end
 
 @implementation GroveHTMLDocument
@@ -106,7 +110,7 @@ void grove_html_focus_host(void *parentPointer) {
 }
 void grove_html_hide(void *handle);
 void grove_html_hide_all(void) {
-    for (GroveHTMLDocument *document in grove_html_documents()) grove_html_hide((__bridge void *)document);
+    for (GroveHTMLDocument *document in grove_html_documents()) if (!document.captureWindow) grove_html_hide((__bridge void *)document);
 }
 
 void *grove_html_create(const char *bytes, size_t length) {
@@ -237,6 +241,7 @@ void grove_html_destroy(void *handle) {
     GroveHTMLDocument *doc = (__bridge_transfer GroveHTMLDocument *)handle;
     grove_html_hide((__bridge void *)doc);
     doc.disposed = YES;
+    [doc.captureWindow close]; doc.captureWindow = nil;
     [grove_html_documents() removeObject:doc];
     grove_html_remove_edit_monitor_if_unused();
     [doc.web stopLoading];
@@ -266,4 +271,52 @@ void grove_html_open_browser(const char *bytes, size_t length, void *context, Gr
         const char *message = error ? error.localizedDescription.UTF8String : NULL;
         completion(context, message, message ? strlen(message) : 0);
     }];
+}
+
+// Screenshot documents never become key/main windows and share the display policy.
+void *grove_html_capture_create(const unsigned char *bytes, size_t length, unsigned width, unsigned height) {
+    void *handle = grove_html_create((const char *)bytes, length);
+    if (!handle) return NULL;
+    GroveHTMLDocument *doc = (__bridge GroveHTMLDocument *)handle;
+    doc.captureWindow = [[NSWindow alloc] initWithContentRect:NSMakeRect(-30000,-30000,width,height) styleMask:NSWindowStyleMaskBorderless backing:NSBackingStoreBuffered defer:NO];
+    doc.captureWindow.releasedWhenClosed = NO;
+    doc.captureWindow.ignoresMouseEvents = YES;
+    doc.captureWindow.contentView = doc.clip;
+    doc.clip.frame = NSMakeRect(0,0,width,height); doc.clip.hidden = NO;
+    doc.web.frame = doc.clip.bounds;
+    [doc.captureWindow orderBack:nil];
+    return handle;
+}
+int grove_html_capture_poll(void *handle) {
+    GroveHTMLDocument *doc = (__bridge GroveHTMLDocument *)handle;
+    if (doc.status == 2) return -1;
+    if (doc.status == 1 && doc.captureState == 0) {
+        doc.captureState = 1;
+        NSString *script = @"(()=>{if(globalThis.__groveInitialViewReady===false||document.readyState!=='complete'||document.fonts.status!=='loaded'||!Array.from(document.images).every(i=>i.complete))return false;return JSON.stringify({contentHeight:Math.ceil(document.body ? document.body.getBoundingClientRect().height : 0),consoleMessages:(globalThis.__groveCaptureConsole||[]).slice(0,32).map(m=>({level:String(m.level).slice(0,32),text:String(m.text).slice(0,512)}))})})()";
+        [doc.web evaluateJavaScript:script completionHandler:^(id value, NSError *error) {
+            if (doc.disposed) return;
+            if (error) { doc.captureState = -1; return; }
+            if (![value isKindOfClass:NSString.class]) { doc.captureState = 0; return; }
+            if ([(NSString *)value lengthOfBytesUsingEncoding:NSUTF8StringEncoding] > 65536) { doc.captureState = -1; return; }
+            doc.captureMetadata = value;
+            WKSnapshotConfiguration *config = [WKSnapshotConfiguration new];
+            config.rect = doc.web.bounds;
+            config.snapshotWidth = @(doc.web.bounds.size.width);
+            [doc.web takeSnapshotWithConfiguration:config completionHandler:^(NSImage *image, NSError *snapshotError) {
+                if (doc.disposed) return;
+                if (!image || snapshotError) { doc.captureState = -1; return; }
+                NSBitmapImageRep *bitmap = [[NSBitmapImageRep alloc] initWithData:image.TIFFRepresentation];
+                doc.capturePNG = [bitmap representationUsingType:NSBitmapImageFileTypePNG properties:@{}];
+                doc.captureState = doc.capturePNG.length && doc.capturePNG.length <= 16*1024*1024 ? 2 : -1;
+            }];
+        }];
+    }
+    return doc.captureState == 2 ? (int)doc.capturePNG.length : (doc.captureState < 0 ? -1 : 0);
+}
+void grove_html_capture_copy(void *handle, unsigned char *out, size_t length) {
+    GroveHTMLDocument *doc = (__bridge GroveHTMLDocument *)handle;
+    if (length == doc.capturePNG.length) memcpy(out, doc.capturePNG.bytes, length);
+}
+const char *grove_html_capture_metadata(void *handle) {
+    return ((__bridge GroveHTMLDocument *)handle).captureMetadata.UTF8String;
 }
