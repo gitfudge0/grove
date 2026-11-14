@@ -1282,6 +1282,9 @@ pub struct Snapshot {
     pub accepted_submission: Option<u64>,
     /// Session-local receipts survive coalesced snapshots and out-of-order turn replies.
     pub accepted_submissions: std::collections::HashSet<u64>,
+    /// Runtime-only ownership receipts; provider IDs never cross session connections.
+    pub submission_items: HashMap<u64, String>,
+    pub submission_turns: HashMap<u64, String>,
     pub rejected_submission: Option<u64>,
     pub queued_prompts: Vec<QueuedPrompt>,
     pub queue_edit: Option<u64>,
@@ -1382,6 +1385,21 @@ impl Snapshot {
 
     pub fn submission_accepted(&self, id: u64) -> bool {
         self.accepted_submission == Some(id) || self.accepted_submissions.contains(&id)
+    }
+
+    /// Resolve an acknowledged input without comparing provider-normalized content.
+    /// Codex identifies a turn's initial input by turn ID; Claude acknowledges the
+    /// exact input UUID. Steers without per-input identity retain the UI fallback.
+    pub fn submission_item_id(&self, submission: u64) -> Option<&str> {
+        if let Some(id) = self.submission_items.get(&submission) {
+            return Some(id);
+        }
+        let turn = self.submission_turns.get(&submission)?;
+        self.saved.items.iter().find_map(|item| {
+            (item["type"] == "userMessage" && item["groveTurnId"].as_str() == Some(turn))
+                .then(|| item["id"].as_str())
+                .flatten()
+        })
     }
 
     /// Pending successful result identity. This is deliberately not an unread flag.
@@ -2146,6 +2164,8 @@ impl Snapshot {
             can_redirect: false,
             accepted_submission: None,
             accepted_submissions: HashSet::default(),
+            submission_items: HashMap::default(),
+            submission_turns: HashMap::default(),
             rejected_submission: None,
             queued_prompts: Vec::new(),
             queue_edit: None,
@@ -3058,6 +3078,15 @@ impl Snapshot {
                     self.clear_retry_notice();
                 }
                 let mut item = p["item"].clone();
+                if item["type"] == "userMessage" {
+                    if let Some(turn) = p["turnId"].as_str() {
+                        item["groveTurnId"] = json!(turn);
+                    } else if let Some(old) =
+                        self.saved.items.iter().find(|old| old["id"] == item["id"])
+                    {
+                        item["groveTurnId"] = old["groveTurnId"].clone();
+                    }
+                }
                 if item["type"] == "subAgentActivity" && item["kind"] == "started" {
                     if let Some(id) = item["agentThreadId"]
                         .as_str()

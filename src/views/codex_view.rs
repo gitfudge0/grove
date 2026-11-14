@@ -495,10 +495,7 @@ impl TranscriptRenderCache {
             .map(|previous| previous.prepared.clone());
         let mut state = source.clone();
         if !optimistic.is_empty() {
-            Rc::make_mut(&mut state)
-                .saved
-                .items
-                .extend(optimistic.iter().cloned());
+            project_pending_bubbles(Rc::make_mut(&mut state), &optimistic);
         }
         let prepared = prepared.unwrap_or_else(|| {
             let mut content = transcript_content_signature(
@@ -1175,6 +1172,47 @@ fn attachment_preview(image: Arc<gpui::Image>) -> gpui::Div {
 struct ComposerToken {
     value: String,
     decoration: TextDecorationCollection,
+}
+
+/// Pending inputs keep their submission position while provider events stream.
+/// This is only a render projection; saved items and their work ranges stay intact.
+fn project_pending_bubbles(state: &mut codex::Snapshot, optimistic: &[serde_json::Value]) {
+    let mut positions = optimistic
+        .iter()
+        .enumerate()
+        .map(|(order, item)| {
+            let position = match item.get("localAfterItem") {
+                Some(anchor) => anchor
+                    .as_str()
+                    .and_then(|id| {
+                        state
+                            .saved
+                            .items
+                            .iter()
+                            .position(|old| old["id"] == id)
+                            .map(|at| at + 1)
+                    })
+                    .unwrap_or(0), // Compaction may remove the anchor; never move input below its reply.
+                None => state.saved.items.len(),
+            };
+            (position, order, item)
+        })
+        .collect::<Vec<_>>();
+    // Reverse insertion keeps sends sharing an anchor in submission order.
+    positions.sort_by_key(|(position, order, _)| (*position, *order));
+    for (position, _, item) in positions.into_iter().rev() {
+        state.saved.items.insert(position, item.clone().into());
+        for period in &mut state.saved.work_periods {
+            if period.start_item > position {
+                period.start_item += 1;
+            }
+            if let Some(end) = &mut period.end_item {
+                if *end > position {
+                    *end += 1;
+                }
+            }
+        }
+    }
 }
 
 /// A local send can be acknowledged before its transcript item arrives.
@@ -2078,6 +2116,12 @@ impl CodexView {
                 && !reduced_motion
                 && now.duration_since(*started) < std::time::Duration::from_millis(MOTION_SLOW_MS)
         });
+        let reserved: HashSet<_> = self
+            .bubble_entrances
+            .iter()
+            .filter_map(|pending| state.submission_item_id(pending.submission))
+            .map(str::to_owned)
+            .collect();
         let mut consumed = HashSet::new();
         self.bubble_entrances.retain_mut(|pending| {
             if pending
@@ -2107,26 +2151,35 @@ impl CodexView {
                 optimistic["localSteering"] = steering_pending.into();
             }
             pending.existing.extend(consumed.iter().cloned());
+            let owned_id = state.submission_item_id(pending.submission);
             let id = state.saved.items.iter().find_map(|item| {
                 let id = item["id"].as_str()?;
                 (item["type"] == "userMessage"
-                    && !pending.existing.contains(id)
                     && !consumed.contains(id)
-                    && codex::item_text(item) == pending.text
-                    && pending.optimistic.as_ref().is_none_or(|optimistic| {
-                        let images = |message: &serde_json::Value| {
-                            message["content"]
-                                .as_array()
-                                .into_iter()
-                                .flatten()
-                                .filter_map(|part| {
-                                    part["url"].as_str().or_else(|| part["image_url"].as_str())
+                    && (owned_id.map_or_else(
+                        || {
+                            !pending.existing.contains(id)
+                                && !reserved.contains(id)
+                                && codex::item_text(item) == pending.text
+                                && pending.optimistic.as_ref().is_none_or(|optimistic| {
+                                    let images = |message: &serde_json::Value| {
+                                        message["content"]
+                                            .as_array()
+                                            .into_iter()
+                                            .flatten()
+                                            .filter_map(|part| {
+                                                part["url"]
+                                                    .as_str()
+                                                    .or_else(|| part["image_url"].as_str())
+                                            })
+                                            .map(str::to_owned)
+                                            .collect::<Vec<_>>()
+                                    };
+                                    images(item) == images(optimistic)
                                 })
-                                .map(str::to_owned)
-                                .collect::<Vec<_>>()
-                        };
-                        images(item) == images(optimistic)
-                    }))
+                        },
+                        |owned_id| owned_id == id,
+                    )))
                 .then_some((id, item))
             });
             if let Some((id, item)) = id {
@@ -2184,7 +2237,7 @@ impl CodexView {
             existing: state.saved.items.iter().filter_map(|item| item["id"].as_str().map(str::to_owned)).collect(),
             thread: state.saved.thread_id.clone(),
             text,
-            optimistic: Some(serde_json::json!({"id":id, "type":"userMessage", "content":content, "localSteering":steering, "localQueuedSteering":queued_steering, "groveReceivedAt":std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis() as u64})),
+            optimistic: Some(serde_json::json!({"id":id, "type":"userMessage", "content":content, "localSteering":steering, "localQueuedSteering":queued_steering, "localAfterItem":state.saved.items.last().and_then(|item| item["id"].as_str()), "groveReceivedAt":std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis() as u64})),
         });
         self.follow_after_submit = true;
     }
@@ -4695,9 +4748,13 @@ impl CodexView {
                         .child(relative_message_time(timestamp)),
                 );
             }
-            actions = actions.child(self.fork_control(index, true, window, cx));
-            let unavailable = state.rewind_target(index).err();
-            if !self.transcript_only() && approval.is_none() {
+            actions = actions.child(self.fork_control(index, Some(id.clone()), true, window, cx));
+            let source_index = self.source_item_index(&id, cx);
+            let unavailable = source_index
+                .and_then(|index| self.session.read(cx).state.rewind_target(index).err());
+            if !self.transcript_only() && approval.is_none() && source_index.is_some() {
+                let edit_id = id.clone();
+                let click_id = id.clone();
                 let edit_focus = self.ensure_control_focus(&format!("{key}:edit"), window, cx);
                 let bounds = self
                     .message_action_bounds
@@ -4726,13 +4783,13 @@ impl CodexView {
                         .on_key_down(cx.listener(
                             move |this, event: &gpui::KeyDownEvent, window, cx| {
                                 if action_key(event) {
-                                    this.request_edit(index, window, cx);
+                                    this.request_edit_item(&edit_id, window, cx);
                                     cx.stop_propagation();
                                 }
                             },
                         ))
                         .on_click(cx.listener(move |this, _, window, cx| {
-                            this.request_edit(index, window, cx);
+                            this.request_edit_item(&click_id, window, cx);
                         })),
                 );
             }
@@ -5932,7 +5989,7 @@ impl Render for CodexView {
                     || measured_slot::force_eager()
                     || measured_slot::force_footer_eager()
                 {
-                    self.response_footer(group, true, window, cx)
+                    self.response_footer(group, &state, true, window, cx)
                 } else {
                     let focus = self.ensure_message_focus(&group.key, window, cx);
                     let copy_focus =
@@ -8030,13 +8087,19 @@ impl CodexView {
     fn fork_control(
         &mut self,
         boundary: usize,
+        item_id: Option<String>,
         restore_user: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         let focus =
             self.ensure_control_focus(&format!("fork:{boundary}:{restore_user}"), window, cx);
-        let enabled = !self.transcript_only() && !self.session.read(cx).state.status.busy();
+        let enabled = !self.transcript_only()
+            && !self.session.read(cx).state.status.busy()
+            && item_id
+                .as_ref()
+                .is_some_and(|id| self.source_item_index(id, cx).is_some());
+        let keyboard_id = item_id.clone();
         let control = if enabled {
             header_control_with_label_tooltip("fork-message", "Fork session from here")
         } else {
@@ -8060,14 +8123,18 @@ impl CodexView {
             .focus_visible(|style| style.bg(c::BG_HOVER()))
             .child(crate::icons::icon("git-branch", ICON_MD, c::FG_DIM()))
             .when(!enabled, |control| control.opacity(0.4))
-            .on_click(cx.listener(move |_, _, _, cx| {
+            .on_click(cx.listener(move |this, _, _, cx| {
                 if enabled {
-                    cx.emit(CodexViewEvent::ForkRequested(boundary, restore_user));
+                    if let Some(id) = &item_id {
+                        this.fork_from_item(id, restore_user, cx);
+                    }
                 }
             }))
-            .on_key_down(cx.listener(move |_, event: &gpui::KeyDownEvent, _, cx| {
+            .on_key_down(cx.listener(move |this, event: &gpui::KeyDownEvent, _, cx| {
                 if enabled && action_key(event) {
-                    cx.emit(CodexViewEvent::ForkRequested(boundary, restore_user));
+                    if let Some(id) = &keyboard_id {
+                        this.fork_from_item(id, restore_user, cx);
+                    }
                     cx.stop_propagation();
                 }
             }))
@@ -8077,6 +8144,7 @@ impl CodexView {
     fn response_footer(
         &mut self,
         group: &ResponseGroup,
+        projected: &codex::Snapshot,
         flow_margin: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -8173,9 +8241,21 @@ impl CodexView {
                     .child(tooltip("Copied", window).build(window, cx)),
             );
         }
-        actions = actions
-            .child(button)
-            .child(self.fork_control(group.end, false, window, cx));
+        actions = actions.child(button).child(
+            self.fork_control(
+                group.end,
+                projected.saved.items[..group.end]
+                    .iter()
+                    .rev()
+                    .find_map(|item| {
+                        let id = item["id"].as_str()?;
+                        self.source_item_index(id, cx).map(|_| id.to_owned())
+                    }),
+                false,
+                window,
+                cx,
+            ),
+        );
         let hover_key = group.key.clone();
         div()
             .id(gpui::SharedString::from(group.key.clone()))
@@ -8238,6 +8318,34 @@ impl CodexView {
             });
         })
         .detach();
+    }
+
+    fn source_item_index(&self, id: &str, cx: &App) -> Option<usize> {
+        self.session
+            .read(cx)
+            .state
+            .saved
+            .items
+            .iter()
+            .position(|item| item["id"] == id)
+    }
+
+    fn request_edit_item(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(index) = self.source_item_index(id, cx) {
+            self.request_edit(index, window, cx);
+        }
+    }
+
+    fn fork_from_item(&self, id: &str, restore_user: bool, cx: &mut Context<Self>) {
+        if self.transcript_only() || self.session.read(cx).state.status.busy() {
+            return;
+        }
+        if let Some(index) = self.source_item_index(id, cx) {
+            cx.emit(CodexViewEvent::ForkRequested(
+                index + usize::from(!restore_user),
+                restore_user,
+            ));
+        }
     }
 
     fn request_edit(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
@@ -19118,6 +19226,130 @@ mod tests {
             );
         });
         drop(watch);
+    }
+
+    #[test]
+    fn pending_bubbles_stay_before_later_prose_and_preserve_work_boundaries() {
+        let mut state = snapshot();
+        state.saved.items = vec![
+            json!({"id":"history","type":"agentMessage","text":"Earlier response"}),
+            json!({"id":"reply","type":"agentMessage","text":"New response"}),
+        ]
+        .into();
+        state.saved.work_periods = vec![
+            codex::WorkPeriod {
+                start_item: 0,
+                end_item: Some(1),
+                duration_ms: Some(10),
+                subagents: vec![],
+            },
+            codex::WorkPeriod {
+                start_item: 1,
+                end_item: None,
+                duration_ms: None,
+                subagents: vec![],
+            },
+        ];
+        let pending = vec![
+            json!({"id":"pending-1","type":"userMessage","localAfterItem":"history","content":[{"text":"first"}]}),
+            json!({"id":"pending-2","type":"userMessage","localAfterItem":"history","content":[{"text":"second"}]}),
+        ];
+        let cache = TranscriptRenderCache::new(Rc::new(state.clone()), pending);
+        let ids = cache
+            .state
+            .saved
+            .items
+            .iter()
+            .map(|item| item["id"].as_str().unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(ids, ["history", "pending-1", "pending-2", "reply"]);
+        assert_eq!(cache.state.saved.work_periods[0].end_item, Some(1));
+        assert_eq!(cache.state.saved.work_periods[1].start_item, 1);
+        assert_eq!(active_work_start(&cache.state), 1);
+        assert_eq!(
+            state.saved.items.len(),
+            2,
+            "projection leaves persisted transcript intact"
+        );
+        let missing_anchor = vec![
+            json!({"id":"pending","type":"userMessage","localAfterItem":"compacted-away","content":[{"text":"input"}]}),
+        ];
+        let cache = TranscriptRenderCache::new(Rc::new(state), missing_anchor);
+        assert_eq!(cache.state.saved.items[0]["id"], "pending");
+        assert_eq!(cache.state.saved.work_periods[0].end_item, Some(2));
+        assert_eq!(cache.state.saved.work_periods[1].start_item, 2);
+    }
+
+    #[gpui::test]
+    fn pending_bubbles_keep_edit_and_fork_actions_on_source_items(cx: &mut gpui::TestAppContext) {
+        let (view, cx, _, _) = fixture(cx);
+        let events = Rc::new(std::cell::RefCell::new(Vec::new()));
+        let observed = events.clone();
+        let _subscription = cx.update(|_, cx| {
+            cx.subscribe(&view, move |_, event, _| {
+                if let CodexViewEvent::ForkRequested(index, restore) = event {
+                    observed.borrow_mut().push((*index, *restore));
+                }
+            })
+        });
+        cx.update(|window, cx| view.update(cx, |view, cx| {
+            view.session.update(cx, |session, _| {
+                session.state.status = Status::Done;
+                session.state.turn_id = None;
+                session.state.edit_supported = true;
+                session.state.saved.items = vec![
+                    json!({"id":"earlier","type":"agentMessage","text":"Earlier"}),
+                    json!({"id":"real-input","type":"userMessage","content":[{"text":"Real input"}]}),
+                    json!({"id":"real-answer","type":"agentMessage","text":"Answer"}),
+                ].into();
+                session.state.saved.edit_checkpoints.push(codex::EditCheckpoint {
+                    start_item: 1, turn_id: Some("turn".into()), files: None,
+                });
+            });
+            let projected = TranscriptRenderCache::new(Rc::new(view.session.read(cx).state.clone()), vec![
+                json!({"id":"local-pending","type":"userMessage","localAfterItem":"earlier","content":[{"text":"Pending"}]})
+            ]);
+            assert_eq!(projected.state.saved.items[2]["id"], "real-input");
+            view.request_edit_item("local-pending", window, cx);
+            assert!(view.edit_confirmation.is_none());
+            view.request_edit_item("real-input", window, cx);
+            assert_eq!(view.edit_confirmation.as_ref().unwrap().index, 1);
+            view.fork_from_item("local-pending", true, cx);
+            view.fork_from_item("real-input", true, cx);
+            view.fork_from_item("real-answer", false, cx);
+        }));
+        cx.run_until_parked();
+        assert_eq!(*events.borrow(), [(1, true), (3, false)]);
+    }
+
+    #[gpui::test]
+    fn pending_bubbles_use_submission_receipts_without_stealing_repeated_inputs(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (view, cx, _, _) = fixture(cx);
+        cx.update(|_, cx| view.update(cx, |view, cx| {
+            for provider in [codex::Provider::Codex, codex::Provider::Claude] {
+                view.bubble_entrances.clear();
+                let mut state = snapshot();
+                state.saved.provider = provider;
+                view.record_submission_bubble(41, "same".into(), vec![], false, false, cx);
+                view.record_submission_bubble(42, "same".into(), vec![], false, false, cx);
+                state.saved.items = vec![
+                    json!({"id":"second","type":"userMessage","content":[{"text":"same"}]}),
+                    json!({"id":"answer","type":"agentMessage","text":"Response"}),
+                ].into();
+                state.submission_items.insert(42, "second".into());
+                state.accept_submission(42);
+                view.sync_bubble_entrances(&state, true, cx.background_executor().now());
+                assert_eq!(view.bubble_entrances.len(), 1, "unacknowledged identical input must not steal a receipt");
+                assert_eq!(view.bubble_entrances[0].submission, 41);
+                state.saved.items.insert(0, json!({"id":"first","type":"userMessage","content":[{"text":"provider normalized this input"}]}).into());
+                state.submission_items.insert(41, "first".into());
+                state.accept_submission(41);
+                view.sync_bubble_entrances(&state, true, cx.background_executor().now());
+                assert!(view.bubble_entrances.is_empty(), "receipt replaces temporary bubble despite text normalization");
+            }
+        }));
     }
 
     #[test]
