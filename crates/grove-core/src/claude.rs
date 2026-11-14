@@ -2285,6 +2285,9 @@ impl Actor {
                 .map(|url| json!({"type":"image","url":url})),
         );
         self.upsert(json!({"id":uuid,"type":"userMessage","content":parts,"claudeHumanUuid":uuid,"claudePreviousAssistantUuid":self.last_assistant_uuid}));
+        if let Some(uuid) = uuid.as_str() {
+            self.state.submission_items.insert(prompt.id, uuid.into());
+        }
         if self.state.saved.title.is_none() {
             self.state.saved.title = Some(prompt.text.chars().take(80).collect());
         }
@@ -6227,6 +6230,26 @@ mod tests {
         assert!(actor.state.saved.claude_resume.is_some());
         actor.acknowledge_input(&json!("accepted"));
         assert!(actor.state.saved.claude_resume.is_none());
+    }
+
+    #[test]
+    fn submission_receipt_uses_acknowledged_uuid_for_repeated_inputs() {
+        let mut actor = actor();
+        for (submission, uuid) in [(41, "first-input"), (42, "second-input")] {
+            actor.input_uuid = Some(uuid.into());
+            actor.in_flight = Some(QueuedPrompt {
+                id: submission,
+                text: "same input".into(),
+                images: vec![],
+            });
+            actor.acknowledge_input(&json!("foreign-input"));
+            assert_eq!(actor.state.submission_item_id(submission), None);
+            actor.acknowledge_input(&json!(uuid));
+            assert_eq!(actor.state.submission_item_id(submission), Some(uuid));
+        }
+        assert_eq!(actor.state.submission_item_id(41), Some("first-input"));
+        assert_eq!(actor.state.submission_item_id(42), Some("second-input"));
+        assert_eq!(actor.state.saved.items.len(), 2);
     }
 
     #[test]

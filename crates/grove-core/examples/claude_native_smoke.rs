@@ -42,10 +42,14 @@ fn main() -> Result<(), String> {
     }
     let permissions_only = std::env::args().any(|arg| arg == "--permissions-only");
     let image_test = std::env::args().any(|arg| arg == "--image");
+    let receipt_only = std::env::args().any(|arg| arg == "--receipt-only");
     let startup_queue = std::env::args().any(|arg| arg == "--startup-queue");
-    let extra_root = std::env::args()
-        .skip(2)
-        .find(|arg| arg != "--image" && arg != "--startup-queue" && arg != "--permissions-only");
+    let extra_root = std::env::args().skip(2).find(|arg| {
+        arg != "--image"
+            && arg != "--startup-queue"
+            && arg != "--permissions-only"
+            && arg != "--receipt-only"
+    });
     if extra_root
         .as_ref()
         .is_some_and(|path| !std::path::Path::new(path).is_dir())
@@ -173,6 +177,36 @@ fn main() -> Result<(), String> {
         "PASS initialized thread {}",
         ready.saved.thread_id.as_deref().unwrap_or_default()
     );
+    if receipt_only {
+        let submission = connection.handle.submit(
+            "Reply only RECEIPT_OK. Do not use tools or modify files. ".into(),
+            vec![],
+        )?;
+        let completed = wait(&connection, |s| {
+            s.status == Status::Done && s.submission_accepted(submission)
+        })?;
+        let input_id = completed
+            .submission_item_id(submission)
+            .ok_or("Missing submission-to-input receipt")?;
+        let input = completed
+            .saved
+            .items
+            .iter()
+            .position(|item| item["id"] == input_id && item["type"] == "userMessage")
+            .ok_or("Receipt points outside user transcript")?;
+        if !completed
+            .saved
+            .items
+            .iter()
+            .skip(input + 1)
+            .any(|item| item["type"] == "agentMessage")
+        {
+            return Err("Acknowledged user input does not precede its response".into());
+        }
+        println!("PASS live submission receipt identifies user input before response");
+        return Ok(());
+    }
+
     // The same native thread under a different app-session identity must refuse
     // a second writer while the original process remains usable.
     let mut duplicate = ready.saved.clone();

@@ -3143,6 +3143,9 @@ impl Actor {
                 self.bind_edit_checkpoint(result);
                 if let Some(submission) = submission {
                     self.state.accept_submission(submission);
+                    if let Some(turn) = result["turn"]["id"].as_str() {
+                        self.state.submission_turns.insert(submission, turn.into());
+                    }
                 }
                 self.state.accepted_prompts = self.state.accepted_prompts.saturating_add(1);
                 if self.state.saved.title.is_none() {
@@ -3205,6 +3208,7 @@ impl Actor {
                         Some("Codex returned an unexpected queued turn identity".into());
                     return Ok(());
                 }
+                self.state.submission_turns.insert(id, turn.into());
                 self.state.saved.rich_plans.confirm_delivery(id);
                 self.state.queued_prompts.retain(|p| p.id != id);
                 self.state.queue_sending.retain(|sending| *sending != id);
@@ -5496,6 +5500,43 @@ mod tests {
         actor.state = state();
         actor
     }
+    #[test]
+    fn submission_receipt_tracks_turn_identity_before_or_after_normalized_echo() {
+        for echo_first in [true, false] {
+            let mut actor = actor();
+            actor.state.turn_id = None;
+            actor.message(json!({"method":"turn/started","params":{"threadId":"thread-1","turn":{"id":"receipt-turn"}}})).unwrap();
+            let echo = json!({"method":"item/completed","params":{"threadId":"thread-1","turnId":"receipt-turn","item":{"id":"receipt-input","type":"userMessage","content":[{"type":"text","text":"normalized input"}]}}});
+            actor.pending.insert(
+                77,
+                Request {
+                    kind: Pending::Turn {
+                        submission: Some(91),
+                        text: "raw input ".into(),
+                        images: vec![],
+                    },
+                    deadline: Instant::now() + Duration::from_mins(1),
+                },
+            );
+            if echo_first {
+                actor.message(echo.clone()).unwrap();
+            }
+            actor
+                .message(json!({"id":77,"result":{"turn":{"id":"receipt-turn"}}}))
+                .unwrap();
+            if !echo_first {
+                assert_eq!(actor.state.submission_item_id(91), None);
+                actor.message(echo).unwrap();
+            }
+            assert_eq!(actor.state.submission_item_id(91), Some("receipt-input"));
+            assert!(actor.state.submission_accepted(91));
+            // Updating completion without a turn ID keeps ownership intact.
+            actor.message(json!({"method":"item/completed","params":{"threadId":"thread-1","item":{"id":"receipt-input","type":"userMessage","content":[{"text":"normalized input"}]}}})).unwrap();
+            assert_eq!(actor.state.submission_item_id(91), Some("receipt-input"));
+            assert_eq!(actor.state.submission_item_id(92), None);
+        }
+    }
+
     #[test]
     #[cfg(unix)]
     fn turn_start_admission_refuses_auth_before_writing() {

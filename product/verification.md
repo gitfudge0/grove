@@ -1,5 +1,25 @@
 # Verification and known gaps
 
+## Pending transcript message ordering (November 2026)
+
+Temporary user bubbles retain their submission position while provider events
+stream. Session-local receipts link Claude inputs to their acknowledged UUIDs
+and Codex initial inputs to their native turn/user item, without requiring the
+rendered text to match. Codex same-turn steering still uses content matching
+because the protocol supplies no per-input identity; pending bubbles remain
+anchored while an echo is unresolved. Saved transcript order is unchanged.
+
+Linux checks passed two core receipt fixtures, three GPUI pending-bubble
+regressions and two existing steering regressions. These cover acknowledgement
+order, normalized content, identical prompts, work boundaries, removed anchors,
+and saved-message Edit/Fork identity after projection shifts display indices.
+Codex passed a live production-transport `codex_native_smoke --receipt-only`
+check in a disposable configuration and cwd. Claude's corresponding live check
+stopped at `Not logged in`; its receipt behavior is verified through fixtures
+only. The screenshot's precise stale-bubble cause remains unconfirmed. Manual
+native appearance inspection and macOS/Windows execution were not performed;
+no platform-specific behavior changed. No app installation or restart occurred.
+
 ## Compact provider settings (November 2026)
 
 Providers combines account sign-in and version maintenance for Codex and Claude,

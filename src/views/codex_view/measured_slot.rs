@@ -129,7 +129,6 @@ fn user_control_proxy(
     layout: LayoutId,
     target: &ControlTarget,
     view: WeakEntity<CodexView>,
-    index: usize,
     item: codex::TranscriptItem,
 ) -> AnyElement {
     let key = target.source_key.clone();
@@ -144,10 +143,16 @@ fn user_control_proxy(
                         UserControl::Fork(restore_user) => {
                             if !view.transcript_only() && !view.session.read(cx).state.status.busy()
                             {
-                                cx.emit(CodexViewEvent::ForkRequested(index, restore_user));
+                                if let Some(id) = item["id"].as_str() {
+                                    view.fork_from_item(id, restore_user, cx);
+                                }
                             }
                         }
-                        UserControl::Edit => view.request_edit(index, window, cx),
+                        UserControl::Edit => {
+                            if let Some(id) = item["id"].as_str() {
+                                view.request_edit_item(id, window, cx);
+                            }
+                        }
                         UserControl::Copy => view.copy_message(
                             key.clone(),
                             reference_prompt_copy(&codex::item_text(item.as_ref())),
@@ -421,7 +426,6 @@ impl Element for MeasuredTranscriptSlot {
                         layout,
                         target,
                         self.view.clone(),
-                        self.index,
                         self.frame.state.saved.items[self.index].clone(),
                     );
                     element.request_layout(window, cx);
@@ -709,10 +713,20 @@ impl Element for MeasuredResponseFooter {
         let fork = self
             .view
             .update(cx, |view, cx| {
-                view.ensure_control_focus(&fork_key, window, cx)
+                let anchor = self.frame.state.saved.items[..group.end]
+                    .iter()
+                    .rev()
+                    .find(|item| {
+                        item["id"]
+                            .as_str()
+                            .is_some_and(|id| view.source_item_index(id, cx).is_some())
+                    })
+                    .cloned()
+                    .unwrap_or_else(|| serde_json::Value::Null.into());
+                (view.ensure_control_focus(&fork_key, window, cx), anchor)
             })
             .ok()
-            .map(|focus| {
+            .map(|(focus, anchor)| {
                 let mut fork = user_control_proxy(
                     id,
                     &ControlTarget {
@@ -721,8 +735,7 @@ impl Element for MeasuredResponseFooter {
                         kind: UserControl::Fork(false),
                     },
                     self.view.clone(),
-                    group.end,
-                    serde_json::Value::Null.into(),
+                    anchor,
                 );
                 fork.request_layout(window, cx);
                 fork
@@ -766,7 +779,7 @@ impl Element for MeasuredResponseFooter {
             let element = self
                 .view
                 .update(cx, |view, cx| {
-                    view.response_footer(group, false, window, cx)
+                    view.response_footer(group, &self.frame.state, false, window, cx)
                 })
                 .ok();
             if let Some(mut element) = element {
