@@ -16272,6 +16272,41 @@ mod tests {
         state
     }
 
+    fn overview_plan_snapshot(provider: codex::Provider) -> Snapshot {
+        let mut state = decision_plan_snapshot(provider);
+        state.saved.rich_plans.revisions[0].document.presentation = Some(serde_json::from_value(json!({
+            "outcome":"Invite teammates with explicit access, without losing your conversation draft.",
+            "flow":[{"title":"Create invitation","detail":"Choose the teammate and role"},{"title":"Accept invitation","detail":"Verify identity and access"},{"title":"Continue working","detail":"Keep the current workspace"}],
+            "included":["Invitation creation, acceptance and revocation"],"deferred":["Bulk invitations and directory sync"],
+            "risks":["Expired invitations must never grant access."],"success_criteria":["Access matches the chosen policy.","Cancel and recovery preserve your conversation draft."],"revision_changes":[]
+        })).unwrap());
+        if std::env::var("GROVE_PLAN_OVERVIEW_REVISION").as_deref() == Ok("finalized") {
+            state.saved.rich_plans.revisions[0]
+                .review
+                .answers
+                .insert("access".into(), "admins".into());
+            let (id, _) = state
+                .saved
+                .rich_plans
+                .prepare_delivery("invites", "r1")
+                .unwrap()
+                .unwrap();
+            state.saved.rich_plans.confirm_delivery(id);
+            let mut finalized = state.saved.rich_plans.revisions[0].clone();
+            finalized.document.revision_id = "r2".into();
+            finalized.document.decisions.clear();
+            finalized.document.markdown = Some("## Implementation\nOnly workspace admins can create invitations. Preserve the conversation draft.\n## Verification\nVerify admin authorization, expiration and draft restoration.".into());
+            finalized.document.finalized_from = Some(grove_core::rich_plan::PlanFinalization {
+                revision_id: "r1".into(),
+                answers: HashMap::from([("access".into(), "Admins only".into())]),
+            });
+            finalized.document.presentation.as_mut().unwrap().revision_changes = vec!["Only workspace admins can invite; authorization and verification now follow that policy.".into()];
+            finalized.review = grove_core::rich_plan::ReviewState::default();
+            state.saved.rich_plans.revisions.push(finalized);
+        }
+        state
+    }
+
     fn plan_request_snapshot(provider: codex::Provider) -> Snapshot {
         let mut state = decision_plan_snapshot(provider);
         state.saved.rich_plans.revisions[0]
@@ -16526,11 +16561,14 @@ mod tests {
             let connection=Connection{handle,updates:receive.into()};
             let mut chat=None;
             let window=cx.open_window(gpui::WindowOptions {
+                app_id: Some("dev.grove.plan-overview-qa".into()),
+                kind: gpui::WindowKind::PopUp,
                 window_bounds:Some(gpui::WindowBounds::Windowed(gpui::Bounds::new(gpui::point(gpui::px(40.),gpui::px(40.)),gpui::size(gpui::px(1000.),gpui::px(900.))))),
                 ..Default::default()
             }, |window,cx| {
                 window.set_window_title("Grove plans QA");
-                let state = if std::env::var_os("GROVE_PLAN_REQUEST_CAPTURE").is_some() { plan_request_snapshot(codex::Provider::Codex) } else { decision_plan_snapshot(codex::Provider::Codex) };
+                let provider = if std::env::var("GROVE_PLAN_CAPTURE_PROVIDER").as_deref() == Ok("claude") { codex::Provider::Claude } else { codex::Provider::Codex };
+                let state = if std::env::var_os("GROVE_PLAN_OVERVIEW_CAPTURE").is_some() { overview_plan_snapshot(provider) } else if std::env::var_os("GROVE_PLAN_REQUEST_CAPTURE").is_some() { plan_request_snapshot(provider) } else { decision_plan_snapshot(provider) };
                 let session=cx.new(|cx|CodexSession::from_connection(state,connection,cx));
                 let view=cx.new(|cx|CodexView::new(session,window,cx));
                 chat=Some(view.clone());
@@ -16541,6 +16579,7 @@ mod tests {
             cx.spawn(async move |cx| {
                 let _keep_transport=(actions,updates);
                 for (name,custom,theme,width,rem) in [("ready",false,"grove-dark",1000.,16.),("custom",true,"grove-light",1000.,16.),("custom-narrow",true,"grove-dark",640.,16.),("custom-zoom",true,"grove-light",1000.,20.)] {
+                    if let Ok(selected) = std::env::var("GROVE_PLAN_CAPTURE_CASE") { if selected != name { continue; } }
                     cx.update(|cx| {grove_core::theme::set_by_name(theme);c::sync_component_theme(cx);});
                     cx.update_window(window.into(),|_,window,cx| {
                         window.resize(gpui::size(gpui::px(width),gpui::px(900.)));
@@ -16551,9 +16590,24 @@ mod tests {
                             },window,cx);
                             view.input.update(cx,|input,cx|input.set_value("Workspace owners and team leads can invite.",window,cx));
                         });}
+                        if std::env::var_os("GROVE_PLAN_OVERVIEW_CAPTURE").is_some() { chat.update(cx,|view,cx| {
+                            let revision = if std::env::var("GROVE_PLAN_OVERVIEW_REVISION").as_deref() == Ok("finalized") { "r2" } else { "r1" };
+                            if let Some(plan) = view.native_plans.get(&("invites".into(),revision.into())) {
+                                plan.update(cx, |plan,cx| plan.configure_overview_capture(std::env::var_os("GROVE_PLAN_OVERVIEW_OPEN_DETAIL").is_some(),window,cx));
+                            }
+                        }); }
                         window.refresh();
                     }).unwrap();
                     cx.background_executor().timer(std::time::Duration::from_millis(800)).await;
+                    if let Some(helper) = std::env::var_os("GROVE_QA_EXPOSE_HELPER") {
+                        for _ in 0..3 {
+                            assert!(std::process::Command::new(&helper).arg("Grove plans QA").status().unwrap().success());
+                            cx.update_window(window.into(),|_,window,_|window.refresh()).unwrap();
+                            cx.background_executor().timer(std::time::Duration::from_millis(100)).await;
+                        }
+                    }
+                    // Force the isolated QA surface to paint even when the desktop is idle.
+                    cx.update_window(window.into(), |_, window, cx| { let _ = window.draw(cx); }).unwrap();
                     let path=format!("{output}/{name}.png");
                     assert!(std::process::Command::new("import").args(["-window","Grove plans QA",&path]).status().unwrap().success());
                     eprintln!("Native plan capture: {path}");

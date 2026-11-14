@@ -12,6 +12,7 @@ pub const GUIDANCE: &str = r##"Grove renders readable plans inline with one conv
 ```json
 {"schema_version":1,"plan_id":"stable-plan-id","revision_id":"r1","title":"Outcome","markdown":"# Outcome\n\nApproach, implementation steps, and verification"}
 ```
+For implementation plans, add an optional native `presentation` object alongside the complete Markdown implementation detail: {"outcome":"Sign in without losing your draft.","flow":[{"title":"Choose agent","detail":"Codex or Claude"},{"title":"Sign in","detail":"Provider browser consent"},{"title":"Return","detail":"Verify account status"}],"included":["Account sign-in"],"deferred":["API-key entry"],"risks":["Verify browser completion with the provider."],"success_criteria":["Cancel preserves the draft."],"revision_changes":[]}. Grove renders this with native controls, not HTML. Keep the overview brief and decision consequences in option descriptions. Outcome is required (1200 bytes); flow allows 8 short steps (title 160 bytes, detail 500); each list allows 12 nonblank entries of 1000 bytes. Risks and success_criteria must be nonempty; explicitly say when no material risk is known. Full technical Markdown is available in named native disclosures; do not hide material scope, risk or decision consequences there. On revisions, revision_changes is a concise authored account of changed scope, approach and checks, not a computed diff. Keep the presentation consistent with Markdown and update both after decisions. Copy and approval include both. Omit presentation for a simple prose-only plan; old plans retain their complete reading format.
 Lead with the outcome and scope. Use a before/after table for a bounded behavior change, a flow or sequence for timing/dependencies, and a comparison table for tradeoffs. Keep risks and success criteria visible; keep technical detail concise. Do not author HTML or separate plan viewers. Keep documents below 1 MiB and text fields below 64 KiB.
 For consequential decisions add a top-level decisions array. Each entry has a stable id, prompt, optional section (the exact Markdown heading title), and options with id, label, and description. Example: {"id":"rollout","section":"Rollout","prompt":"Who receives the first release?","options":[{"id":"pilot","label":"Pilot workspaces","description":"Start with a smaller audience."}]}. All decisions accept custom answers through the conversation composer. Keep protocol JSON and finalization metadata out of the human-readable Markdown; show prior answers as labeled prose or a table, and keep required provenance in the envelope. Recommendations are not answers. Every decision must be resolved before updating the plan; do not silently choose for the user.
 Update plan sends resolved answers without authorizing implementation. Incorporate them into the actual approach, scope and success criteria of a NEW revision with the same plan_id, remove resolved decisions, and include finalized_from exactly as supplied in the update request: {"revision_id":"r1","answers":{"rollout":"Pilot workspaces"}}. The new Markdown must reflect the decisions; a copied draft with only metadata changed is invalid. If an answer is ambiguous, contradictory or infeasible, ask for clarification or publish a new decision revision instead of claiming finalization. Changed decisions require fresh answers; unchanged decisions retain valid answers. Never use a new plan_id to bypass unresolved decisions.
@@ -57,6 +58,8 @@ pub struct PlanDocument {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub markdown: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub presentation: Option<PlanPresentation>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub summary: Option<String>,
     #[serde(default)]
     pub sources: Vec<Quote>,
@@ -66,6 +69,89 @@ pub struct PlanDocument {
     pub claims: Vec<Claim>,
     #[serde(default)]
     pub scope: Vec<String>,
+}
+/// Optional native reading layer. Markdown remains the complete implementation detail.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PlanPresentation {
+    pub outcome: String,
+    #[serde(default)]
+    pub flow: Vec<PlanFlowStep>,
+    #[serde(default)]
+    pub included: Vec<String>,
+    #[serde(default)]
+    pub deferred: Vec<String>,
+    pub risks: Vec<String>,
+    pub success_criteria: Vec<String>,
+    #[serde(default)]
+    pub revision_changes: Vec<String>,
+}
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PlanFlowStep {
+    pub title: String,
+    pub detail: String,
+}
+impl PlanPresentation {
+    fn validate(&self) -> Result<(), String> {
+        if self.outcome.trim().is_empty() || self.outcome.len() > 1200 {
+            return Err("Plan presentation needs an outcome of at most 1200 bytes".into());
+        }
+        if self.flow.len() > 8
+            || self.flow.iter().any(|s| {
+                s.title.trim().is_empty()
+                    || s.title.len() > 160
+                    || s.detail.trim().is_empty()
+                    || s.detail.len() > 500
+            })
+        {
+            return Err(
+                "Plan flow needs at most 8 nonblank steps with short titles and details".into(),
+            );
+        }
+        if self.risks.is_empty() || self.success_criteria.is_empty() {
+            return Err("Plan presentation must keep risks and success criteria visible".into());
+        }
+        for list in [
+            &self.included,
+            &self.deferred,
+            &self.risks,
+            &self.success_criteria,
+            &self.revision_changes,
+        ] {
+            if list.len() > 12 || list.iter().any(|s| s.trim().is_empty() || s.len() > 1000) {
+                return Err(
+                    "Plan presentation lists allow at most 12 nonblank entries of 1000 bytes each"
+                        .into(),
+                );
+            }
+        }
+        Ok(())
+    }
+    fn markdown(&self) -> String {
+        let mut out = format!("{}\n", self.outcome);
+        if !self.flow.is_empty() {
+            out.push_str("\n## Flow\n");
+            for (i, step) in self.flow.iter().enumerate() {
+                let _ = writeln!(out, "{}. **{}** — {}", i + 1, step.title, step.detail);
+            }
+        }
+        for (heading, entries) in [
+            ("Included", &self.included),
+            ("Deferred", &self.deferred),
+            ("Risks", &self.risks),
+            ("Success criteria", &self.success_criteria),
+            ("Revision changes (authored)", &self.revision_changes),
+        ] {
+            if !entries.is_empty() {
+                let _ = writeln!(out, "\n## {heading}");
+                for entry in entries {
+                    let _ = writeln!(out, "- {entry}");
+                }
+            }
+        }
+        out
+    }
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct PlanFinalization {
@@ -171,7 +257,16 @@ impl PlanDocument {
             }
         }
         if let Some(markdown) = &self.markdown {
-            return markdown.clone();
+            return self.presentation.as_ref().map_or_else(
+                || markdown.clone(),
+                |presentation| {
+                    format!(
+                        "# {}\n\n{}\n## Implementation details\n\n{markdown}",
+                        self.title,
+                        presentation.markdown()
+                    )
+                },
+            );
         }
         let mut out = format!("# {}\n", self.title);
         if let Some(summary) = &self.summary {
@@ -587,6 +682,14 @@ impl PlanStore {
                 if markdown.trim().is_empty() || !doc.claims.is_empty() {
                     return Err("Use a nonblank Markdown body or legacy claims, not both".into());
                 }
+            }
+            if let Some(presentation) = &doc.presentation {
+                if doc.markdown.is_none() {
+                    return Err(
+                        "Native presentation requires Markdown implementation detail".into(),
+                    );
+                }
+                presentation.validate()?;
             }
             if doc.schema_version != 1 {
                 return Err("Unsupported plan schema version".into());
@@ -1392,7 +1495,14 @@ impl PlanStore {
                 return Err("Finalized answers do not match the submitted decisions".into());
             }
             if doc.markdown.as_deref().is_none_or(|s| s.trim().is_empty())
-                || doc.markdown_body() == parent.document.markdown_body()
+                || doc.markdown.as_deref().is_some_and(|markdown| {
+                    markdown
+                        == parent
+                            .document
+                            .markdown
+                            .as_deref()
+                            .unwrap_or(&parent.document.markdown_body())
+                })
             {
                 return Err(
                     "Finalization must update the Markdown approach, scope and success criteria"
@@ -1646,6 +1756,60 @@ pub fn retry_import(saved: &mut SavedSession, message: &str, source: &str) -> Re
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn native_presentation_is_bounded_immutable_and_included_in_copy_and_approval() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = PlanStore::default();
+        let mut value = serde_json::json!({"schema_version":1,"plan_id":"native","revision_id":"r1","title":"Native overview","markdown":"## Implementation\nComplete technical details.","presentation":{"outcome":"Keep the draft intact.","flow":[{"title":"Choose","detail":"Select agent"}],"included":["Account login"],"deferred":["API keys"],"risks":["Verify provider status"],"success_criteria":["Cancel preserves draft"],"revision_changes":[]}});
+        fs_err::write(
+            dir.path().join("plan.grove-plan.json"),
+            serde_json::to_vec(&value).unwrap(),
+        )
+        .unwrap();
+        import(&mut store, dir.path()).unwrap();
+        let copy = store.revisions[0].document.markdown_body();
+        for text in [
+            "Keep the draft intact.",
+            "Account login",
+            "API keys",
+            "Verify provider status",
+            "Cancel preserves draft",
+            "Complete technical details.",
+        ] {
+            assert!(copy.contains(text), "{copy}");
+        }
+        let (_, approval) = store.prepare_approval("native", "r1").unwrap().unwrap();
+        assert!(approval.contains("Keep the draft intact."));
+        assert!(approval.contains("presentation"));
+        value["presentation"]["outcome"] = "A changed scope".into();
+        fs_err::write(
+            dir.path().join("plan.grove-plan.json"),
+            serde_json::to_vec(&value).unwrap(),
+        )
+        .unwrap();
+        assert!(import(&mut store, dir.path())
+            .unwrap_err()
+            .contains("immutable"));
+        for (key, invalid) in [
+            ("outcome", serde_json::json!("")),
+            (
+                "flow",
+                serde_json::json!([{"title":"","detail":"Missing label"}]),
+            ),
+            ("risks", serde_json::json!([])),
+            ("success_criteria", serde_json::json!(["x".repeat(1001)])),
+        ] {
+            let mut invalid_value = value.clone();
+            invalid_value["revision_id"] = "invalid".into();
+            invalid_value["presentation"][key] = invalid;
+            fs_err::write(
+                dir.path().join("plan.grove-plan.json"),
+                serde_json::to_vec(&invalid_value).unwrap(),
+            )
+            .unwrap();
+            assert!(import(&mut store, dir.path()).is_err(), "{key}");
+        }
+    }
     #[test]
     fn oversized_files_retain_the_affected_path_and_limit_and_can_be_reimported() {
         let dir = tempfile::tempdir().unwrap();
@@ -2053,6 +2217,13 @@ mod tests {
         assert!(import(&mut store, dir.path())
             .unwrap_err()
             .contains("update the Markdown"));
+        // A new overview alone cannot substitute for incorporating answers in Markdown.
+        doc["presentation"] = serde_json::json!({"outcome":"Now choose inline","risks":["Preserve the decision boundary"],"success_criteria":["Inline is verified"]});
+        fs_err::write(&path, serde_json::to_vec(&doc).unwrap()).unwrap();
+        assert!(import(&mut store, dir.path())
+            .unwrap_err()
+            .contains("update the Markdown"));
+        doc.as_object_mut().unwrap().remove("presentation");
         doc["markdown"] = "# Final\nUse inline.".into();
         let mut fake = store.revisions[0].clone();
         fake.document = serde_json::from_value(doc.clone()).unwrap();

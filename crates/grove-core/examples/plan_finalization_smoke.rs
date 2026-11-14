@@ -96,11 +96,19 @@ fn main() -> Result<(), String> {
     let connection = codex::connect(saved, Vec::new());
     let mut cleanup = StopOnDrop(Some(connection.handle.clone()));
     wait(&connection, |s| s.status == Status::Idle)?;
-    let prompt = r##"This is a bounded plan-finalization smoke. Only create and revise smoke.grove-plan.json in this disposable cwd; do not access other directories or implement the hypothetical feature. Write this JSON document exactly and reply with its absolute Markdown file link. The next user response will resolve the decisions; then incorporate the answers into a new revision and the required finalized_from metadata. JSON: {"schema_version":1,"plan_id":"finalization-smoke","revision_id":"r1","title":"Export report plan","markdown":"# Export report plan\n\nCreate an export report after its platform and retention decisions are finalized.\n\n## Platform\nSelect the initial target platform.\n\n## Retention\nChoose the export retention policy.\n\n## Verification\nVerify the resolved platform and retention behavior. This smoke only updates the plan; do not implement the feature.","decisions":[{"id":"platform","section":"Platform","prompt":"Which platform should the first version support?","options":[{"id":"linux","label":"Linux","description":"Start with Linux"},{"id":"all","label":"All desktop platforms","description":"Support all desktop platforms"}]},{"id":"retention","section":"Retention","prompt":"How long should exports be retained?","options":[{"id":"day","label":"One day","description":"Delete after one day"},{"id":"forever","label":"Until manually deleted","description":"Keep until the user removes them"}]}]}"##;
+    let prompt = r##"This is a bounded plan-finalization smoke. Only create and revise smoke.grove-plan.json in this disposable cwd; do not access other directories or implement the hypothetical feature. Write this JSON document exactly and reply with its absolute Markdown file link. The next user response will resolve the decisions; then incorporate the answers into a new revision and the required finalized_from metadata. Preserve and update presentation, including revision_changes, scope and success_criteria to reflect both answers. JSON: {"schema_version":1,"plan_id":"finalization-smoke","revision_id":"r1","title":"Export report plan","presentation":{"outcome":"Create a bounded export report.","flow":[{"title":"Export","detail":"Generate report"},{"title":"Retain","detail":"Apply the chosen retention policy"}],"included":["Report export"],"deferred":["Background scheduling"],"risks":["Expired exports must not remain accessible"],"success_criteria":["Verify the chosen platform and retention policy"],"revision_changes":[]},"markdown":"# Export report plan\n\nCreate an export report after its platform and retention decisions are finalized.\n\n## Platform\nSelect the initial target platform.\n\n## Retention\nChoose the export retention policy.\n\n## Verification\nVerify the resolved platform and retention behavior. This smoke only updates the plan; do not implement the feature.","decisions":[{"id":"platform","section":"Platform","prompt":"Which platform should the first version support?","options":[{"id":"linux","label":"Linux","description":"Start with Linux"},{"id":"all","label":"All desktop platforms","description":"Support all desktop platforms"}]},{"id":"retention","section":"Retention","prompt":"How long should exports be retained?","options":[{"id":"day","label":"One day","description":"Delete after one day"},{"id":"forever","label":"Until manually deleted","description":"Keep until the user removes them"}]}]}"##;
     connection.handle.send(Action::Prompt(prompt.into()))?;
     let imported = wait(&connection, |s| {
         s.status == Status::Done && s.saved.rich_plans.revisions.len() == 1
     })?;
+    let presentation = imported.saved.rich_plans.revisions[0]
+        .document
+        .presentation
+        .as_ref()
+        .ok_or("Native presentation was not imported")?;
+    if presentation.flow.len() != 2 {
+        return Err("Native flow steps were not preserved".into());
+    }
     let thread = imported.saved.thread_id.clone();
     let initial = imported
         .saved
@@ -146,6 +154,19 @@ fn main() -> Result<(), String> {
         .revisions
         .last()
         .ok_or("Missing finalized revision")?;
+    let presentation = latest
+        .document
+        .presentation
+        .as_ref()
+        .ok_or("Finalized native presentation missing")?;
+    if presentation.revision_changes.is_empty()
+        || !latest
+            .document
+            .markdown_body()
+            .contains(&presentation.outcome)
+    {
+        return Err("Finalized overview changes or complete copy missing".into());
+    }
     let provenance = latest
         .document
         .finalized_from

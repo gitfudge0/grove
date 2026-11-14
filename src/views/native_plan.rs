@@ -1,5 +1,6 @@
 //! Native review of validated, immutable session plan snapshots.
 mod measured;
+mod overview;
 
 #[cfg(all(test, target_os = "linux"))]
 pub(super) fn take_control_materialization_count() -> usize {
@@ -236,6 +237,7 @@ pub(super) struct NativePlan {
     decision_focus: HashMap<String, FocusHandle>,
     active_decision: Option<String>,
     show_previous: bool,
+    open_sections: HashSet<usize>,
 }
 impl EventEmitter<NativePlanEvent> for NativePlan {}
 
@@ -441,6 +443,7 @@ impl NativePlan {
             decision_focus: HashMap::new(),
             active_decision: None,
             show_previous: false,
+            open_sections: HashSet::new(),
         }
     }
     fn snapshot(&self, cx: &App) -> Rc<Value> {
@@ -472,7 +475,14 @@ impl NativePlan {
         let document_changed = prepared.document.as_ref() != Some(&revision.document);
         if document_changed {
             prepared.markdown = revision.document.markdown_body();
-            prepared.sections = Rc::new(markdown_sections(&prepared.markdown));
+            prepared.sections = Rc::new(markdown_sections(
+                revision
+                    .document
+                    .markdown
+                    .as_deref()
+                    .filter(|_| revision.document.presentation.is_some())
+                    .unwrap_or(&prepared.markdown),
+            ));
             prepared.document = Some(revision.document.clone());
         }
         if document_changed || prepared.review.as_ref() != Some(review) {
@@ -830,12 +840,34 @@ impl NativePlan {
         self.next_decision(window, cx);
         self.choose("checks", "beta", cx);
     }
+    #[cfg(test)]
+    pub(super) fn configure_overview_capture(
+        &mut self,
+        open_detail: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if open_detail {
+            self.open_sections.insert(0);
+            self.projection.borrow_mut().invalidate();
+        }
+        self.reveal(window, cx);
+        cx.notify();
+    }
     fn activate(&mut self, action: &measured::Action, window: &mut Window, cx: &mut Context<Self>) {
         match action {
             measured::Action::None => {}
             measured::Action::Expand => self.toggle_expansion(window, cx),
             measured::Action::Earlier => {
                 self.show_previous = true;
+                cx.notify();
+            }
+            measured::Action::ToggleSection(index) => {
+                if !self.open_sections.remove(index) {
+                    self.open_sections.insert(*index);
+                }
+                // Disclosure immediately changes both layout and keyboard targets.
+                self.projection.borrow_mut().invalidate();
                 cx.notify();
             }
             measured::Action::Next => self.next_decision(window, cx),
@@ -1363,6 +1395,10 @@ impl Render for NativePlan {
                     ),
                 );
         } else {
+            let layered = doc["presentation"].is_object();
+            if layered {
+                body = body.child(self.overview(doc, window, cx));
+            }
             if doc["finalized_from"].is_object() {
                 body = body.child(div().text_size(rpx(TEXT_SMALL)).text_color(c::FG_DIM())
                     .child(format!("Updated from revision {} · your decisions have been incorporated into this plan.", string(&doc["finalized_from"], "revision_id"))));
@@ -1452,9 +1488,18 @@ impl Render for NativePlan {
                         }),
                 );
             }
+            if layered {
+                for decision in &decisions {
+                    body = body.child(self.decision(decision, &snapshot, window, cx));
+                }
+            }
             let sections = self.prepared.borrow().sections.clone();
             let mut rendered = HashSet::new();
             for (index, (title, markdown)) in sections.iter().cloned().enumerate() {
+                if layered {
+                    body = body.child(self.detail_section(index, title, markdown, window, cx));
+                    continue;
+                }
                 let mut section =
                     div()
                         .min_w_0()
@@ -1488,11 +1533,11 @@ impl Render for NativePlan {
                 body = body.child(self.legacy_assets(window, cx));
             }
             for decision in &decisions {
-                if !rendered.contains(&string(decision, "id")) {
+                if !layered && !rendered.contains(&string(decision, "id")) {
                     body = body.child(self.decision(decision, &snapshot, window, cx));
                 }
             }
-            if !decisions.is_empty() {
+            if !layered && !decisions.is_empty() {
                 body = body.child(div().text_size(rpx(TEXT_TITLE)).child("Your decisions"));
                 for decision in &decisions {
                     body = body.child(
@@ -1755,6 +1800,116 @@ mod tests {
     use super::*;
     use grove_core::codex::{Connection, Handle, Provider, SavedSession, Snapshot, Status};
     use std::{cell::RefCell, rc::Rc, sync::mpsc};
+
+    fn exercise_native_overview(provider: Provider, cx: &mut gpui::TestAppContext) {
+        cx.update(gpui_component::init);
+        let (handle, _actions) = Handle::channel();
+        let (_updates, receive) = mpsc::channel();
+        let mut saved = long_decision_fixture(provider);
+        let document = &mut saved.rich_plans.revisions[0].document;
+        document.markdown = Some("## Implementation\nHidden but copyable technical detail.\n## Verification\nRun the provider checks.".into());
+        document.presentation = Some(serde_json::from_value(json!({"outcome":"Keep the draft intact.","flow":[{"title":"Choose","detail":"Select the provider"},{"title":"Return","detail":"Verify the account"}],"included":["Sign in"],"deferred":["API keys"],"risks":["Verify provider response"],"success_criteria":["Cancel preserves drafts"],"revision_changes":[]})).unwrap());
+        let mut plan = None;
+        let (_, cx) = cx.add_window_view(|window, cx| {
+            let session = cx.new(|cx| {
+                CodexSession::from_connection(
+                    Snapshot::new(saved),
+                    Connection {
+                        handle,
+                        updates: receive.into(),
+                    },
+                    cx,
+                )
+            });
+            let html = cx.new(|_| {
+                super::super::inline_html::HtmlSession::new(
+                    "/tmp".into(),
+                    gpui::ScrollHandle::new(),
+                )
+            });
+            let view = cx.new(|cx| NativePlan::new(session, html, "plan".into(), "r1".into(), cx));
+            plan = Some(view.clone());
+            gpui_component::Root::new(view, window, cx)
+        });
+        let plan = plan.unwrap();
+        cx.simulate_resize(gpui::size(gpui::px(600.), gpui::px(1600.)));
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            let _ = window.draw(cx);
+        });
+        assert!(cx.debug_bounds("native-plan-overview").is_some());
+        assert!(
+            cx.debug_bounds("native-plan-decision-access").is_some(),
+            "Decisions cannot be hidden by folded details"
+        );
+        assert!(cx.debug_bounds("native-plan-detail-content-0").is_none());
+        let header = cx.debug_bounds("native-plan-detail-0").unwrap();
+        cx.simulate_click(header.center(), gpui::Modifiers::default());
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            let _ = window.draw(cx);
+        });
+        plan.read_with(cx, |view, cx| {
+            assert!(view.open_sections.contains(&0));
+            assert!(view
+                .markdown(cx)
+                .contains("Hidden but copyable technical detail."));
+            assert!(view.markdown(cx).contains("Keep the draft intact."));
+        });
+        assert!(cx.debug_bounds("native-plan-detail-content-0").is_some());
+        cx.update(|window, cx| {
+            let focus = plan
+                .read(cx)
+                .projection
+                .borrow()
+                .focus_handle("section:0")
+                .unwrap();
+            window.focus(&focus, cx);
+        });
+        cx.simulate_keystrokes("space");
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            let _ = window.draw(cx);
+        });
+        plan.read_with(cx, |view, _| assert!(!view.open_sections.contains(&0)));
+        assert!(cx.debug_bounds("native-plan-detail-content-0").is_none());
+        cx.simulate_keystrokes("enter");
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            let _ = window.draw(cx);
+        });
+        assert!(cx.debug_bounds("native-plan-detail-content-0").is_some());
+        for (width, rem) in [(400., 16.), (1000., 16.), (320., 32.)] {
+            cx.update(|window, _| window.set_rem_size(gpui::px(rem)));
+            cx.simulate_resize(gpui::size(gpui::px(width), gpui::px(1600.)));
+            cx.run_until_parked();
+            cx.update(|window, cx| {
+                let _ = window.draw(cx);
+            });
+            let body = cx.debug_bounds("native-plan-overview").unwrap();
+            let flow = cx.debug_bounds("native-plan-flow").unwrap();
+            assert!(flow.size.width <= body.size.width);
+            for selector in ["native-plan-flow-step-0", "native-plan-flow-step-1"] {
+                let step = cx.debug_bounds(selector).unwrap();
+                assert!(
+                    step.origin.x >= flow.origin.x && step.right() <= flow.right(),
+                    "Flow child overflows at width {width}, rem {rem}: {step:?}, parent {flow:?}"
+                );
+            }
+        }
+    }
+    #[gpui::test]
+    fn codex_native_overview_preserves_decisions_copy_and_disclosure(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        exercise_native_overview(Provider::Codex, cx);
+    }
+    #[gpui::test]
+    fn claude_native_overview_preserves_decisions_copy_and_disclosure(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        exercise_native_overview(Provider::Claude, cx);
+    }
 
     #[test]
     fn markdown_sections_preserve_fences_and_associate_headings() {

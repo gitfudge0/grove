@@ -20,6 +20,37 @@ only. The screenshot's precise stale-bubble cause remains unconfirmed. Manual
 native appearance inspection and macOS/Windows execution were not performed;
 no platform-specific behavior changed. No app installation or restart occurred.
 
+## Native plan overview (November 2026)
+
+Optional presentation content renders a native outcome, wrapping flow, scope,
+visible risks and success criteria, authored revision changes, and explicit
+Markdown detail disclosures. Plain Markdown and legacy plans retain their reader.
+Linux checks passed 25 core plan tests, 19 native plan tests (two opt-in desktop
+captures ignored), 33 UI conformance checks and strict all-target Clippy. Native
+fixtures exercised Codex and Claude decisions, actual Space/Enter disclosure
+input, full copy, custom-answer draft preservation, read-only peeks and offscreen
+controls. Flow child bounds were checked at 320px width and rem32. An initial
+parallel Claude dynamic-diagram Tab-reveal failure passed in isolation and in the
+final serial plan suite; the first failure is not claimed as a pass.
+
+**Codex:** live production actor generated/imported the presentation, incorporated
+selected and custom answers in the same session, suppressed duplicate update
+sends, preserved the draft and reloaded finalized revision readiness. Approval
+readiness was checked on a cloned store; no implementation approval was sent.
+**Claude:** native fixture coverage passed; live generation was attempted but
+failed before import because the installed CLI reported signed out. No account
+credentials were changed.
+
+Native Linux visual inspection remains unfinished: isolated captures returned
+entirely black images while the monitor reported DPMS off. The opt-in capture
+fixture also encountered its InputState teardown-handle leak; an unsuccessful
+cleanup workaround was removed rather than claiming success. The task did not
+change display power or install tooling. Actual dark/light/narrow/zoom visual
+appearance and macOS/Windows runtime remain untested. Evidence is retained in the
+original checkout under `.grove-artifacts/native-plan-shipping/`. No local app
+installation, restart or release occurred.
+
+
 ## Compact provider settings (November 2026)
 
 Providers combines account sign-in and version maintenance for Codex and Claude,
