@@ -1822,3 +1822,32 @@ passed. PR CI is source-only by repository policy; main-branch Rust/platform job
 run after merge. Existing Claude login, macOS/Windows runtime, native Escape and
 broader keyboard/overlay verification gaps remain explicit. Remote merge is now
 authorized by the user; this shipping request does not authorize app installation.
+
+
+## Session launch destination
+
+The saved General preference defaults to Stay on Dashboard and optionally opens
+the adopted native conversation. Linux GPUI fixture checks exercised Codex and
+Claude separately for immediate session selection/composer focus, fresh Dashboard
+defaults on return, and exactly one submission after readiness. Mounted native
+input tests covered protected pending text/images/references, terminal failure
+unlock, and rejection of late automatic submission for both providers. The
+setting's pointer, Tab/Shift-Tab, Enter and Space paths passed, and storage
+compatibility/roundtrip checks passed. These use mocked transports, not live
+Codex or Claude provider connections.
+
+Isolated Linux native Settings captures were inspected with both choices, Grove
+Light/Dark and enlarged rem text. The compositor retained its own window bounds
+instead of the requested narrow widths, so exact 320/500-width rendering remains
+unverified. Captures used the setting's final rendering/interaction code before
+its test-selector addition; that addition and the later disabled image-control
+Tab correction do not alter the captured Settings surface. Native hover/focus
+appearance, macOS/Windows rendering and live provider delivery remain untested.
+No installed application was replaced or restarted.
+
+The broader Dashboard run passed 69 tests, failed two unchanged geometry
+assertions and ignored five native captures; conformance passed 32 checks and
+failed one stale subagent edit-guard assertion. All three failures reproduced
+identically on clean main `1f4adc8`: adoption height 752 vs 800, inset position
+148 vs 100, and the conformance guard missing the existing source-index
+condition. They were not repaired as part of this setting change.

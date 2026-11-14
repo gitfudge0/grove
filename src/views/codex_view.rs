@@ -1835,6 +1835,18 @@ impl CodexView {
                 if this.transcript_only() {
                     return;
                 }
+                if this.dashboard_pending {
+                    // The launched first message belongs to the handoff until send or
+                    // failure. An opened conversation must not edit that submission.
+                    if matches!(event, InputEvent::Change) {
+                        let original = this.session.read(cx).state.saved.draft.clone();
+                        if this.input.read(cx).value().as_ref() != original {
+                            this.input
+                                .update(cx, |input, cx| input.set_value(original, window, cx));
+                        }
+                    }
+                    return;
+                }
                 match event {
                     InputEvent::PressEnter {
                         secondary: true,
@@ -5034,6 +5046,18 @@ impl CodexView {
     }
     fn flush_dashboard_submission(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.dashboard_pending
+            && matches!(
+                self.session.read(cx).state.status,
+                codex::Status::Failed | codex::Status::Disconnected | codex::Status::Interrupted
+            )
+        {
+            // A terminal launch failure returns the preserved draft to its composer.
+            // Later readiness must not auto-send a draft the user has since edited.
+            self.dashboard_pending = false;
+            cx.notify();
+            return;
+        }
+        if self.dashboard_pending
             && (self.session.read(cx).state.saved.provider == codex::Provider::Claude
                 || self.session.read(cx).state.saved.thread_id.is_some())
             && (self.session.read(cx).dashboard_submission_ready()
@@ -5060,6 +5084,9 @@ impl CodexView {
     }
 
     fn submit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.dashboard_pending {
+            return;
+        }
         if self.plan_answer.is_some() {
             self.save_plan_answer(window, cx);
             return;
@@ -5209,6 +5236,9 @@ impl CodexView {
         cx.notify();
     }
     fn submit_mode(&mut self, mode: SubmissionMode, window: &mut Window, cx: &mut Context<Self>) {
+        if self.dashboard_pending {
+            return;
+        }
         if self.plan_answer.is_some() {
             self.save_plan_answer(window, cx);
             return;
@@ -6516,7 +6546,8 @@ impl Render for CodexView {
             })
             .child(messages)
             .children(selection_overlay);
-        let composer_disabled = self.submitted.is_some()
+        let composer_disabled = self.dashboard_pending
+            || self.submitted.is_some()
             || self
                 .plan_answer
                 .as_ref()
@@ -6974,11 +7005,19 @@ impl Render for CodexView {
                         .debug_selector(move || format!("codex-image-{index}"))
                         .group("codex-image")
                         .child(
-                            super::components::header_control(
-                                "codex-remove-image",
-                                "Remove attached image",
-                            )
-                            .tab_index(0)
+                            (if self.dashboard_pending {
+                                super::components::disabled_header_control(
+                                    "codex-remove-image",
+                                    "Remove attached image",
+                                )
+                            } else {
+                                super::components::header_control(
+                                    "codex-remove-image",
+                                    "Remove attached image",
+                                )
+                            })
+                            .tab_index(if self.dashboard_pending { -1 } else { 0 })
+                            .tab_stop(!self.dashboard_pending)
                             .on_key_down(cx.listener(
                                 move |this, event: &gpui::KeyDownEvent, window, cx| {
                                     if matches!(event.keystroke.key.as_str(), "enter" | "space")
@@ -6996,9 +7035,16 @@ impl Render for CodexView {
                             .size(rpx(CHROME_CONTROL_H))
                             .p_0()
                             .bg(c::SURFACE_RAISED())
-                            .opacity(0.0)
-                            .group_hover("codex-image", |style| style.opacity(1.0))
-                            .focus_visible(|style| style.opacity(1.0))
+                            .opacity(if self.dashboard_pending {
+                                OPACITY_DISABLED
+                            } else {
+                                0.0
+                            })
+                            .when(!self.dashboard_pending, |control| {
+                                control
+                                    .group_hover("codex-image", |style| style.opacity(1.0))
+                                    .focus_visible(|style| style.opacity(1.0))
+                            })
                             .child(crate::icons::icon("close", ICON_MD, c::FG_DIM()))
                             .on_click(cx.listener(
                                 move |this, _, window, cx| {
@@ -7382,7 +7428,8 @@ impl Render for CodexView {
         let access_control = options.next();
         let model_control = options.next();
         let add_bounds = self.option_bounds[3].clone();
-        let add_disabled = self.plan_answer.is_some()
+        let add_disabled = self.dashboard_pending
+            || self.plan_answer.is_some()
             || self.submitted.is_some()
             || self.pending_attachment_picker
             || self.edit_request_pending
@@ -10102,6 +10149,9 @@ impl CodexView {
         cx.notify();
     }
     fn remove_reference(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.dashboard_pending {
+            return;
+        }
         if let Some(editor) = self.queue_editor.as_mut() {
             editor.reference = None;
         } else {
@@ -10113,6 +10163,9 @@ impl CodexView {
     }
 
     fn set_reference(&mut self, reference: Option<codex::ReferenceDraft>, cx: &mut Context<Self>) {
+        if self.dashboard_pending {
+            return;
+        }
         self.reference.clone_from(&reference);
         self.reference_expanded = false;
         self.session.update(cx, |session, cx| {
@@ -10358,19 +10411,28 @@ impl CodexView {
                                 .child(format!("Replying to {sources}")),
                         )
                         .child(
-                            super::components::header_control(
-                                "codex-remove-reference",
-                                "Remove reference",
-                            )
+                            (if self.dashboard_pending {
+                                super::components::disabled_header_control(
+                                    "codex-remove-reference",
+                                    "Remove reference",
+                                )
+                            } else {
+                                super::components::header_control(
+                                    "codex-remove-reference",
+                                    "Remove reference",
+                                )
+                            })
                             .debug_selector(|| "codex-remove-reference".into())
                             .track_focus(
                                 &self
                                     .reference_remove_focus
                                     .clone()
-                                    .tab_index(0)
-                                    .tab_stop(true),
+                                    .tab_index(if self.dashboard_pending { -1 } else { 0 })
+                                    .tab_stop(!self.dashboard_pending)
+                                    .tab_stop(!self.dashboard_pending),
                             )
-                            .tab_index(0)
+                            .tab_index(if self.dashboard_pending { -1 } else { 0 })
+                            .tab_stop(!self.dashboard_pending)
                             .focus_visible(|style| style.bg(c::SURFACE_RAISED()))
                             .child(crate::icons::icon("close", ICON_MD, c::FG_DIM()))
                             .on_key_down(cx.listener(
@@ -10613,7 +10675,8 @@ impl CodexView {
         .detach();
     }
     fn attach_files(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.plan_answer.is_some()
+        if self.dashboard_pending
+            || self.plan_answer.is_some()
             || self.submitted.is_some()
             || self.pending_attachment_picker
             || self.edit_request_pending
@@ -10652,7 +10715,8 @@ impl CodexView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.plan_answer.is_some()
+        if self.dashboard_pending
+            || self.plan_answer.is_some()
             || paths.is_empty()
             || self.submitted.is_some()
             || self.pending_attachment_picker
@@ -10782,6 +10846,9 @@ impl CodexView {
         }
     }
     fn remove_image(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+        if self.dashboard_pending {
+            return;
+        }
         let mut edits = Vec::new();
         for token in &self.picked_tokens {
             if let Some(number) = token
@@ -10835,7 +10902,7 @@ impl CodexView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.plan_answer.is_some() || self.submitted.is_some() {
+        if self.dashboard_pending || self.plan_answer.is_some() || self.submitted.is_some() {
             return;
         }
         let editor = self.queue_editor.as_ref().map(|editor| editor.id);
@@ -15631,6 +15698,85 @@ mod tests {
     impl Render for UnmountedDashboardHost {
         fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
             div().child("Dashboard remains visible")
+        }
+    }
+    #[gpui::test]
+    fn dashboard_pending_handoff_locks_mounted_draft_and_releases_on_failure(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (view, cx, actions, _updates) = fixture(cx);
+        for provider in [codex::Provider::Codex, codex::Provider::Claude] {
+            let reference = codex::ReferenceDraft {
+                id: "launch-reference".into(),
+                thread_id: None,
+                sources: Vec::new(),
+                text: "Original reference".into(),
+            };
+            cx.update(|window, cx| {
+                view.update(cx, |view, cx| {
+                    view.input.update(cx, |input, cx| {
+                        input.set_value("Original launched prompt", window, cx)
+                    });
+                    view.images = vec!["original-image".into()];
+                    view.reference = Some(reference.clone());
+                    view.session.update(cx, |session, _| {
+                        session.state.status = Status::Starting;
+                        session.state.saved.provider = provider;
+                        session.state.saved.thread_id = None;
+                        session.state.saved.draft = "Original launched prompt".into();
+                        session.state.saved.draft_images = view.images.clone();
+                        session.state.saved.draft_reference = Some(reference.clone());
+                    });
+                    view.launch_dashboard(window, cx);
+                    view.input.focus_handle(cx).focus(window, cx);
+                })
+            });
+            draw(cx);
+            cx.simulate_keystrokes("x");
+            cx.update(|window, cx| {
+                view.update(cx, |view, cx| {
+                    view.remove_image(0, window, cx);
+                    view.remove_reference(window, cx);
+                    view.attach_paths(vec![std::path::PathBuf::from("/unused")], window, cx);
+                    view.paste_images(Vec::new(), window, cx);
+                    view.submit(window, cx);
+                    assert!(view.dashboard_pending);
+                    assert_eq!(
+                        view.input.read(cx).value().as_ref(),
+                        "Original launched prompt"
+                    );
+                    assert_eq!(view.images, ["original-image"]);
+                    assert_eq!(view.reference.as_ref(), Some(&reference));
+                    assert!(!view.pending_attachment_picker);
+                    assert_eq!(view.pending_image_pastes, 0);
+                    view.session
+                        .update(cx, |session, _| session.state.status = Status::Failed);
+                    view.flush_dashboard_submission(window, cx);
+                    assert!(!view.dashboard_pending);
+                })
+            });
+            draw(cx);
+            cx.simulate_keystrokes("x");
+            cx.update(|_, cx| {
+                view.update(cx, |view, cx| {
+                    assert!(
+                        view.input.read(cx).value().contains('x'),
+                        "terminal failure releases editing"
+                    );
+                    view.session.update(cx, |session, cx| {
+                        session.state.status = Status::Idle;
+                        session.state.saved.thread_id = Some("late-ready".into());
+                        cx.notify();
+                    });
+                })
+            });
+            cx.run_until_parked();
+            assert!(
+                !actions
+                    .try_iter()
+                    .any(|action| matches!(action, Action::Submit { .. })),
+                "late readiness must not automatically submit the recovered draft"
+            );
         }
     }
     #[gpui::test]

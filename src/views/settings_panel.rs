@@ -19,7 +19,10 @@ use gpui::{
 };
 use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::Disableable;
-use grove_core::{agent::Agent, storage::Store};
+use grove_core::{
+    agent::Agent,
+    storage::{AfterSessionStart, Store},
+};
 use grove_core::{app_theme, theme::ThemeKind};
 use std::collections::HashSet;
 
@@ -129,6 +132,7 @@ fn handled_shortcuts() -> Vec<(usize, &'static keymap::ShortcutDef)> {
 pub struct SettingsPanel {
     runtime: Entity<Runtime>,
     focus: FocusHandle,
+    after_session_start_focus: [FocusHandle; 2],
     return_focus: Option<FocusHandle>,
     open: bool,
     page: Page,
@@ -221,6 +225,10 @@ impl SettingsPanel {
             _connections_subscription: connections_subscription,
             connections_pending_focus: false,
             focus: cx.focus_handle(),
+            after_session_start_focus: [
+                cx.focus_handle().tab_stop(true),
+                cx.focus_handle().tab_stop(true),
+            ],
             return_focus: None,
             open: false,
             page: Page::Settings,
@@ -619,6 +627,10 @@ impl SettingsPanel {
         if self.save(cx, |store| store.telemetry_enabled = Some(enabled)) {
             crate::telemetry::set_enabled(enabled);
         }
+    }
+
+    fn set_after_session_start(&mut self, preference: AfterSessionStart, cx: &mut Context<Self>) {
+        self.save(cx, |store| store.after_session_start = preference);
     }
 
     fn set_reduce_motion(&mut self, enabled: bool, cx: &mut Context<Self>) {
@@ -1462,6 +1474,7 @@ impl SettingsPanel {
         let terminal_agents = cfg!(windows) || runs_agents_in_terminal(store);
         let telemetry = SettingsState::telemetry_enabled(store);
         let reduce_motion = store.reduce_motion.unwrap_or(false);
+        let after_session_start = store.after_session_start;
         let mut body = div().flex().flex_col();
 
         let mut theme_swatches = div().flex().gap(rpx(SPACE_XS));
@@ -1519,6 +1532,49 @@ impl SettingsPanel {
             cx,
             |this, enabled, _, cx| this.set_reduce_motion(enabled, cx),
         );
+        let mut after_session_start_control = Self::choices();
+        for (index, (id, label, preference)) in [
+            (
+                "stay",
+                "Stay on Dashboard",
+                AfterSessionStart::StayOnDashboard,
+            ),
+            ("open", "Open session", AfterSessionStart::OpenSession),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            after_session_start_control = after_session_start_control.child(
+                self.choice(
+                    format!("settings-after-session-start-{id}"),
+                    label,
+                    after_session_start == preference,
+                    true,
+                )
+                .debug_selector(move || format!("settings-after-session-start-{id}"))
+                .track_focus(&self.after_session_start_focus[index])
+                .child(label)
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    this.after_session_start_focus[index].focus(window, cx);
+                    this.set_after_session_start(preference, cx);
+                }))
+                .on_key_down(cx.listener(
+                    move |this, event: &gpui::KeyDownEvent, window, cx| {
+                        if this.after_session_start_focus[index].is_focused(window)
+                            && matches!(event.keystroke.key.as_str(), "enter" | "space")
+                            && !event.is_held
+                            && !event.keystroke.modifiers.control
+                            && !event.keystroke.modifiers.alt
+                            && !event.keystroke.modifiers.platform
+                        {
+                            window.prevent_default();
+                            cx.stop_propagation();
+                            this.set_after_session_start(preference, cx);
+                        }
+                    },
+                )),
+            );
+        }
         body = body.when(self.category == Category::General, |body| {
             body.child(
                 div()
@@ -1539,6 +1595,12 @@ impl SettingsPanel {
                         "Reduce motion",
                         "Skip decorative interface transitions",
                         reduce_motion_control,
+                    ))
+                    .child(Self::section("Sessions"))
+                    .child(Self::setting_row(
+                        "After starting a session",
+                        "Choose where you go after sending your first message",
+                        after_session_start_control,
                     )),
             )
         });
@@ -2897,6 +2959,7 @@ mod tests {
             cx.spawn(async move |cx| {
                 let cases = [
                     ("general", Category::General, Page::Settings),
+                    ("general-open", Category::General, Page::Settings),
                     ("agents", Category::Agents, Page::Settings),
                     ("terminal", Category::Terminal, Page::Settings),
                     ("privacy", Category::Privacy, Page::Settings),
@@ -2924,6 +2987,11 @@ mod tests {
                             window.resize(gpui::size(gpui::px(width), gpui::px(850.)));
                             window.set_rem_size(gpui::px(rem));
                             panel.update(cx, |panel, cx| {
+                                cx.global_mut::<SettingsState>().store.after_session_start = if name == "general-open" {
+                                    AfterSessionStart::OpenSession
+                                } else {
+                                    AfterSessionStart::StayOnDashboard
+                                };
                                 panel.select_category(category, cx);
                                 panel.show_theme_notices = name == "themes-notices";
                                 if page == Page::Changelog {
@@ -3193,6 +3261,85 @@ mod tests {
         });
         draw(cx);
         cx.update(|window, cx| assert!(panel.read(cx).focus.is_focused(window)));
+    }
+
+    #[gpui::test]
+    fn after_session_start_choices_update_saved_preference(cx: &mut gpui::TestAppContext) {
+        cx.update(setup);
+        struct NavigationHost(Entity<SettingsPanel>);
+        impl Render for NavigationHost {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                div()
+                    .size_full()
+                    .on_key_down(super::super::shell::traverse_unhandled_tab)
+                    .child(self.0.clone())
+            }
+        }
+        let mut panel = None;
+        let (_, cx) = cx.add_window_view(|_, cx| {
+            let runtime = cx.new(Runtime::new);
+            let entity = cx.new(|cx| SettingsPanel::new(runtime, cx));
+            panel = Some(entity.clone());
+            NavigationHost(entity)
+        });
+        let panel = panel.unwrap();
+        cx.update(|window, cx| panel.update(cx, |panel, cx| panel.open(window, cx)));
+        draw(cx);
+        for (id, expected) in [
+            (
+                "settings-after-session-start-open",
+                AfterSessionStart::OpenSession,
+            ),
+            (
+                "settings-after-session-start-stay",
+                AfterSessionStart::StayOnDashboard,
+            ),
+        ] {
+            let bounds = cx.debug_bounds(id).unwrap();
+            cx.simulate_click(bounds.center(), gpui::Modifiers::default());
+            draw(cx);
+            cx.update(|_, cx| {
+                assert_eq!(
+                    cx.global::<SettingsState>().store.after_session_start,
+                    expected
+                )
+            });
+        }
+        // Traverse through the app's actual unhandled-Tab route, not direct focus.
+        cx.update(|window, cx| {
+            panel.read(cx).after_session_start_focus[0]
+                .clone()
+                .focus(window, cx)
+        });
+        cx.simulate_keystrokes("tab");
+        draw(cx);
+        cx.update(|window, cx| {
+            assert!(panel.read(cx).after_session_start_focus[1].is_focused(window))
+        });
+        cx.simulate_keystrokes("shift-tab");
+        draw(cx);
+        cx.update(|window, cx| {
+            assert!(panel.read(cx).after_session_start_focus[0].is_focused(window))
+        });
+        for (index, key, expected) in [
+            (1, "enter", AfterSessionStart::OpenSession),
+            (0, "space", AfterSessionStart::StayOnDashboard),
+        ] {
+            cx.update(|window, cx| {
+                panel.read(cx).after_session_start_focus[index]
+                    .clone()
+                    .focus(window, cx)
+            });
+            cx.simulate_keystrokes(key);
+            draw(cx);
+            cx.update(|window, cx| {
+                assert_eq!(
+                    cx.global::<SettingsState>().store.after_session_start,
+                    expected
+                );
+                assert!(panel.read(cx).after_session_start_focus[index].is_focused(window));
+            });
+        }
     }
 
     #[gpui::test]
