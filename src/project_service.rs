@@ -266,6 +266,21 @@ impl ProjectService {
         scripts: storage::ProjectScripts,
         cx: &mut Context<Self>,
     ) -> Result<(), String> {
+        self.update_project_with_appearance(path, name, scripts, None, cx)
+    }
+
+    pub(crate) fn update_project_with_appearance(
+        &mut self,
+        path: &str,
+        name: String,
+        scripts: storage::ProjectScripts,
+        appearance: Option<storage::identity::ProjectAppearance>,
+        cx: &mut Context<Self>,
+    ) -> Result<(), String> {
+        if appearance.is_some_and(|a| !a.automatic.valid() || a.custom.is_some_and(|m| !m.valid()))
+        {
+            return Err("Choose a valid project appearance.".into());
+        }
         self.ensure_not_removing(path)?;
         let store = &cx.global::<SettingsState>().store;
         let idx = project_index(&store.projects, path)
@@ -310,6 +325,11 @@ impl ProjectService {
         }
         let ((), saved) = SettingsState::update_and_flush_checked(cx, |store| {
             apply_project_update(store, idx, &name, scripts);
+            if let Some(appearance) = appearance {
+                store
+                    .project_appearances
+                    .insert(path.to_string(), appearance);
+            }
         });
         if let Err(error) = saved {
             let rollback = rename.as_ref().map_or(

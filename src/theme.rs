@@ -877,6 +877,20 @@ pub(crate) static ACTIVE_THEME_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mute
 #[cfg(test)]
 pub(crate) use tests::ActiveThemeGuard;
 
+/// Project identity accents: never used for status, selection or provider marks.
+pub fn PROJECT_IDENTITY(index: u8) -> Hsla {
+    theme::with_current(|t| {
+        let colors = if t.kind == theme::ThemeKind::Light {
+            [0x3c776e, 0x8b6138, 0x526888, 0x89546c, 0x61713f, 0x66666d]
+        } else {
+            [0x8dc7be, 0xdbb68c, 0xa7b8d1, 0xd3a9bb, 0xb6c897, 0xaaaab2]
+        };
+        ResolvedChrome::from_theme(t)
+            .readable(gpui::rgb(colors[usize::from(index) % colors.len()]))
+            .into()
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

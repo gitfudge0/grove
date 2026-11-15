@@ -165,7 +165,7 @@ impl DestinationTray {
         let selected_project = self.project;
         let selected_path = self.path.clone();
         let focus = window.focused(cx);
-        let popup = PopupMenu::build(window, cx, move |mut menu, window, _| {
+        let popup = PopupMenu::build(window, cx, move |mut menu, window, cx| {
             menu = crate::views::components::dropdown_menu(menu, window);
             menu = menu.scrollable(false);
             if project {
@@ -197,6 +197,11 @@ impl DestinationTray {
                     )
                     .separator();
                 for (idx, name, path) in projects {
+                    let symbol = cx
+                        .global::<SettingsState>()
+                        .store
+                        .project_appearance(&path)
+                        .current();
                     let owner = owner.clone();
                     menu = menu.item(
                         PopupMenuItem::element(move |_, _| {
@@ -206,7 +211,7 @@ impl DestinationTray {
                                 .flex()
                                 .items_center()
                                 .gap(rpx(SPACE_SM))
-                                .child(super::super::components::project_initials_badge(&name))
+                                .child(super::super::components::project_symbol(symbol, ICON_20))
                                 .child(name.clone())
                         })
                         .checked(idx == selected_project)
@@ -374,7 +379,21 @@ impl Render for DestinationTray {
                         })
                         .icon_only()
                         .max_w(rpx(MODAL_W_SM))
-                        .icon(gpui_component::Icon::default().path(format!("icons/{glyph}.svg")))
+                        .when(!is_project || self.project == NO_PROJECT, |button| {
+                            button.icon(
+                                gpui_component::Icon::default().path(format!("icons/{glyph}.svg")),
+                            )
+                        })
+                        .when(is_project && self.project != NO_PROJECT, |button| {
+                            let path = self
+                                .projects
+                                .iter()
+                                .find(|p| p.0 == self.project)
+                                .map_or("", |p| p.2.as_str());
+                            button.child(super::super::components::project_symbol_for_path(
+                                path, ICON_SM, cx,
+                            ))
+                        })
                         .child(
                             div()
                                 .min_w_0()
@@ -2664,7 +2683,10 @@ mod tests {
 
     #[gpui::test]
     fn destination_popup_rise_cleanup_cannot_unmount_a_new_menu(cx: &mut gpui::TestAppContext) {
-        cx.update(gpui_component::init);
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            cx.set_global(SettingsState::new(grove_core::storage::Store::default()));
+        });
         let (tray, cx) = cx.add_window_view(|_, _| {
             DestinationTray::new(
                 vec![(0, "Project".into(), "/checkout".into())],
@@ -2701,7 +2723,10 @@ mod tests {
 
     #[gpui::test]
     fn dashboard_destination_controls_size_to_content(cx: &mut gpui::TestAppContext) {
-        cx.update(gpui_component::init);
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            cx.set_global(SettingsState::new(grove_core::storage::Store::default()));
+        });
         let (tray, cx) = cx.add_window_view(|_, _| {
             let mut tray = DestinationTray::new(
                 vec![(

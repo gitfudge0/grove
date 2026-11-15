@@ -1954,3 +1954,40 @@ certification remain untested/unsupported on this Linux host; the reference auth
 command explicitly rejected Linux capture. Evidence is under
 `.grove-artifacts/html-transcript-exploration/`. Delivery is a scoped local commit
 without installation, installed-app restart, push or release.
+
+## Automatic project symbol identity (November 2026)
+
+Projects receive one of sixteen catalog symbols and six theme-aware identity
+colors automatically, favoring unused symbols and then unused pairs within the
+workspace. Stored root-owned assignments survive rename, restart, reordering,
+workspace moves and worktree creation. Manage offers draft-only Randomize,
+manual symbol/color choices and restoration of the saved automatic assignment.
+Randomize changes both parts; the outer Save applies appearance together with
+project details, and failed persistence restores the saved state.
+
+Linux verification passed 56 storage tests, including randomization, legacy
+assignment, exhaustion, serialization and invalid-data recovery; the catalog
+artwork test and two new GPUI fixtures cover draft-only randomization, manual
+choices, keyboard activation, reset, narrow/enlarged text and atomic save failure.
+Thirty-three UI conformance checks, twenty-one launcher fixtures, the Projects
+worktree-disclosure fixture and nineteen Dashboard fixtures passed. Two Dashboard
+layout fixtures (`dashboard_position_uses_its_own_inset_viewport` and
+`dashboard_adoption_keeps_composer_anchored_on_first_frame`) fail on both the
+untouched starting revision and this change: they expect the canvas to omit the
+existing 48px appbar. They were excluded from the passing nineteen-test rerun;
+this change does not repair those layout expectations.
+
+**Codex: verified with local native fixtures. Claude: verified with local native
+fixtures.** Their shared session header/grid controls and Dashboard project
+selection/draft ownership passed without a live provider connection. Live Codex
+and Claude transport behavior is untested; no provider contracts were changed.
+macOS and Windows runtime and accessibility conformance remain untested.
+
+The task-isolated Linux QA app uses the real Manage editor with fixture projects,
+a separate app identity and configuration. Dark and light renders are inspected separately from the narrow/enlarged-text
+input fixtures. Native pointer input changed the preview's symbol and color while the saved
+project display retained its prior identity; the same draft boundary passed the
+GPUI fixture. Evidence is under `.grove-artifacts/project-identity-qa/` and
+`.grove-artifacts/mosaic-shipping/` (the latter also retains superseded mosaic
+experiments). No installed app replacement, release or live provider launch occurs
+as part of this verification.

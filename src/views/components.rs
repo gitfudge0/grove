@@ -861,30 +861,32 @@ pub fn dense_action_with_colors(
         .rounded(rpx(recipe.radius).to_pixels(window.rem_size()))
 }
 
-// Compact monograms are secondary to the adjacent full project name.
-const PROJECT_INITIALS_TEXT_SIZE: f32 = 9.0;
-
-/// Compact project identity using the project picker's capital-initial rule.
-pub fn project_initials_badge(name: &str) -> Div {
-    let initials = name
-        .split_whitespace()
-        .take(2)
-        .filter_map(|word| word.chars().next())
-        .flat_map(char::to_uppercase)
-        .collect::<String>();
+/// Decorative project identity. The adjacent full name owns the accessible identity.
+pub fn project_symbol(identity: grove_core::storage::identity::ProjectIdentity, size: f32) -> Div {
+    let symbol = grove_core::storage::identity::SYMBOLS
+        .get(usize::from(identity.symbol))
+        .unwrap_or(&grove_core::storage::identity::SYMBOLS[0]);
     div()
-        .size(rpx(ICON_20))
+        .size(rpx(size))
         .flex_shrink_0()
         .flex()
         .items_center()
         .justify_center()
-        .rounded_full()
-        .border_1()
-        .border_color(c::BORDER_STRONG())
-        .bg(c::BG_HOVER())
-        .text_size(rpx(PROJECT_INITIALS_TEXT_SIZE))
-        .text_color(c::FG())
-        .child(initials)
+        .child(crate::icons::icon(
+            symbol.0,
+            size,
+            c::PROJECT_IDENTITY(identity.color),
+        ))
+}
+
+pub fn project_symbol_for_path(path: &str, size: f32, cx: &App) -> Div {
+    project_symbol(
+        cx.global::<crate::settings::SettingsState>()
+            .store
+            .project_appearance(path)
+            .current(),
+        size,
+    )
 }
 
 /// Dense disclosure with foreground-only pointer/open feedback. Keyboard focus

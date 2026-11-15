@@ -157,7 +157,50 @@ fn svg_for(name: &str) -> String {
                 &format!("stroke-width=\"{}\"", ICON_STROKE_WIDTH * 1.5),
             );
     }
+    // Project identity symbols use the shared catalog stroke, normalized from 24 units.
+    let project_symbol = match name {
+        "project-leaf" => Some(r#"<path d="M5 19C3 10 8 4 20 4c0 12-6 17-15 15Zm0 0L16 8"/>"#),
+        "project-compass" => {
+            Some(r#"<circle cx="12" cy="12" r="9"/><path d="m16 8-3 5-5 3 3-5 5-3Z"/>"#)
+        }
+        "project-layers" => Some(r#"<path d="m3 7 9-5 9 5-9 5-9-5Zm0 5 9 5 9-5M3 17l9 5 9-5"/>"#),
+        "project-cube" => Some(r#"<path d="m12 2 9 5v10l-9 5-9-5V7l9-5Zm-9 5 9 5 9-5m-9 5v10"/>"#),
+        "project-globe" => Some(
+            r#"<circle cx="12" cy="12" r="9"/><ellipse cx="12" cy="12" rx="4" ry="9"/><path d="M3 12h18"/>"#,
+        ),
+        "project-diamond" => Some(r#"<path d="m12 2 10 10-10 10L2 12 12 2Z"/>"#),
+        "project-orbit" => Some(
+            r#"<ellipse cx="12" cy="12" rx="10" ry="5" transform="rotate(-35 12 12)"/><circle cx="12" cy="12" r="3"/>"#,
+        ),
+        "project-mountain" => Some(r#"<path d="m2 20 10-17 10 17H2Zm5-9 3 3 3-3 3 3 2-1"/>"#),
+        "project-wave" => {
+            Some(r#"<path d="M2 8c4-6 6 6 10 0s6 6 10 0M2 16c4-6 6 6 10 0s6 6 10 0"/>"#)
+        }
+        "project-sun" => Some(
+            r#"<circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M2 12h2m16 0h2M5 5l2 2m10 10 2 2M5 19l2-2M17 7l2-2"/>"#,
+        ),
+        "project-feather" => {
+            Some(r#"<path d="M3 21 16 8M8 16C-1 6 15-4 21 3c5 7-4 17-13 13Zm5-5 6 1m-9 2 1-6"/>"#)
+        }
+        "project-gem" => Some(r#"<path d="m3 8 4-5h10l4 5-9 13L3 8Zm0 0h18M7 3l5 18 5-18"/>"#),
+        "project-flower" => Some(
+            r#"<path d="M12 7C5-4 0 8 7 12c-11 7 1 12 5 5 7 11 12-1 5-5 11-7-1-12-5-5Z"/><circle cx="12" cy="12" r="2"/>"#,
+        ),
+        "project-moon" => Some(r#"<path d="M20 15A9 9 0 0 1 9 3a9 9 0 1 0 11 12Z"/>"#),
+        "project-bolt" => Some(r#"<path d="m13 2-9 12h7l-1 8 10-13h-8l1-7Z"/>"#),
+        "project-hexagon" => Some(r#"<path d="m12 2 9 5v10l-9 5-9-5V7l9-5Z"/>"#),
+        _ => None,
+    };
+    if let Some(inner) = project_symbol {
+        return wrap_svg(&format!(
+            r#"<g transform="scale(0.6666667)" stroke-width="{}">{inner}</g>"#,
+            ICON_STROKE_WIDTH * 1.5
+        ));
+    }
     let inner = match name {
+        "shuffle" => {
+            r#"<path d="M2 4h2c3 0 5 8 8 8h2m-3-3 3 3-3 3M2 12h2c1.5 0 2.5-2 4-4m2-3c.7-.6 1.3-1 2-1h2m-3-3 3 3-3 3"/>"#
+        }
         "toggle-on" => {
             r#"<rect x="1.5" y="4" width="13" height="8" rx="4"/><circle cx="10.5" cy="8" r="2" fill="currentColor" stroke="none"/>"#
         }
@@ -739,5 +782,23 @@ mod native_qa {
                 })
                 .detach();
             });
+    }
+}
+
+#[cfg(test)]
+mod project_identity_tests {
+    #[test]
+    fn every_project_symbol_has_catalog_artwork() {
+        let mut names = std::collections::HashSet::new();
+        for &(glyph, label) in grove_core::storage::identity::SYMBOLS {
+            assert!(!label.is_empty());
+            assert!(names.insert(glyph));
+            let artwork = super::svg_for(glyph);
+            assert!(artwork.contains("<g transform="), "{glyph}");
+            assert!(
+                artwork.contains("<path") || artwork.contains("<circle"),
+                "{glyph}"
+            );
+        }
     }
 }

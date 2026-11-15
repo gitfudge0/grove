@@ -741,3 +741,30 @@ quota refresh; matching live conversation events arriving after the surface open
 may show conversation-reported allowance. Earlier session measurements are not
 reused during a new account check. Closing the surface releases its subscriptions;
 no usage values or account identities are persisted by this surface.
+
+
+## Project symbol identity
+
+Registered projects use a colored catalog symbol beside their full name, without
+initials, a circle or a colored tile. Project identity accents have their own
+theme-aware palette in `src/theme.rs`; they do not communicate status, selection
+or provider identity. Provider artwork retains its placement and authored colors.
+
+Assign a symbol and color automatically, favoring unused symbols within the
+workspace before unused symbol/color pairs. Save the assignment with the
+registration; never reshuffle existing identities on rename, reorder, workspace
+moves, restart or worktree creation. Legacy registrations receive stable
+assignments without requiring setup. Symbols are recognition cues, not inferred
+repository categories. Names and paths distinguish repeated identities when the
+finite library is exhausted.
+
+Project setup shows the assigned symbol beside the name without appearance
+prompts or new steps. Optional appearance editing lives in Manage: Randomize
+previews a different symbol and color together without saving, while named symbol
+and color choices retain manual control. Repeated randomization remains draft-only.
+Use automatic identity restores the
+saved original assignment. Save changes applies name, scripts and appearance
+atomically; Cancel discards edits, and a failed save retains the drafts and the
+previous saved appearance. The same project symbol appears in Projects, project
+pickers, selected Dashboard context and shared Codex/Claude session context and
+history headers.

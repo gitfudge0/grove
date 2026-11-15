@@ -1502,11 +1502,19 @@ impl Sidebar {
             .flex()
             .items_center()
             .gap(rpx(SPACE_SM))
-            .child(crate::icons::icon(
-                if worktree { "git-branch" } else { "folder" },
-                ICON_SM,
-                c::FG_DIM(),
-            ))
+            .when(worktree, |link| {
+                link.child(crate::icons::icon("git-branch", ICON_SM, c::FG_DIM()))
+            })
+            .when(!worktree, |link| {
+                let store = &cx.global::<SettingsState>().store;
+                link.when_some(store.projects.get(project_idx), |link, project| {
+                    link.child(super::super::components::project_symbol_for_path(
+                        &project.path,
+                        ICON_SM,
+                        cx,
+                    ))
+                })
+            })
             .child(label)
             .into_any_element()
     }

@@ -487,14 +487,30 @@ impl Render for ProjectSetup {
                 );
             }
         } else {
-            fields = fields.child(project_form_field(
-                "setup-name",
-                "Project name",
-                &self.name_input,
-                error.as_deref(),
-                window,
-                cx,
-            ));
+            let store = &cx.global::<SettingsState>().store;
+            let occupied = store
+                .projects
+                .iter()
+                .filter(|p| store.project_workspace_id(&p.path) == self.workspace)
+                .map(|p| store.project_appearance(&p.path).current())
+                .collect::<Vec<_>>();
+            let symbol =
+                grove_core::storage::identity::ProjectIdentity::assign(&self.state.path, &occupied);
+            fields = fields.child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(rpx(SPACE_2XL))
+                    .child(crate::views::components::project_symbol(symbol, ICON_20))
+                    .child(div().flex_1().min_w_0().child(project_form_field(
+                        "setup-name",
+                        "Project name",
+                        &self.name_input,
+                        error.as_deref(),
+                        window,
+                        cx,
+                    ))),
+            );
             fields = fields.child(
                 div()
                     .w_full()

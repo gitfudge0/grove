@@ -136,8 +136,9 @@ tracing = "0.1"
 fs-err = "3"
 tempfile = "3"
 thiserror = "2"
-# Already in the tree via ureq's rustls stack — used only for `ring::digest`
-# (SHA-256 of a downloaded release asset), so this adds no new supply chain.
+# Already in the tree via ureq's rustls stack — used for `ring::digest`
+# (SHA-256 of a downloaded release asset) and OS randomness for project appearance.
+# This adds no new supply chain.
 ring = "0.17"
 
 [package]

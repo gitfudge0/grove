@@ -4375,6 +4375,11 @@ impl Sidebar {
                                     })
                                     .child(icon(meta.agent.icon_name(), TEXT_MICRO, c::FG_DIM())),
                             )
+                            .child(super::components::project_symbol_for_path(
+                                &meta.wt_path,
+                                ICON_MD,
+                                cx,
+                            ))
                             .child(
                                 div()
                                     .min_w_0()

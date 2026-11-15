@@ -1099,6 +1099,10 @@ impl Render for WorktreeLauncher {
                                     PaletteRow::Settings => ("Settings".into(), "App preferences".into(), "cog", String::new()),
                                     PaletteRow::Setting(setting) => (setting.label().into(), setting.section().into(), setting.icon_name(), String::new()),
                                 };
+                                let symbol = match &row {
+                                    PaletteRow::Recent { proj, .. } | PaletteRow::Combo { proj, .. } => cx.global::<SettingsState>().store.projects.get(*proj).map(|p| cx.global::<SettingsState>().store.project_appearance(&p.path).current()),
+                                    _ => None,
+                                };
                                 let identity = launcher::row_identity(&row);
                                 let show_agent_selector = !project_step && self.mode != PaletteMode::Multi
                                     && self.agent_focus
@@ -1141,7 +1145,7 @@ impl Render for WorktreeLauncher {
                                                     .flex()
                                                     .items_center()
                                                     .justify_center()
-                                                    .when(project_step, |glyph| glyph.rounded_full().border_1().border_color(c::BORDER_STRONG()).text_size(rpx(TEXT_SMALL)).text_color(c::FG()).child(label.split_whitespace().take(2).filter_map(|word| word.chars().next()).flat_map(char::to_uppercase).collect::<String>()))
+                                                    .when(project_step, |glyph| glyph.when_some(symbol, |glyph, symbol| glyph.child(super::components::project_symbol(symbol, 28.0))))
                                                     .when(!project_step, |glyph| glyph.child(icon(icon_name, ICON_20, c::FG_DIM()))),
                                             )
                                             .child(div().flex().flex_1().flex_col().min_w_0().gap(rpx(SPACE_XS))

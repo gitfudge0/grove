@@ -581,6 +581,10 @@ impl Sidebar {
                 s.title.as_deref().unwrap_or(&s.label),
                 &s.project,
                 &checkout_names[&s.cwd],
+                cx.global::<SettingsState>()
+                    .store
+                    .project_appearance(&s.cwd)
+                    .current(),
             )
             .child(
                 self.control(
@@ -606,6 +610,10 @@ impl Sidebar {
                 s.title.as_deref().unwrap_or(&s.label),
                 &s.project,
                 &checkout_names[&s.cwd],
+                cx.global::<SettingsState>()
+                    .store
+                    .project_appearance(&s.cwd)
+                    .current(),
             );
             detail = detail.child(history_header_container(header))
                 .child(div().px(rpx(SPACE_20)).py(rpx(SPACE_3XL)).flex().flex_col().items_center().child(
@@ -717,13 +725,6 @@ impl Sidebar {
             let expanded = self.projects_expanded.contains(&project.path);
             let snapshot = self.snapshot.projects.iter().find(|p| p.idx == idx);
             let count = snapshot.map_or(0, |p| p.worktrees.len());
-            let initials = project
-                .name
-                .split_whitespace()
-                .take(2)
-                .filter_map(|word| word.chars().next())
-                .flat_map(char::to_uppercase)
-                .collect::<String>();
             let mut row = div()
                 .w_full()
                 .min_w_0()
@@ -738,18 +739,11 @@ impl Sidebar {
                         .flex()
                         .items_center()
                         .gap(rpx(SPACE_LG))
-                        .child(
-                            div()
-                                .size(rpx(CONTROL_H))
-                                .flex_none()
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .border_1()
-                                .border_color(c::BORDER_SOFT())
-                                .rounded(rpx(RADIUS_CONTROL))
-                                .child(initials),
-                        )
+                        .child(super::super::components::project_symbol_for_path(
+                            &project.path,
+                            CONTROL_H,
+                            cx,
+                        ))
                         .child(
                             self.control(
                                 SharedString::from(format!("projects-open-{idx}")),
@@ -984,7 +978,12 @@ fn history_header_container(header: Div) -> Div {
         .child(header)
 }
 
-fn history_detail_header(title: &str, project: &str, checkout: &str) -> Div {
+fn history_detail_header(
+    title: &str,
+    project: &str,
+    checkout: &str,
+    symbol: grove_core::storage::identity::ProjectIdentity,
+) -> Div {
     div()
         .w_full()
         .max_w(rpx(super::super::codex_view::CHAT_MAX_W))
@@ -1021,7 +1020,7 @@ fn history_detail_header(title: &str, project: &str, checkout: &str) -> Div {
                                 .flex()
                                 .items_center()
                                 .gap(rpx(SPACE_SM))
-                                .child(icon("folder", ICON_SM, c::FG_DIM()))
+                                .child(super::super::components::project_symbol(symbol, ICON_SM))
                                 .child(div().min_w_0().truncate().child(project.to_string())),
                         )
                         .child(

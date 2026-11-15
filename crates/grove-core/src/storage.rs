@@ -1,3 +1,5 @@
+pub mod identity;
+
 use crate::agent::Agent;
 use fs_err as fs;
 use serde::{Deserialize, Serialize};
@@ -490,6 +492,9 @@ pub struct Store {
     pub project_workspaces: std::collections::BTreeMap<String, u64>,
     #[serde(default)]
     pub projects: Vec<Project>,
+    /// Path-owned identity survives project renames, worktrees and workspace moves.
+    #[serde(default)]
+    pub project_appearances: std::collections::BTreeMap<String, identity::ProjectAppearance>,
     /// Scripts for directories used without registering a project.
     #[serde(default)]
     pub directory_scripts: std::collections::BTreeMap<String, ProjectScripts>,
@@ -681,6 +686,7 @@ impl Store {
                 *id = fallback;
             }
         }
+        self.normalize_project_appearances();
         for row in &mut self.workspaces.rows {
             row.projects = self
                 .projects
@@ -696,6 +702,52 @@ impl Store {
             .copied()
             .filter(|id| self.workspaces.rows.iter().any(|row| row.id == *id))
             .unwrap_or_else(|| self.workspaces.rows.first().map_or(1, |row| row.id))
+    }
+
+    pub fn project_appearance(&self, path: &str) -> identity::ProjectAppearance {
+        let root =
+            project_for_worktree_path(&self.projects, path).map_or(path, |(_, p)| p.path.as_str());
+        self.project_appearances
+            .get(root)
+            .copied()
+            .unwrap_or(identity::ProjectAppearance {
+                automatic: identity::ProjectIdentity::for_path(root),
+                custom: None,
+            })
+    }
+
+    fn normalize_project_appearances(&mut self) {
+        self.project_appearances
+            .retain(|path, _| self.projects.iter().any(|p| p.path == *path));
+        // Sort only new assignments; project reordering must not alter a legacy migration.
+        let mut missing = self
+            .projects
+            .iter()
+            .filter(|p| {
+                !self
+                    .project_appearances
+                    .get(&p.path)
+                    .is_some_and(|a| a.automatic.valid())
+            })
+            .map(|p| p.path.clone())
+            .collect::<Vec<_>>();
+        missing.sort();
+        for path in missing {
+            let workspace = self.project_workspace_id(&path);
+            let occupied = self
+                .project_appearances
+                .iter()
+                .filter(|(p, _)| self.project_workspace_id(p) == workspace)
+                .map(|(_, a)| a.current())
+                .collect::<Vec<_>>();
+            self.project_appearances.insert(
+                path.clone(),
+                identity::ProjectAppearance {
+                    automatic: identity::ProjectIdentity::assign(&path, &occupied),
+                    custom: None,
+                },
+            );
+        }
     }
 
     pub fn assign_project_to_active_workspace(&mut self, path: &str) {

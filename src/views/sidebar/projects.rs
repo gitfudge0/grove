@@ -18,6 +18,8 @@ use gpui::{
 use gpui_component::{input::InputState, scroll::ScrollableElement, Disableable, ElementExt as _};
 use grove_core::storage::{ProjectAction, ProjectActionKind, ProjectScripts};
 
+mod appearance;
+
 /// Compact reusable action register geometry.
 const LIFECYCLE_ROW_MIN_H: f32 = 40.;
 const LIFECYCLE_LABEL_W: f32 = 96.;
@@ -79,6 +81,10 @@ pub(in crate::views) struct ProjectPanel {
     lifecycle_focus: [FocusHandle; 2],
     add_script_focus: FocusHandle,
     archive_overflow: Option<String>,
+    draft_appearance: Option<grove_core::storage::identity::ProjectAppearance>,
+    appearance_open: bool,
+    appearance_symbol_focus: Vec<FocusHandle>,
+    appearance_color_focus: Vec<FocusHandle>,
     error: Option<String>,
     destination: Option<u64>,
     open_destination: bool,
@@ -113,6 +119,19 @@ impl ProjectPanel {
                 .script_project(path)
                 .into(),
             Page::Archived => None,
+        };
+        let draft_appearance = match &page {
+            Page::Edit(path)
+                if cx
+                    .global::<SettingsState>()
+                    .store
+                    .projects
+                    .iter()
+                    .any(|p| p.path == *path) =>
+            {
+                Some(cx.global::<SettingsState>().store.project_appearance(path))
+            }
+            _ => None,
         };
         let values = project.as_ref().map_or_else(
             || vec![String::new(); 4],
@@ -196,6 +215,15 @@ impl ProjectPanel {
             lifecycle_focus: [cx.focus_handle(), cx.focus_handle()],
             add_script_focus: cx.focus_handle(),
             archive_overflow: None,
+            draft_appearance,
+            appearance_open: false,
+            appearance_symbol_focus: grove_core::storage::identity::SYMBOLS
+                .iter()
+                .map(|_| cx.focus_handle())
+                .collect(),
+            appearance_color_focus: (0..grove_core::storage::identity::COLOR_COUNT)
+                .map(|_| cx.focus_handle())
+                .collect(),
             error: None,
             destination: None,
             open_destination: false,
@@ -338,8 +366,15 @@ impl ProjectPanel {
             cx.emit(ProjectPanelEvent::Closed);
             return;
         }
+        let appearance = self.draft_appearance;
         match self.service.update(cx, |service, cx| {
-            service.update_project(&path, values[0].clone(), scripts, cx)
+            service.update_project_with_appearance(
+                &path,
+                values[0].clone(),
+                scripts,
+                appearance,
+                cx,
+            )
         }) {
             Ok(()) => cx.emit(ProjectPanelEvent::Closed),
             Err(error) => self.error = Some(error),
@@ -1248,6 +1283,7 @@ impl Render for ProjectPanel {
                                             ),
                                     ),
                             )
+                            .child(self.render_appearance(window, cx))
                             .child(self.render_lifecycle(window, cx));
                     } else {
                         heading = "Directory scripts".into();
