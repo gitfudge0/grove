@@ -1,3 +1,31 @@
+## Encoded native plan destinations (November 2026)
+
+Core import/retry regressions passed 27 tests, including saved-error recovery for
+Codex and Claude fixtures, source identity, serialized reload, decoded traversal,
+symlink escape and literal percent asset names. Provider guidance checks passed
+five tests. The original remote-access session also recovered on an in-memory
+clone through the production importer, retaining both decisions; its saved user
+session was not rewritten.
+
+**Codex:** live production-transport finalization passed from a space-containing
+checkout. Both revision sources contained `%20`; selected/custom answers, duplicate
+suppression, draft preservation and persisted reload passed. Approval readiness
+was checked on a clone; no implementation approval was sent.
+**Claude:** the live attempt failed before generation with “Not logged in · Please
+run /login”. Shared fixtures and guidance checks do not establish live parity.
+
+The native-plan filter passed 11 fixtures before the final recovery-card change;
+after that change it passed ten and failed the Claude dynamic-diagram height
+assertion. That measured-render test does not exercise link import; its inconsistent
+result remains unresolved rather than a clean native gate; its focused recheck
+passed. The shared Codex/Claude composer draft-preservation fixture also passed.
+The isolated Linux
+composer capture produced a black image and then failed teardown with leaked
+InputState handles, so it establishes no visual acceptance.
+
+Original-session native Retry activation and keyboard/draft behavior remain
+unverified. macOS and Windows path execution remain untested on this Linux host.
+
 ## Provider account usage (November 2026)
 
 The footer uses the bundled Lucide pie-chart icon immediately left of Settings,

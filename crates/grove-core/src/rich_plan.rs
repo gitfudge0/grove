@@ -665,7 +665,7 @@ impl PlanStore {
             {
                 return Err("Session plan reference limit reached".into());
             }
-            let path = safe_path(Path::new(cwd), source, roots)?;
+            let path = plan_link_path(Path::new(cwd), source, roots)?;
             if !source.ends_with(".grove-plan.json") {
                 return Err("Expected .grove-plan.json".into());
             }
@@ -942,6 +942,47 @@ fn validate_layout(
     }
     Ok(())
 }
+/// Decode a Markdown plan destination exactly once. Asset paths are raw paths
+/// and must continue to use `safe_path` directly. Keep the original destination
+/// in stored references so retry and immutable snapshot identity remain stable.
+fn decode_plan_destination(source: &str) -> Result<String, String> {
+    let mut bytes = Vec::with_capacity(source.len());
+    let mut input = source.bytes();
+    while let Some(byte) = input.next() {
+        if byte == b'%' {
+            let mut hex = || input.next().and_then(|b| (b as char).to_digit(16));
+            let high = hex().ok_or("Malformed percent escape in plan link")?;
+            let low = hex().ok_or("Malformed percent escape in plan link")?;
+            bytes.push((high * 16 + low) as u8);
+        } else {
+            bytes.push(byte);
+        }
+    }
+    String::from_utf8(bytes).map_err(|_| "Plan link must encode valid UTF-8".into())
+}
+
+/// Resolve a local Markdown destination without changing its stored identity.
+pub fn plan_link_path(base: &Path, source: &str, roots: &[PathBuf]) -> Result<PathBuf, String> {
+    let destination = decode_plan_destination(source)?;
+    // URL schemes are not filesystem paths. Keep native Windows drive paths.
+    if let Some((scheme, _)) = destination.split_once(':') {
+        let drive =
+            cfg!(windows) && scheme.len() == 1 && scheme.as_bytes()[0].is_ascii_alphabetic();
+        if !drive
+            && !scheme.is_empty()
+            && scheme.bytes().enumerate().all(|(i, b)| {
+                b.is_ascii_alphabetic() || (i > 0 && (b.is_ascii_digit() || b"+-.".contains(&b)))
+            })
+        {
+            return Err("Plan links must be local paths, not URL schemes".into());
+        }
+    }
+    if destination.starts_with("//") {
+        return Err("Plan links must not name a network host".into());
+    }
+    safe_path(base, &destination, roots)
+}
+
 pub fn safe_path(base: &Path, source: &str, roots: &[PathBuf]) -> Result<PathBuf, String> {
     if source.contains("://")
         || source.contains('\0')
@@ -2362,6 +2403,149 @@ mod tests {
             &[dir.to_owned()],
         )
     }
+    #[test]
+    fn encoded_destinations_decode_once_before_guarded_import() {
+        let (dir, mut store) = fixture();
+        let root = dir.path();
+        for name in ["space name", "space%20name", "é+%", "nested"] {
+            fs_err::create_dir(root.join(name)).unwrap();
+            let mut doc = document();
+            doc.plan_id = name.into();
+            fs_err::write(
+                root.join(name).join("plan.grove-plan.json"),
+                serde_json::to_vec(&doc).unwrap(),
+            )
+            .unwrap();
+        }
+        for (source, expected) in [
+            ("space%20name", "space name"),
+            ("space%2520name", "space%20name"),
+            ("%C3%A9+%25", "é+%"),
+            ("nested%2F", "nested"),
+        ] {
+            let target = format!("{source}/plan.grove-plan.json");
+            store
+                .import(source, &target, root.to_str().unwrap(), &[root.into()])
+                .unwrap();
+            assert!(store
+                .revisions
+                .iter()
+                .any(|r| r.document.plan_id == expected));
+        }
+        let absolute = format!("{}/space%20name/plan.grove-plan.json", root.display());
+        store
+            .import(
+                "absolute",
+                &absolute,
+                root.to_str().unwrap(),
+                &[root.into()],
+            )
+            .unwrap();
+        for source in [
+            "%",
+            "%2",
+            "%GG",
+            "%FF",
+            "%00",
+            "%2e%2e",
+            "nested%2F..%2F..",
+            "https%3A%2F%2Fexample.org",
+            "mailto:person",
+            "file:plan",
+            "%2F%2Fserver",
+            "missing",
+        ] {
+            let target = format!("{source}/plan.grove-plan.json");
+            assert!(
+                store
+                    .import(source, &target, root.to_str().unwrap(), &[root.into()])
+                    .is_err(),
+                "{target}"
+            );
+        }
+        // Raw JSON asset paths must not be URL-decoded.
+        fs_err::write(root.join("asset%20name.txt"), "literal").unwrap();
+        fs_err::write(root.join("asset name.txt"), "decoded").unwrap();
+        assert_eq!(
+            fs_err::read_to_string(safe_path(root, "asset%20name.txt", &[root.into()]).unwrap())
+                .unwrap(),
+            "literal"
+        );
+        #[cfg(unix)]
+        {
+            let outside = tempfile::tempdir().unwrap();
+            fs_err::write(
+                outside.path().join("plan.grove-plan.json"),
+                serde_json::to_vec(&document()).unwrap(),
+            )
+            .unwrap();
+            std::os::unix::fs::symlink(outside.path(), root.join("escape here")).unwrap();
+            assert!(store
+                .import(
+                    "escape",
+                    "escape%20here/plan.grove-plan.json",
+                    root.to_str().unwrap(),
+                    &[root.into()]
+                )
+                .is_err());
+        }
+    }
+
+    #[test]
+    fn persisted_encoded_error_retries_without_changing_source_identity() {
+        let (dir, _) = fixture();
+        let nested = dir.path().join("Projects Reworked");
+        fs_err::create_dir(&nested).unwrap();
+        let mut doc = document();
+        let mut decision = doc.claims[0].decisions[0].clone();
+        decision.id = "second".into();
+        doc.claims[0].decisions.push(decision);
+        fs_err::write(
+            nested.join("plan.grove-plan.json"),
+            serde_json::to_vec(&doc).unwrap(),
+        )
+        .unwrap();
+        let source = format!(
+            "{}/Projects%20Reworked/plan.grove-plan.json",
+            dir.path().display()
+        );
+        for provider in ["codex", "claude"] {
+            let mut saved: SavedSession = serde_json::from_value(serde_json::json!({
+                "key":"encoded-retry", "provider":provider, "project":"Test", "cwd":dir.path(), "label":"Test", "roots":[], "thread_id":null,
+                "items":[{"id":"answer","type":"agentMessage","status":"completed","text":format!("[Plan](<{source}>)"),"grovePlanImported":true}],
+                "rich_plans":{"errors":[{"message_id":"answer","source":source,"error":"No such file or directory (os error 2)"}]}
+            })).unwrap();
+            import_completed(&mut saved);
+            assert!(saved.rich_plans.revisions.is_empty());
+            retry_import(&mut saved, "answer", &source).unwrap();
+            assert!(saved.rich_plans.errors.is_empty());
+            assert_eq!(saved.rich_plans.revisions[0].source, source);
+            assert_eq!(
+                saved.rich_plans.revisions[0].document.all_decisions().len(),
+                2
+            );
+            retry_import(&mut saved, "answer", &source).unwrap_err();
+            let mut restored: SavedSession =
+                serde_json::from_slice(&serde_json::to_vec(&saved).unwrap()).unwrap();
+            fs_err::remove_file(nested.join("plan.grove-plan.json")).unwrap();
+            import_completed(&mut restored);
+            assert_eq!(restored.rich_plans.revisions.len(), 1);
+            assert_eq!(restored.rich_plans.revisions[0].document, doc);
+            fs_err::write(
+                nested.join("plan.grove-plan.json"),
+                serde_json::to_vec(&doc).unwrap(),
+            )
+            .unwrap();
+        }
+        let relative = "Projects%20Reworked/plan.grove-plan.json";
+        for text in [
+            format!("[Plan](<{relative}>)"),
+            format!("[Plan][p]\n\n[p]: {relative}"),
+        ] {
+            assert_eq!(markdown_links(&text), [relative]);
+        }
+    }
+
     #[test]
     fn imports_only_real_markdown_links_with_full_fence_and_path_rules() {
         let (dir, mut store) = fixture();

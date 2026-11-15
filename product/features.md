@@ -34,7 +34,11 @@ Files are limited to 64 KiB and 256 rules. A missing mapping uses built-ins. An 
 Plans are readable, immutable Markdown documents in the conversation. Author a
 `.grove-plan.json` envelope and link its absolute path in a completed assistant
 message. Keep one stable plan ID and use a new revision ID whenever its contents
-change:
+change. Local Markdown destinations are percent-decoded exactly once before
+registered-root, traversal and symlink checks. Encode literal percent signs as
+`%25`; plus signs remain literal. Malformed escapes and URL schemes are rejected.
+JSON asset paths remain raw filesystem paths. Stored link identity is unchanged,
+so Retry plan import also recovers previously saved encoded-link failures:
 
 ```json
 {

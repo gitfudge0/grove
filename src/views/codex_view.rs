@@ -4550,11 +4550,12 @@ impl CodexView {
                                 .into_any_element()
                             })
                             .collect();
-                        let is_plan = super::inline_html::recovery_path(
-                            std::path::Path::new(&error.source),
+                        let is_plan = grove_core::rich_plan::plan_link_path(
                             std::path::Path::new(&state.saved.cwd),
+                            &error.source,
                             &recovery_roots,
                         )
+                        .ok()
                         .as_ref()
                             == Some(&limit.path);
                         row = row.child(super::inline_html::oversized_card(

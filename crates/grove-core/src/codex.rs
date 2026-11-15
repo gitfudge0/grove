@@ -8059,7 +8059,7 @@ mod tests {
                     guidance.contains("even when a skill prescribes a different format or handoff")
                 );
                 assert!(guidance.contains("Markdown link to the .grove-plan.json artifact"));
-                assert!(guidance.contains("Grove's Review response and Send response controls"));
+                assert!(guidance.contains("Grove's conversation-based plan answer mode and Update plan with decisions control"));
                 assert!(guidance.contains("does not override explicit user preferences"));
                 assert!(guidance.contains(crate::tasks::CODEX_GUIDANCE));
                 assert!(!guidance.contains(crate::tasks::CLAUDE_GUIDANCE));

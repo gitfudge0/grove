@@ -4598,7 +4598,7 @@ mod tests {
                     .contains("even when a skill prescribes a different format or handoff"));
                 assert!(appended[0][1].contains("Markdown link to the .grove-plan.json artifact"));
                 assert!(
-                    appended[0][1].contains("Grove's Review response and Send response controls")
+                    appended[0][1].contains("Grove's conversation-based plan answer mode and Update plan with decisions control")
                 );
                 assert!(appended[0][1].contains("does not override explicit user preferences"));
                 assert!(appended[0][1].contains("TodoWrite or TaskCreate/TaskUpdate"));
