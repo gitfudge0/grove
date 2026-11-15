@@ -1,8 +1,6 @@
 //! Native, revision-bound reading layer. Authored Markdown remains available in full.
 use super::*;
 
-const FLOW_STEP_MIN_WIDTH: f32 = 150.0;
-
 impl NativePlan {
     pub(super) fn overview(
         &self,
@@ -30,22 +28,17 @@ impl NativePlan {
                 window,
                 cx,
             ));
-        let changes = entries(&presentation["revision_changes"]);
-        if !changes.is_empty() {
-            body = body.child(self.overview_list(
-                "revision-changes",
-                "Changed in this revision · authored summary",
-                &changes,
-                window,
-                cx,
-            ));
-        }
-        let flow = entries(&presentation["flow"]);
+        let structured = !entries(&doc["claims"]).is_empty();
+        let flow = if structured {
+            Vec::new()
+        } else {
+            entries(&presentation["flow"])
+        };
         if !flow.is_empty() {
             let mut row = div()
                 .debug_selector(|| "native-plan-flow".into())
                 .flex()
-                .flex_wrap()
+                .flex_col()
                 .gap(rpx(SPACE_LG))
                 .w_full()
                 .min_w_0();
@@ -56,14 +49,8 @@ impl NativePlan {
                         .flex()
                         .flex_col()
                         .gap(rpx(SPACE_SM))
-                        .flex_1()
                         .min_w_0()
-                        .flex_basis(rpx(FLOW_STEP_MIN_WIDTH))
                         .max_w_full()
-                        .border_1()
-                        .border_color(c::BORDER_SOFT())
-                        .rounded(rpx(RADIUS_CONTROL))
-                        .p(rpx(SPACE_LG))
                         .child(self.text(
                             format!("flow-title-{index}"),
                             format!("{}. {}", index + 1, string(step, "title")),
@@ -86,10 +73,23 @@ impl NativePlan {
             ("risks", "Risks"),
             ("success_criteria", "Success criteria"),
         ] {
+            if structured && key != "risks" {
+                continue;
+            }
             let list = entries(&presentation[key]);
             if !list.is_empty() {
                 body = body.child(self.overview_list(key, label, &list, window, cx));
             }
+        }
+        let changes = entries(&presentation["revision_changes"]);
+        if !structured && !changes.is_empty() {
+            body = body.child(self.overview_list(
+                "revision-changes",
+                "Changed in this revision",
+                &changes,
+                window,
+                cx,
+            ));
         }
         body.into_any_element()
     }
@@ -123,92 +123,5 @@ impl NativePlan {
             ));
         }
         body.into_any_element()
-    }
-    pub(super) fn detail_section(
-        &self,
-        index: usize,
-        title: String,
-        markdown: String,
-        window: &Window,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let open = self.open_sections.contains(&index);
-        let key = format!("section:{index}");
-        let target = self.projection.borrow_mut().control(
-            key,
-            measured::Action::ToggleSection(index),
-            true,
-            cx,
-        );
-        let action = target.action.clone();
-        let keyboard_action = action.clone();
-        let label = format!(
-            "{} · {}",
-            if index == 0 { "Plan detail" } else { "Detail" },
-            title
-        );
-        let header = div()
-            .id(format!("plan-detail-{index}"))
-            .debug_selector(move || format!("native-plan-detail-{index}"))
-            .flex()
-            .items_center()
-            .gap(rpx(SPACE_SM))
-            .min_w_0()
-            .w_full()
-            .py(rpx(SPACE_LG))
-            .role(gpui::Role::Button)
-            .aria_label(label.clone())
-            .aria_expanded(open)
-            .cursor_pointer()
-            .text_color(c::FG_DIM())
-            .hover(|s| s.text_color(c::FG()))
-            .tab_index(0)
-            .track_focus(&target.focus)
-            .focus_visible(|s| s.bg(c::BG_HOVER()))
-            .child(crate::icons::icon(
-                if open { "chev-down" } else { "chev-right" },
-                ICON_SM,
-                c::FG_DIM(),
-            ))
-            .child(label)
-            .on_click(cx.listener(move |this, _, window, cx| this.activate(&action, window, cx)))
-            .on_key_down(
-                cx.listener(move |this, event: &gpui::KeyDownEvent, window, cx| {
-                    if matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                        this.activate(&keyboard_action, window, cx);
-                        cx.stop_propagation();
-                    }
-                }),
-            );
-        let mut section = div()
-            .min_w_0()
-            .w_full()
-            .flex()
-            .flex_col()
-            .border_t_1()
-            .border_color(c::BORDER_SOFT())
-            .child(measured::Observed::new(header.into_any_element(), target));
-        if open {
-            // Immediate disclosure preserves text selection and avoids moving focus into hidden content.
-            section = section
-                .child(
-                    div()
-                        .debug_selector(move || format!("native-plan-detail-content-{index}"))
-                        .child(self.measured_text(
-                            format!("plan-detail-text-{index}"),
-                            markdown,
-                            true,
-                            window,
-                            cx,
-                        )),
-                )
-                .child(div().flex().child(self.discuss_action(
-                    title,
-                    format!("plan-detail-discuss-{index}"),
-                    window,
-                    cx,
-                )));
-        }
-        section.into_any_element()
     }
 }

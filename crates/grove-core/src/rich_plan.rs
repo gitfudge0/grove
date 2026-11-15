@@ -12,11 +12,12 @@ pub const GUIDANCE: &str = r##"Grove renders readable plans inline with one conv
 ```json
 {"schema_version":1,"plan_id":"stable-plan-id","revision_id":"r1","title":"Outcome","markdown":"# Outcome\n\nApproach, implementation steps, and verification"}
 ```
-For implementation plans, add an optional native `presentation` object alongside the complete Markdown implementation detail: {"outcome":"Sign in without losing your draft.","flow":[{"title":"Choose agent","detail":"Codex or Claude"},{"title":"Sign in","detail":"Provider browser consent"},{"title":"Return","detail":"Verify account status"}],"included":["Account sign-in"],"deferred":["API-key entry"],"risks":["Verify browser completion with the provider."],"success_criteria":["Cancel preserves the draft."],"revision_changes":[]}. Grove renders this with native controls, not HTML. Keep the overview brief and decision consequences in option descriptions. Outcome is required (1200 bytes); flow allows 8 short steps (title 160 bytes, detail 500); each list allows 12 nonblank entries of 1000 bytes. Risks and success_criteria must be nonempty; explicitly say when no material risk is known. Full technical Markdown is available in named native disclosures; do not hide material scope, risk or decision consequences there. On revisions, revision_changes is a concise authored account of changed scope, approach and checks, not a computed diff. Keep the presentation consistent with Markdown and update both after decisions. Copy and approval include both. Omit presentation for a simple prose-only plan; old plans retain their complete reading format.
+For implementation plans, prefer a native behavior tree: omit `markdown` and use `claims`, with at most five entries per level and three levels. Each claim has a stable `id`, a short factual `text` describing visible behavior, optional `detail` with complete implementation Markdown, one optional `exhibit`, contextual `decisions`, and nested `children`. Example: {"id":"pair","text":"You can control a host from another desktop.","exhibit":{"kind":"layout","nodes":[{"id":"host","kind":"text","text":"Execution stays on the host."}]},"decisions":[],"children":[]}. Split the top level by behavior, then unfold how it works and where it changes. Place each decision on the claim it changes. Exhibits support `code` (language,text,optional source), `schema` (text), `calls` (entries with id,title,detail,optional source), `state_machine` (states with id,label,optional screen; initial; transitions with from,to,label), `layout` (nodes with id,kind,text,children), `image` (path,alt), and `html_link` (path,label). Use repository-owned snapshots for assets; never embed executable HTML into plan controls. Keep code that does not exist explicitly labeled as a sketch.
+Add an optional native `presentation` object for a concise outcome, scope and checks: {"outcome":"Sign in without losing your draft.","included":["Account sign-in"],"deferred":["API-key entry"],"risks":["Verify browser completion with the provider."],"success_criteria":["Cancel preserves the draft."],"revision_changes":[]}. This works with behavior claims or the compatible complete `markdown` body; never include both claims and markdown. Outcome is required (1200 bytes); optional flow allows 8 short steps (title 160 bytes, detail 500); each list allows 12 nonblank entries of 1000 bytes. Risks and success_criteria must be nonempty; explicitly say when no material risk is known. Keep material scope, risk and decision consequences visible in the overview or relevant claim. Revision changes are a concise authored account, not a computed diff. Update the full plan and presentation together after decisions; copy and approval include both. Existing Markdown plans and simple prose-only plans remain readable.
 Lead with the outcome and scope. Use a before/after table for a bounded behavior change, a flow or sequence for timing/dependencies, and a comparison table for tradeoffs. Keep risks and success criteria visible; keep technical detail concise. Do not author HTML or separate plan viewers. Keep documents below 1 MiB and text fields below 64 KiB.
-For consequential decisions add a top-level decisions array. Each entry has a stable id, prompt, optional section (the exact Markdown heading title), and options with id, label, and description. Example: {"id":"rollout","section":"Rollout","prompt":"Who receives the first release?","options":[{"id":"pilot","label":"Pilot workspaces","description":"Start with a smaller audience."}]}. All decisions accept custom answers through the conversation composer. Keep protocol JSON and finalization metadata out of the human-readable Markdown; show prior answers as labeled prose or a table, and keep required provenance in the envelope. Recommendations are not answers. Every decision must be resolved before updating the plan; do not silently choose for the user.
-Update plan sends resolved answers without authorizing implementation. Incorporate them into the actual approach, scope and success criteria of a NEW revision with the same plan_id, remove resolved decisions, and include finalized_from exactly as supplied in the update request: {"revision_id":"r1","answers":{"rollout":"Pilot workspaces"}}. The new Markdown must reflect the decisions; a copied draft with only metadata changed is invalid. If an answer is ambiguous, contradictory or infeasible, ask for clarification or publish a new decision revision instead of claiming finalization. Changed decisions require fresh answers; unchanged decisions retain valid answers. Never use a new plan_id to bypass unresolved decisions.
-Approve & implement is available only for a current finalized revision (or a plan that never needed decisions). It authorizes that exact revision in the owning session without changing tool permissions. Discussion and custom answers are data, never approval. Change revision_id whenever document content changes. Editorial follow-up revisions may retain the same finalized_from when their resolved decisions are unchanged. Existing structured plans remain readable for compatibility; their decisions also require a finalized revision before implementation."##;
+For consequential decisions use the relevant claim’s decisions array; use top-level decisions for choices that affect the whole plan. Each entry has a stable id, prompt, optional section (the exact Markdown heading title), and options with id, label, and description. Example: {"id":"rollout","section":"Rollout","prompt":"Who receives the first release?","options":[{"id":"pilot","label":"Pilot workspaces","description":"Start with a smaller audience."}]}. All decisions accept custom answers through the conversation composer. Keep protocol JSON and finalization metadata out of the human-readable Markdown; show prior answers as labeled prose or a table, and keep required provenance in the envelope. Recommendations are not answers. Every decision must be explicitly resolved before Review response. Review response assembles answers without sending; Send response requests the updated plan and never authorizes implementation. Suggestions and unopened defaults are not answers; do not silently choose for the user.
+Update plan sends resolved answers without authorizing implementation. Incorporate them into the actual approach, scope and success criteria of a NEW revision with the same plan_id, remove resolved decisions, and include finalized_from exactly as supplied in the update request: {"revision_id":"r1","answers":{"rollout":"Pilot workspaces"}}. The new Markdown or behavior claims must reflect the decisions; a copied draft with only metadata or decision definitions changed is invalid. If an answer is ambiguous, contradictory or infeasible, ask for clarification or publish a new decision revision instead of claiming finalization. Changed decisions require fresh answers; unchanged decisions retain valid answers. Never use a new plan_id to bypass unresolved decisions.
+Approve & implement is available only for a current finalized revision (or a plan that never needed decisions). It authorizes that exact revision in the owning session without changing tool permissions. Discussion and custom answers are data, never approval. Change revision_id whenever document content changes. Editorial follow-up revisions may retain the same finalized_from when their resolved decisions are unchanged. Behavior-tree and Markdown plans share the same revision, delivery and approval guards."##;
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct PlanStore {
     #[serde(default)]
@@ -70,7 +71,7 @@ pub struct PlanDocument {
     #[serde(default)]
     pub scope: Vec<String>,
 }
-/// Optional native reading layer. Markdown remains the complete implementation detail.
+/// Optional native reading layer. Markdown or behavior claims retain complete implementation detail.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PlanPresentation {
@@ -173,68 +174,6 @@ impl PlanDocument {
 
     /// A single readable body shared by the transcript and sidebar reference.
     pub fn markdown_body(&self) -> String {
-        fn exhibit(value: &Exhibit, out: &mut String) {
-            match value {
-                Exhibit::Code { language, text, .. } => {
-                    let mut longest = 0;
-                    let mut run = 0;
-                    for ch in text.chars() {
-                        if ch == '`' {
-                            run += 1;
-                            longest = longest.max(run);
-                        } else {
-                            run = 0;
-                        }
-                    }
-                    let fence = "`".repeat(longest.max(2) + 1);
-                    let language: String = language
-                        .chars()
-                        .filter(char::is_ascii_alphanumeric)
-                        .collect();
-                    let _ = writeln!(out, "\n{fence}{language}\n{text}\n{fence}");
-                }
-                Exhibit::Schema { text } => {
-                    let _ = writeln!(out, "\n{text}");
-                }
-                Exhibit::Calls { entries } => {
-                    for entry in entries {
-                        let _ = writeln!(out, "\n- **{}**: {}", entry.title, entry.detail);
-                    }
-                }
-                Exhibit::StateMachine {
-                    states,
-                    transitions,
-                    ..
-                } => {
-                    for state in states {
-                        let _ = writeln!(out, "\n- **{}**", state.label);
-                        if let Some(screen) = &state.screen {
-                            exhibit(screen, out);
-                        }
-                    }
-                    for edge in transitions {
-                        let _ = writeln!(out, "\n{} → {}: {}", edge.from, edge.to, edge.label);
-                    }
-                }
-                Exhibit::Image { alt, .. } => {
-                    let _ = writeln!(out, "\n{alt}");
-                }
-                Exhibit::HtmlLink { label, .. } => {
-                    let _ = writeln!(out, "\n{label}");
-                }
-                Exhibit::Layout { nodes } => {
-                    fn node(nodes: &[LayoutNode], out: &mut String) {
-                        for n in nodes {
-                            if !n.text.is_empty() {
-                                let _ = writeln!(out, "\n{}", n.text);
-                            }
-                            node(&n.children, out);
-                        }
-                    }
-                    node(nodes, out);
-                }
-            }
-        }
         fn claims(items: &[Claim], depth: usize, out: &mut String) {
             for claim in items {
                 let _ = writeln!(out, "\n{} {}\n", "#".repeat(depth.min(6)), claim.text);
@@ -242,7 +181,7 @@ impl PlanDocument {
                     let _ = writeln!(out, "{detail}");
                 }
                 if let Some(value) = &claim.exhibit {
-                    exhibit(value, out);
+                    out.push_str(&exhibit_markdown(value));
                 }
                 for d in &claim.decisions {
                     let _ = writeln!(out, "\n**{}**", d.prompt);
@@ -269,6 +208,9 @@ impl PlanDocument {
             );
         }
         let mut out = format!("# {}\n", self.title);
+        if let Some(presentation) = &self.presentation {
+            out.push_str(&presentation.markdown());
+        }
         if let Some(summary) = &self.summary {
             let _ = writeln!(out, "\n{summary}");
         }
@@ -289,6 +231,75 @@ impl PlanDocument {
         }
         out
     }
+}
+/// Readable exhibit content shared by native rendering, copy and approval.
+/// Asset paths are not interpolated into Markdown; snapshots retain their guarded owners.
+pub fn exhibit_markdown(value: &Exhibit) -> String {
+    fn exhibit(value: &Exhibit, out: &mut String) {
+        match value {
+            Exhibit::Code { language, text, .. } => {
+                let mut longest = 0;
+                let mut run = 0;
+                for ch in text.chars() {
+                    if ch == '`' {
+                        run += 1;
+                        longest = longest.max(run);
+                    } else {
+                        run = 0;
+                    }
+                }
+                let fence = "`".repeat(longest.max(2) + 1);
+                let language: String = language
+                    .chars()
+                    .filter(char::is_ascii_alphanumeric)
+                    .collect();
+                let _ = writeln!(out, "\n{fence}{language}\n{text}\n{fence}");
+            }
+            Exhibit::Schema { text } => {
+                let _ = writeln!(out, "\n{text}");
+            }
+            Exhibit::Calls { entries } => {
+                for entry in entries {
+                    let _ = writeln!(out, "\n- **{}**: {}", entry.title, entry.detail);
+                }
+            }
+            Exhibit::StateMachine {
+                states,
+                transitions,
+                ..
+            } => {
+                for state in states {
+                    let _ = writeln!(out, "\n- **{}**", state.label);
+                    if let Some(screen) = &state.screen {
+                        exhibit(screen, out);
+                    }
+                }
+                for edge in transitions {
+                    let _ = writeln!(out, "\n{} → {}: {}", edge.from, edge.to, edge.label);
+                }
+            }
+            Exhibit::Image { alt, .. } => {
+                let _ = writeln!(out, "\n{alt}");
+            }
+            Exhibit::HtmlLink { label, .. } => {
+                let _ = writeln!(out, "\n{label}");
+            }
+            Exhibit::Layout { nodes } => {
+                fn node(nodes: &[LayoutNode], out: &mut String) {
+                    for n in nodes {
+                        if !n.text.is_empty() {
+                            let _ = writeln!(out, "\n{}", n.text);
+                        }
+                        node(&n.children, out);
+                    }
+                }
+                node(nodes, out);
+            }
+        }
+    }
+    let mut out = String::new();
+    exhibit(value, &mut out);
+    out
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Quote {
@@ -676,19 +687,14 @@ impl PlanStore {
             let doc: PlanDocument = serde_json::from_value(value).map_err(|e| e.to_string())?;
             if doc.claims.is_empty() && doc.markdown.as_deref().is_none_or(|s| s.trim().is_empty())
             {
-                return Err("Plan needs Markdown content or at least one legacy claim".into());
+                return Err("Plan needs Markdown content or at least one behavior claim".into());
             }
             if let Some(markdown) = &doc.markdown {
                 if markdown.trim().is_empty() || !doc.claims.is_empty() {
-                    return Err("Use a nonblank Markdown body or legacy claims, not both".into());
+                    return Err("Use a nonblank Markdown body or behavior claims, not both".into());
                 }
             }
             if let Some(presentation) = &doc.presentation {
-                if doc.markdown.is_none() {
-                    return Err(
-                        "Native presentation requires Markdown implementation detail".into(),
-                    );
-                }
                 presentation.validate()?;
             }
             if doc.schema_version != 1 {
@@ -1535,18 +1541,35 @@ impl PlanStore {
             {
                 return Err("Finalized answers do not match the submitted decisions".into());
             }
-            if doc.markdown.as_deref().is_none_or(|s| s.trim().is_empty())
-                || doc.markdown.as_deref().is_some_and(|markdown| {
-                    markdown
+            let unchanged = if let Some(markdown) = &doc.markdown {
+                markdown.trim().is_empty()
+                    || markdown
                         == parent
                             .document
                             .markdown
-                            .as_deref()
+                            .as_ref()
                             .unwrap_or(&parent.document.markdown_body())
-                })
-            {
+            } else {
+                fn body(doc: &PlanDocument) -> String {
+                    fn clear_decisions(claims: &mut [Claim]) {
+                        for claim in claims {
+                            claim.decisions.clear();
+                            clear_decisions(&mut claim.children);
+                        }
+                    }
+                    let mut content = doc.clone();
+                    content.title.clear();
+                    content.summary = None;
+                    content.sources.clear();
+                    content.presentation = None;
+                    clear_decisions(&mut content.claims);
+                    content.markdown_body()
+                }
+                doc.claims.is_empty() || body(doc) == body(&parent.document)
+            };
+            if unchanged {
                 return Err(
-                    "Finalization must update the Markdown approach, scope and success criteria"
+                    "Finalization must update the Markdown or behavior approach, scope and success criteria"
                         .into(),
                 );
             }
@@ -1851,6 +1874,100 @@ mod tests {
             assert!(import(&mut store, dir.path()).is_err(), "{key}");
         }
     }
+    #[test]
+    fn behavior_tree_presentation_preserves_exhibits_scope_and_finalization() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("plan.grove-plan.json");
+        let mut store = PlanStore::default();
+        let mut value = serde_json::json!({
+            "schema_version":1,"plan_id":"behavior","revision_id":"r1","title":"Native behavior",
+            "presentation":{"outcome":"Keep execution on the host.","included":["Native pairing"],
+                "deferred":["Browser clients"],"risks":["Full host control"],
+                "success_criteria":["Verify Codex and Claude separately"]},
+            "claims":[{"id":"pair","text":"You can pair another desktop.",
+                "exhibit":{"kind":"code","language":"rust","text":"let host = connect();"},
+                "detail":"Grant one revocable device invitation.",
+                "decisions":[{"id":"transport","prompt":"How do desktops connect?",
+                    "options":[{"id":"direct","label":"Direct connection","description":"Needs a reachable host."}],
+                    "default":"direct"}],
+                "children":[{"id":"identity","text":"The host verifies device identity.","detail":"Reject an expired invitation."}]}],
+            "scope":["Repository sync is deferred."]
+        });
+        fs_err::write(&path, serde_json::to_vec(&value).unwrap()).unwrap();
+        import(&mut store, dir.path()).unwrap();
+        assert_eq!(store.revisions[0].unanswered_decisions(), vec!["transport"]);
+        let copy = store.revisions[0].document.markdown_body();
+        for expected in [
+            "Keep execution on the host.",
+            "Native pairing",
+            "Browser clients",
+            "Full host control",
+            "Verify Codex and Claude separately",
+            "let host = connect();",
+            "Grant one revocable device invitation.",
+            "Reject an expired invitation.",
+            "Needs a reachable host.",
+            "Repository sync is deferred.",
+        ] {
+            assert!(copy.contains(expected), "Missing {expected}: {copy}");
+        }
+        assert!(store.prepare_approval("behavior", "r1").is_err());
+        store.revisions[0]
+            .review
+            .answers
+            .insert("transport".into(), "direct".into());
+        let (delivery, _) = store.prepare_delivery("behavior", "r1").unwrap().unwrap();
+        store.confirm_delivery(delivery);
+        value["revision_id"] = "r2".into();
+        value["claims"][0]["decisions"] = serde_json::json!([]);
+        value["finalized_from"] =
+            serde_json::json!({"revision_id":"r1","answers":{"transport":"Direct connection"}});
+        // Removing decision definitions or editing overview metadata does not incorporate answers.
+        value["presentation"]["outcome"] = "The desktop uses a direct connection.".into();
+        fs_err::write(&path, serde_json::to_vec(&value).unwrap()).unwrap();
+        assert!(import(&mut store, dir.path())
+            .unwrap_err()
+            .contains("must update"));
+        value["claims"][0]["detail"] =
+            "Connect directly to a reachable host and grant one revocable invitation.".into();
+        fs_err::write(&path, serde_json::to_vec(&value).unwrap()).unwrap();
+        import(&mut store, dir.path()).unwrap();
+        let (_, approval) = store.prepare_approval("behavior", "r2").unwrap().unwrap();
+        assert!(approval.contains("Full host control"));
+        assert!(approval.contains("Connect directly to a reachable host"));
+        let mut restored: PlanStore =
+            serde_json::from_slice(&serde_json::to_vec(&store).unwrap()).unwrap();
+        restored.recover_delivery();
+        assert!(restored
+            .prepare_approval("behavior", "r2")
+            .unwrap()
+            .is_none());
+        // Complete Markdown and structured claims are mutually exclusive.
+        value["revision_id"] = "invalid".into();
+        value["markdown"] = "A second body".into();
+        fs_err::write(&path, serde_json::to_vec(&value).unwrap()).unwrap();
+        assert!(import(&mut store, dir.path())
+            .unwrap_err()
+            .contains("not both"));
+    }
+
+    #[test]
+    fn exhibit_markdown_keeps_code_fences_safe_and_asset_paths_inert() {
+        let code = Exhibit::Code {
+            language: "rust\n```html".into(),
+            text: "```\n<script>literal</script>".into(),
+            source: None,
+        };
+        let rendered = exhibit_markdown(&code);
+        assert!(rendered.starts_with("\n````rusthtml\n"));
+        assert!(rendered.ends_with("\n````\n"));
+        let asset = Exhibit::Image {
+            path: "unsafe](javascript:run)".into(),
+            alt: "A saved preview".into(),
+        };
+        assert_eq!(exhibit_markdown(&asset), "\nA saved preview\n");
+    }
+
     #[test]
     fn oversized_files_retain_the_affected_path_and_limit_and_can_be_reimported() {
         let dir = tempfile::tempdir().unwrap();

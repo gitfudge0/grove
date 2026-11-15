@@ -67,8 +67,47 @@ Lead with the outcome and scope, make decisions and risks visible, and state
 concrete success criteria. Choose representations that suit the question:
 before/after tables for behavior changes, a concise flow for sequencing, and
 comparison tables for tradeoffs. Supporting technical detail can follow those
-essentials. Do not author a separate HTML plan or claim/exhibit tree. Limits
+essentials. Use native behavior claims for implementation plans; do not author a separate HTML plan. Limits
 remain 1 MiB per document and 64 KiB per text field.
+
+### Behavior-first implementation plans
+
+Prefer the existing `claims` array for implementation plans. Do not combine it
+with `markdown`. Each claim has a stable `id`, a short behavior sentence in
+`text`, optional `detail`, one optional `exhibit`, contextual `decisions`, and
+`children`. Use at most five claims per level and three levels total. Exhibits
+use the existing typed code, schema, calls, state-machine, layout, image and saved
+HTML-link forms; HTML attachments are references, not a second response form.
+
+```json
+{
+  "schema_version": 1,
+  "plan_id": "remote-access",
+  "revision_id": "r1",
+  "title": "Remote desktop access in Grove",
+  "claims": [{
+    "id": "pair",
+    "text": "You can control a host from another Grove desktop.",
+    "exhibit": {"kind": "layout", "nodes": [
+      {"id": "client", "kind": "surface", "text": "This desktop connects to the host"},
+      {"id": "host", "kind": "surface", "text": "Execution stays on the host"}
+    ]},
+    "decisions": [{"id": "network", "prompt": "How should desktops connect?",
+      "options": [{"id": "direct", "label": "Direct connection", "description": "Requires a reachable host or private network."},
+                  {"id": "relay", "label": "Public relay", "description": "Adds a hosted relay service to operate."}]}],
+    "children": [{"id": "invite", "text": "One invitation pairs one device.",
+                  "detail": "Verify identity before granting revocable control."}]
+  }]
+}
+```
+
+Closed claim rows give a readable summary and count unanswered decisions below
+them. Next unanswered opens the path to the target decision. Suggested options
+never count as answers. After all answers are explicit, Review response shows
+the exact choices and consequences; Edit answers preserves them, and Send
+response requests a revised plan. Sending is distinct from Approve & implement.
+Answer edits invalidate review. Stale, pending, queued and uncertain delivery
+retain the existing revision-bound guards. Both Codex and Claude use this reader.
 
 ### Native overview and expandable detail
 
@@ -96,15 +135,17 @@ This is part of the existing version-1 plan envelope, alongside `markdown` and
 bytes. Each list permits twelve nonblank entries of 1000 bytes. Risks and success
 criteria are required and nonempty. Describe a lack of known material risk
 explicitly rather than hiding the risk section. Import rejects invalid presentation
-and presentation without Markdown. The overall document/text limits still apply.
+and presentation without either Markdown or claims. The overall document/text limits still apply.
 
-The native conversation shows outcome, flow, scope, risks, success criteria and
-all decision choices before individually expandable Markdown detail sections.
+The native conversation shows the outcome and material risks before expandable
+behavior rows. Each row holds its exhibit and contextual decisions. Scope,
+success criteria and revision history have named disclosures. Compatible Markdown
+plans retain their overview and expandable sections with contextual decisions.
 Option descriptions state consequences and tradeoffs. A finalized revision can
 show `revision_changes` as an authored summary; it is not an automatic diff.
 Update both layers when answers change scope or success criteria. Existing
 finalization and exact-revision approval checks remain authoritative, including
-the requirement for updated Markdown. Copy and the read-only reference include
+the requirement for updated substantive Markdown or behavior content. Copy and the read-only reference include
 all presentation content and complete Markdown, irrespective of fold state.
 Older envelopes without this optional object retain their full Markdown reading
 experience. Folding uses local per-revision UI state and resets when the native
@@ -118,10 +159,11 @@ that composer with the plan revision and section as context. Entering answer mod
 preserves the ordinary composer draft; saving or canceling restores it. Saving a
 custom answer records literal user text and never sends implementation approval.
 
-Resolve every decision, then choose **Update plan with decisions**. This delivers
+Resolve every decision, then choose **Review response**. Inspect the exact answers
+and consequences, then choose **Send response**. This delivers
 an update request to the owning session and snapshots the exact option labels or
 custom answers. The agent must incorporate those answers into the actual
-Markdown approach, scope and success criteria, then publish a new revision with
+Markdown or behavior approach, scope and success criteria, then publish a new revision with
 no unresolved decisions and explicit provenance:
 
 ```json

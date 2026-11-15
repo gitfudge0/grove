@@ -2032,3 +2032,41 @@ Native appearance across themes/zoom and exit-animation rendering remain unteste
 the existing session-list screenshot fixture requires macOS Metal. Live Codex and
 Claude checks were not run because provider transport is unchanged. No app was
 installed, restarted or released.
+
+
+## Behavior-first native plans and response review
+
+The native reader now renders numbered claim disclosures, contextual exhibits and
+decisions, nested detail, and a separate review-before-send state in the same
+reader. Markdown plans remain compatible. Linux evidence for this change is in
+`.grove-artifacts/plan-ui-mocks/` and `.grove-artifacts/plan-native-qa/`.
+
+Targeted checks passed: 29 core plan tests, two shared workflow-guidance tests,
+13 native plan fixtures, all 33 UI conformance tests, strict production-bin and
+core-library Clippy, formatting, artifact policy and a development build. The
+shared Codex and Claude fixtures exercise actual disclosure pointer/keyboard
+input, nested Next unanswered focus, narrow/enlarged-rem bounds, expanded footer
+containment, unchanged conversation drafts, review without dispatch, review
+invalidation and stale/duplicate send rejection. They use transport channels,
+not live provider sessions. Two dynamic-diagram cache fixtures failed in one
+parallel run; the complete final plan suite passed serially, including those
+fixtures. No baseline equivalence or universal parallel stability is claimed.
+
+Isolated native Linux X11 captures of the actual expanded reader were inspected
+for Codex Dark, Claude Light, Claude narrow (640 logical pixels), and Claude
+response review. The selected answers, consequences and complete action footers
+were visible. Initial black/clipped captures and an inline-Markdown capture were
+rejected; the capture shell now mounts the expanded owner and the task-only X11
+helper exposes/moves only its exact QA popup. The final response-review capture
+shows the complete heading and plan header. The attempted native enlarged-rem
+capture matched the default-size frame and does not establish native zoom;
+GPUI geometry fixtures are the enlarged-rem evidence.
+
+Codex: verified by local shared input/transport fixtures and native dark capture;
+live plan authoring, decision-update delivery and approval remain untested.
+Claude: verified by local shared input/transport fixtures and light/narrow/review
+captures; live plan authoring, decision-update delivery and approval remain
+untested. macOS and Windows remain untested. Full measured HTML/native reference
+certification is unsupported on this Linux host (the author command rejected
+the platform); no selected-mock raster parity or certificate is claimed. No app
+installation, user-app restart, push or release is part of this delivery.

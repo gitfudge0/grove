@@ -14,6 +14,9 @@ pub(super) enum Action {
     Earlier,
     Next,
     ToggleSection(usize),
+    ToggleClaim(String),
+    EditResponse,
+    SendResponse,
     Update,
     Change,
     Approve,
@@ -52,8 +55,18 @@ impl Projection {
     pub(super) fn focus_handle(&self, key: &str) -> Option<FocusHandle> {
         self.handles.get(key).cloned()
     }
+    #[cfg(test)]
+    pub(super) fn registered_actions(&self) -> Vec<Action> {
+        self.controls
+            .iter()
+            .map(|control| control.action.clone())
+            .collect()
+    }
     pub(super) fn invalidate(&mut self) {
         self.measurement = None;
+    }
+    pub(super) fn handles_for_response(&self, key: &str) -> Option<FocusHandle> {
+        self.handles.get(key).cloned()
     }
     pub fn begin(&mut self) {
         self.controls.clear();

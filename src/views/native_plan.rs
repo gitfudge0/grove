@@ -1,6 +1,10 @@
 //! Native review of validated, immutable session plan snapshots.
+mod behavior;
+#[cfg(test)]
+mod behavior_tests;
 mod measured;
 mod overview;
+use behavior::{response_answers, reveal_decision};
 
 #[cfg(all(test, target_os = "linux"))]
 pub(super) fn take_control_materialization_count() -> usize {
@@ -236,8 +240,13 @@ pub(super) struct NativePlan {
     decision_anchors: HashMap<String, gpui::ScrollAnchor>,
     decision_focus: HashMap<String, FocusHandle>,
     active_decision: Option<String>,
+    pending_decision_reveal: bool,
     show_previous: bool,
     open_sections: HashSet<usize>,
+    open_claims: HashSet<String>,
+    reviewed_response: Option<Value>,
+    response_anchor: Option<gpui::ScrollAnchor>,
+    pending_response_reveal: bool,
 }
 impl EventEmitter<NativePlanEvent> for NativePlan {}
 
@@ -442,8 +451,13 @@ impl NativePlan {
             decision_anchors: HashMap::new(),
             decision_focus: HashMap::new(),
             active_decision: None,
+            pending_decision_reveal: false,
             show_previous: false,
             open_sections: HashSet::new(),
+            open_claims: HashSet::new(),
+            reviewed_response: None,
+            response_anchor: None,
+            pending_response_reveal: false,
         }
     }
     fn snapshot(&self, cx: &App) -> Rc<Value> {
@@ -529,6 +543,8 @@ impl NativePlan {
         };
         checked.update_review(&self.plan_id, &self.revision_id, review)?;
         let review = checked.revisions.remove(0).review;
+        self.reviewed_response = None;
+        self.projection.borrow_mut().invalidate();
         self.local_review = Some(review.clone());
         self.session.update(cx, |session, cx| {
             session.send(
@@ -820,17 +836,20 @@ impl NativePlan {
         {
             let id = string(&decisions[i], "id");
             self.active_decision = Some(id.clone());
-            let owner = cx.entity().downgrade();
-            window.on_next_frame(move |window, cx| {
-                let _ = owner.update(cx, |this, cx| {
-                    if let Some(anchor) = this.decision_anchors.get(&id) {
-                        anchor.scroll_to(window, cx);
-                    }
-                    if let Some(focus) = this.decision_focus.get(&id) {
-                        focus.focus(window, cx);
-                    }
-                });
-            });
+            self.decision_focus
+                .entry(id.clone())
+                .or_insert_with(|| cx.focus_handle().tab_stop(true))
+                .focus(window, cx);
+            reveal_decision(&snapshot["document"]["claims"], &id, &mut self.open_claims);
+            let section = string(&decisions[i], "section");
+            for (index, (title, _)) in self.prepared.borrow().sections.iter().enumerate() {
+                if *title == section {
+                    self.open_sections.insert(index);
+                }
+            }
+            self.reviewed_response = None;
+            self.projection.borrow_mut().invalidate();
+            self.pending_decision_reveal = true;
             cx.notify();
         }
     }
@@ -871,7 +890,26 @@ impl NativePlan {
                 cx.notify();
             }
             measured::Action::Next => self.next_decision(window, cx),
-            measured::Action::Update => self.dispatch(false, cx),
+            measured::Action::ToggleClaim(id) => {
+                if !self.open_claims.remove(id) {
+                    self.open_claims.insert(id.clone());
+                }
+                self.projection.borrow_mut().invalidate();
+                cx.notify();
+            }
+            measured::Action::Update => self.begin_response_review(window, cx),
+            measured::Action::EditResponse => {
+                self.reviewed_response = None;
+                self.projection.borrow_mut().invalidate();
+                self.focus_control("update", window, cx);
+                cx.notify();
+            }
+            measured::Action::SendResponse => {
+                let snapshot = self.snapshot(cx);
+                if self.reviewed_response.as_ref() == Some(&response_answers(&snapshot)) {
+                    self.dispatch(false, cx);
+                }
+            }
             measured::Action::Approve => self.dispatch(true, cx),
             measured::Action::Change => self.request_decision_revision(cx),
             measured::Action::Choose(decision, option) => self.choose(decision, option, cx),
@@ -1006,7 +1044,13 @@ impl NativePlan {
     }
 
     // Old documents retain immutable asset snapshots even though their text is Markdown.
-    fn legacy_assets(&mut self, window: &Window, cx: &Context<Self>) -> AnyElement {
+    fn claim_assets(
+        &mut self,
+        paths: &[String],
+        claim_id: &str,
+        window: &Window,
+        cx: &Context<Self>,
+    ) -> AnyElement {
         let assets = self
             .session
             .read(cx)
@@ -1017,7 +1061,10 @@ impl NativePlan {
             .map(|r| r.assets.clone())
             .unwrap_or_default();
         let mut body = div().flex().flex_col().gap(rpx(SPACE_LG)).min_w_0();
-        for asset in assets {
+        for asset in assets
+            .into_iter()
+            .filter(|asset| paths.contains(&asset.path))
+        {
             if asset.mime.starts_with("image/") {
                 if let Some(format) = gpui::ImageFormat::from_mime_type(&asset.mime) {
                     let image = self
@@ -1042,7 +1089,7 @@ impl NativePlan {
                 let key = format!("plan:{}:{}:{}", self.plan_id, self.revision_id, path);
                 body = body.child(
                     transcript_action(
-                        format!("legacy-plan-asset-{path}"),
+                        format!("plan-asset-{claim_id}-{path}"),
                         format!("Open saved attachment: {path}"),
                         false,
                         window,
@@ -1254,6 +1301,15 @@ impl NativePlan {
             .entry(id.clone())
             .or_insert_with(|| cx.focus_handle().tab_stop(true))
             .clone();
+        if self.pending_decision_reveal && self.active_decision.as_deref() == Some(id.as_str()) {
+            self.pending_decision_reveal = false;
+            let anchor = anchor.clone();
+            let focus = focus.clone();
+            window.on_next_frame(move |window, cx| {
+                anchor.scroll_to(window, cx);
+                focus.focus(window, cx);
+            });
+        }
         let target = self.projection.borrow_mut().control_with_focus(
             format!("decision:{id}"),
             measured::Action::None,
@@ -1287,6 +1343,16 @@ impl Render for NativePlan {
         let expanded = self.expanded(cx);
         let stale = self.stale(cx);
         let decisions = all_decisions(doc);
+        if self
+            .reviewed_response
+            .as_ref()
+            .is_some_and(|answers| *answers != response_answers(&snapshot))
+        {
+            self.reviewed_response = None;
+        }
+        let response_review = self.reviewed_response.as_ref() == Some(&response_answers(&snapshot))
+            && !stale
+            && !review_locked(&snapshot);
         let unanswered = decisions
             .iter()
             .filter(|d| !decision_answered(d, &snapshot["review"]))
@@ -1369,7 +1435,9 @@ impl Render for NativePlan {
             .w_full()
             .when(expanded, |s| s.max_w(rpx(PLAN_READING_WIDTH)).mx_auto())
             .p(rpx(SPACE_3XL));
-        if stale && !self.show_previous && !expanded {
+        if response_review {
+            body = self.response_review_body(doc, &snapshot, window, cx);
+        } else if stale && !self.show_previous && !expanded {
             body = body
                 .child(div().text_size(rpx(TEXT_TITLE)).child(string(doc, "title")))
                 .child(
@@ -1396,6 +1464,7 @@ impl Render for NativePlan {
                 );
         } else {
             let layered = doc["presentation"].is_object();
+            let structured = !entries(&doc["claims"]).is_empty();
             if layered {
                 body = body.child(self.overview(doc, window, cx));
             }
@@ -1488,16 +1557,73 @@ impl Render for NativePlan {
                         }),
                 );
             }
-            if layered {
-                for decision in &decisions {
-                    body = body.child(self.decision(decision, &snapshot, window, cx));
-                }
-            }
+
             let sections = self.prepared.borrow().sections.clone();
             let mut rendered = HashSet::new();
-            for (index, (title, markdown)) in sections.iter().cloned().enumerate() {
+            if structured {
+                if !layered {
+                    body = body.child(
+                        div()
+                            .text_size(rpx(TEXT_TITLE))
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .child(string(doc, "title")),
+                    );
+                    if let Some(summary) = doc["summary"].as_str() {
+                        body = body.child(self.text(
+                            "plan-summary".into(),
+                            summary.to_owned(),
+                            window,
+                            cx,
+                        ));
+                    }
+                }
+                if !entries(&doc["sources"]).is_empty() {
+                    body = body.child(self.source_context(doc, window, cx));
+                }
+                for (index, claim) in entries(&doc["claims"]).iter().enumerate() {
+                    body = body.child(self.behavior_claim(
+                        claim,
+                        &(index + 1).to_string(),
+                        &snapshot,
+                        window,
+                        cx,
+                    ));
+                }
                 if layered {
-                    body = body.child(self.detail_section(index, title, markdown, window, cx));
+                    body = body.child(self.behavior_support(doc, window, cx));
+                }
+                for decision in entries(&doc["decisions"]) {
+                    body = body.child(self.decision(&decision, &snapshot, window, cx));
+                }
+                for (index, scope) in entries(&doc["scope"]).iter().enumerate() {
+                    body = body.child(self.text(
+                        format!("scope-{index}"),
+                        scope.as_str().unwrap_or_default().to_owned(),
+                        window,
+                        cx,
+                    ));
+                }
+            }
+            for (index, (title, markdown)) in sections.iter().cloned().enumerate() {
+                if structured {
+                    break;
+                }
+                if layered {
+                    let contextual: Vec<_> = decisions
+                        .iter()
+                        .filter(|d| d["section"].as_str() == Some(title.as_str()))
+                        .cloned()
+                        .collect();
+                    for d in &contextual {
+                        rendered.insert(string(d, "id"));
+                    }
+                    body = body.child(self.contextual_section(
+                        (index, title, markdown),
+                        &contextual,
+                        &snapshot,
+                        window,
+                        cx,
+                    ));
                     continue;
                 }
                 let mut section =
@@ -1529,15 +1655,12 @@ impl Render for NativePlan {
                     self.discuss_action(title, format!("plan-discuss-{index}"), window, cx),
                 )));
             }
-            if doc["markdown"].is_null() {
-                body = body.child(self.legacy_assets(window, cx));
-            }
             for decision in &decisions {
-                if !layered && !rendered.contains(&string(decision, "id")) {
+                if !structured && !rendered.contains(&string(decision, "id")) {
                     body = body.child(self.decision(decision, &snapshot, window, cx));
                 }
             }
-            if !layered && !decisions.is_empty() {
+            if !layered && !structured && !decisions.is_empty() {
                 body = body.child(div().text_size(rpx(TEXT_TITLE)).child("Your decisions"));
                 for decision in &decisions {
                     body = body.child(
@@ -1564,7 +1687,9 @@ impl Render for NativePlan {
                 }
             }
         }
-        let status = if self.composer_pending {
+        let status = if response_review {
+            "Sending requests an updated plan. It does not authorize implementation.".into()
+        } else if self.composer_pending {
             "Save or cancel your composer response before continuing.".into()
         } else if self.send_pending {
             if self.pending_approval {
@@ -1612,13 +1737,41 @@ impl Render for NativePlan {
         if !stale && !decisions.is_empty() {
             footer = footer.child(
                 div()
+                    .flex_wrap()
+                    .gap(rpx(SPACE_LG))
+                    .when(response_review, |row| {
+                        row.child(
+                            self.measured_button(
+                                transcript_action(
+                                    "plan-edit-response",
+                                    "Edit answers",
+                                    false,
+                                    window,
+                                    cx,
+                                )
+                                .icon(
+                                    gpui_component::Icon::default()
+                                        .path("icons/arrow-left.svg")
+                                        .size(rpx(ICON_SM)),
+                                ),
+                                "edit-response".into(),
+                                measured::Action::EditResponse,
+                                !self.send_pending,
+                                cx,
+                            ),
+                        )
+                    })
                     .debug_selector(|| "native-plan-action-row".into())
                     .flex()
                     .child(
                         self.measured_button(
                             transcript_action(
                                 "plan-update",
-                                "Update plan with decisions",
+                                if response_review {
+                                    "Send response"
+                                } else {
+                                    "Review response"
+                                },
                                 true,
                                 window,
                                 cx,
@@ -1636,7 +1789,11 @@ impl Render for NativePlan {
                                     || review_locked(&snapshot),
                             ),
                             "update".into(),
-                            measured::Action::Update,
+                            if response_review {
+                                measured::Action::SendResponse
+                            } else {
+                                measured::Action::Update
+                            },
                             unanswered == 0
                                 && !self.composer_pending
                                 && !self.send_pending

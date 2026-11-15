@@ -16596,6 +16596,53 @@ mod tests {
         state
     }
 
+    fn behavior_plan_snapshot(provider: codex::Provider) -> Snapshot {
+        let mut state = decision_plan_snapshot(provider);
+        state.saved.rich_plans.revisions[0].document = serde_json::from_value(json!({
+            "schema_version":1,"plan_id":"invites","revision_id":"r1","title":"Remote desktop access in Grove",
+            "presentation":{
+                "outcome":"Use another desktop to work on this host. Execution stays here.",
+                "included":["Native desktop pairing, encrypted transport and revocable control","Host-owned providers, files, Git and terminals"],
+                "deferred":["Browser/mobile clients and repository sync","Agent delegation and fine-grained roles"],
+                "risks":["A paired device can execute as the host OS user.","Extracting session ownership from GPUI is substantial."],
+                "success_criteria":["Verify two-machine control with live Codex and Claude separately.","Verify revocation, reconnect, duplicate commands, stale approvals and native lifecycle behavior."],
+                "revision_changes":[]
+            },
+            "claims":[
+                {"id":"pairing","text":"You can control a host from another Grove desktop.",
+                    "exhibit":{"kind":"layout","nodes":[
+                        {"id":"client","kind":"surface","text":"This desktop · Connect to a host"},
+                        {"id":"host","kind":"surface","text":"Host desktop · Projects, sessions and terminals"}
+                    ]},
+                    "decisions":[{"id":"access","prompt":"How should the desktops connect?","default":"direct","options":[
+                        {"id":"direct","label":"Direct connection","description":"Requires a reachable host or an existing private network."},
+                        {"id":"relay","label":"Public relay","description":"Works across networks. Adds a hosted service to operate."}
+                    ]}],
+                    "children":[{"id":"invitation","text":"One invitation pairs one device.","detail":"The host grants control after identity verification. The host can revoke the paired device."}]
+                },
+                {"id":"availability","text":"You can use the host’s workspace while access is active.",
+                    "exhibit":{"kind":"state_machine","initial":"available","states":[
+                        {"id":"available","label":"Host available · Remote control enabled"},
+                        {"id":"unavailable","label":"Host unavailable · Draft retained, commands paused"}
+                    ],"transitions":[{"from":"available","to":"unavailable","label":"Host access ends"}]},
+                    "decisions":[{"id":"lifecycle","prompt":"When should host access run?","default":"open","options":[
+                        {"id":"open","label":"While Grove is open","description":"Closing Grove ends remote access."},
+                        {"id":"background","label":"In the background","description":"Access continues after close. Adds a background service."}
+                    ]}]
+                },
+                {"id":"recovery","text":"Your drafts survive a disconnect; uncertain commands never replay.",
+                    "detail":"Keep the draft. Confirm the host state after reconnect. Reject stale approvals and duplicate commands."}
+            ]
+        })).unwrap();
+        if std::env::var_os("GROVE_PLAN_BEHAVIOR_REVIEW").is_some() {
+            state.saved.rich_plans.revisions[0].review.answers = HashMap::from([
+                ("access".into(), "direct".into()),
+                ("lifecycle".into(), "open".into()),
+            ]);
+        }
+        state
+    }
+
     fn plan_request_snapshot(provider: codex::Provider) -> Snapshot {
         let mut state = decision_plan_snapshot(provider);
         state.saved.rich_plans.revisions[0]
@@ -16828,6 +16875,26 @@ mod tests {
     }
 
     #[cfg(target_os = "linux")]
+    struct PlanCaptureShell(Entity<CodexView>);
+    #[cfg(target_os = "linux")]
+    impl Render for PlanCaptureShell {
+        fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            div()
+                .relative()
+                .size_full()
+                .min_w_0()
+                .min_h_0()
+                .child(self.0.clone())
+                .children(
+                    std::env::var_os("GROVE_PLAN_BEHAVIOR_CAPTURE")
+                        .is_some()
+                        .then(|| super::super::native_plan::render_expanded(cx))
+                        .flatten(),
+                )
+        }
+    }
+
+    #[cfg(target_os = "linux")]
     #[test]
     #[ignore = "opens an isolated native X11 conversation window"]
     fn plan_composer_linux_capture() {
@@ -16857,11 +16924,12 @@ mod tests {
             }, |window,cx| {
                 window.set_window_title("Grove plans QA");
                 let provider = if std::env::var("GROVE_PLAN_CAPTURE_PROVIDER").as_deref() == Ok("claude") { codex::Provider::Claude } else { codex::Provider::Codex };
-                let state = if std::env::var_os("GROVE_QUESTION_CAPTURE").is_some() { question_review_snapshot(provider) } else if std::env::var_os("GROVE_PLAN_OVERVIEW_CAPTURE").is_some() { overview_plan_snapshot(provider) } else if std::env::var_os("GROVE_PLAN_REQUEST_CAPTURE").is_some() { plan_request_snapshot(provider) } else { decision_plan_snapshot(provider) };
+                let state = if std::env::var_os("GROVE_QUESTION_CAPTURE").is_some() { question_review_snapshot(provider) } else if std::env::var_os("GROVE_PLAN_BEHAVIOR_CAPTURE").is_some() { behavior_plan_snapshot(provider) } else if std::env::var_os("GROVE_PLAN_OVERVIEW_CAPTURE").is_some() { overview_plan_snapshot(provider) } else if std::env::var_os("GROVE_PLAN_REQUEST_CAPTURE").is_some() { plan_request_snapshot(provider) } else { decision_plan_snapshot(provider) };
                 let session=cx.new(|cx|CodexSession::from_connection(state,connection,cx));
                 let view=cx.new(|cx|CodexView::new(session,window,cx));
                 chat=Some(view.clone());
-                cx.new(|cx|gpui_component::Root::new(view,window,cx))
+                let shell=cx.new(|_|PlanCaptureShell(view));
+                cx.new(|cx|gpui_component::Root::new(shell,window,cx))
             }).unwrap();
             let chat=chat.unwrap();
             cx.activate(true);
@@ -16873,12 +16941,17 @@ mod tests {
                     cx.update_window(window.into(),|_,window,cx| {
                         window.resize(gpui::size(gpui::px(width),gpui::px(900.)));
                         window.set_rem_size(gpui::px(rem));
-                        if custom && std::env::var_os("GROVE_PLAN_REQUEST_CAPTURE").is_none() && std::env::var_os("GROVE_QUESTION_CAPTURE").is_none() {chat.update(cx,|view,cx| {
+                        if custom && std::env::var_os("GROVE_PLAN_BEHAVIOR_CAPTURE").is_none() && std::env::var_os("GROVE_PLAN_REQUEST_CAPTURE").is_none() && std::env::var_os("GROVE_QUESTION_CAPTURE").is_none() {chat.update(cx,|view,cx| {
                             view.begin_plan_composer(super::super::native_plan::NativePlanEvent::Compose {
                                 plan_id:"invites".into(),revision_id:"r1".into(),target:super::super::native_plan::PlanComposerTarget::CustomAnswer{decision_id:"access".into(),prompt:"Who can invite?".into()}
                             },window,cx);
                             view.input.update(cx,|input,cx|input.set_value("Workspace owners and team leads can invite.",window,cx));
                         });}
+                        if std::env::var_os("GROVE_PLAN_BEHAVIOR_CAPTURE").is_some() { chat.update(cx,|view,cx| {
+                            if let Some(plan) = view.native_plans.get(&("invites".into(),"r1".into())) {
+                                plan.update(cx, |plan,cx| plan.configure_behavior_capture(std::env::var_os("GROVE_PLAN_BEHAVIOR_REVIEW").is_some(),window,cx));
+                            }
+                        }); }
                         if std::env::var_os("GROVE_PLAN_OVERVIEW_CAPTURE").is_some() { chat.update(cx,|view,cx| {
                             let revision = if std::env::var("GROVE_PLAN_OVERVIEW_REVISION").as_deref() == Ok("finalized") { "r2" } else { "r1" };
                             if let Some(plan) = view.native_plans.get(&("invites".into(),revision.into())) {
