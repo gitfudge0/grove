@@ -710,3 +710,34 @@ session's lifetime.
 Native Codex and Claude question requests retain their source-attached transcript identity and drafts. Every question in a request is visible together in numbered sections, with prompt-first hierarchy, quiet unselected choices and neutral selection. Next unanswered scrolls to and focuses the first incomplete section. Custom answers use an explicit edit action and the request-owned input, preserving the unrelated conversation draft. Single choice custom answers replace the selected suggestion; multiple choice retains its existing additive answer semantics. Numeric limits, secret masking and provider option descriptions/previews remain visible and authoritative.
 
 Review response shows the assembled answers before sending; secrets show only a secure-provided summary. Edit answers returns to the same drafts. Review never dispatches a response. Send answers retains the existing request/turn checks, duplicate-send lock and acknowledgment-only receipt. Input changes invalidate only that request's review; focus and another request's edits do not. Failure preserves answers and returns to editing. Field/selection/focus updates are immediate input feedback, without decorative motion. Elicitation fields use the same compact neutral section/choice rhythm while permissions and browser completion retain their distinct source-owned response semantics. Tool rows retain their operation glyph, literal input/output disclosure, local failure treatment and observed exit code when available; no retry is inferred.
+
+## Provider account usage
+
+The sidebar footer places an icon-only standard pie-chart Usage icon immediately
+left of Settings, with balanced optical sizing and the accessible name “Usage”.
+Hovering opens
+an anchored, viewport-bounded provider usage surface after the shared short delay,
+without moving keyboard focus. The surface stays open across the pointer bridge
+between icon and panel, and dismisses after a short leave grace period unless
+keyboard focus remains inside it. No separate tooltip competes with the hover content. Enter/Space or click opens and focuses
+(or pins an already hovered surface); keyboard-opened content remains until
+explicit dismissal. The surface shows usage for the captured checkout and
+configuration without changing the conversation, model or draft. Escape preserves
+the existing focus for a hover-only surface, or restores Usage focus after keyboard
+activation; outside dismissal preserves the newly chosen focus. Account limits
+stay separate from the selected-session Context card and composer context meter.
+
+Codex and Claude retain separate identities, measurements and timestamps. Every
+reported quota window shows its own remaining percentage and absolute local reset
+time. A missing percentage has no fabricated meter; expired reset times await a
+provider observation rather than locally restoring allowance. API-key, signed-out,
+unavailable and last-known/refresh-failed states stay explicit. Occupancy alone
+never establishes rejection or disables sending. Provider-confirmed warnings and
+limits keep their existing session notice ownership.
+
+Codex uses a bounded read-only account and rate-limit request with per-provider
+refresh feedback. Claude account discovery does not send a prompt or promise a
+quota refresh; matching live conversation events arriving after the surface opens
+may show conversation-reported allowance. Earlier session measurements are not
+reused during a new account check. Closing the surface releases its subscriptions;
+no usage values or account identities are persisted by this surface.

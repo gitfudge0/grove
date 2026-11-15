@@ -1255,6 +1255,8 @@ pub struct Snapshot {
     pub error: Option<String>,
     pub notice: Option<SessionNotice>,
     rate_limit_reset: Option<i64>,
+    /// Transient account allowance; never serialized with conversation context.
+    pub account_usage: Option<crate::account_usage::AccountUsage>,
     pub(crate) mcp_statuses: HashMap<String, (String, String, bool)>,
     pub sandbox: Option<Value>,
     pub approval_policy: Option<Value>,
@@ -2142,6 +2144,7 @@ impl Snapshot {
             error: None,
             notice: None,
             rate_limit_reset: None,
+            account_usage: None,
             mcp_statuses: HashMap::new(),
             sandbox: None,
             approval_policy: None,
@@ -2851,6 +2854,9 @@ impl Snapshot {
                 }
                 // Occupancy is not evidence that a request was rejected.
                 Some("account/rateLimits/updated") => {
+                    let usage = crate::account_usage::codex(p, crate::account_usage::now());
+                    let usage_changed = usage != self.account_usage;
+                    self.account_usage = usage;
                     let limits = &p["rateLimits"];
                     self.rate_limit_reset = ["primary", "secondary"]
                         .iter()
@@ -2871,7 +2877,7 @@ impl Snapshot {
                             return true;
                         }
                     }
-                    return false;
+                    return usage_changed;
                 }
                 _ => {}
             }

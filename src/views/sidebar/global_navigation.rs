@@ -447,6 +447,19 @@ impl Sidebar {
                             ),
                     )
                     .child(
+                        self.control("sidebar-usage", "Usage", Action::ToggleUsage, cx)
+                            .debug_selector(|| "sidebar-usage".into())
+                            .aria_expanded(self.usage_panel.is_some())
+                            .track_focus(&self.usage_button_focus)
+                            .on_hover(cx.listener(|this, hovered, window, cx| {
+                                this.hover_usage(*hovered, window, cx);
+                            }))
+                            .when(self.usage_panel.is_some(), |control| {
+                                control.bg(c::BG_HOVER())
+                            })
+                            .child(icon("chart-pie", ICON_LG, c::FG_DIM())),
+                    )
+                    .child(
                         self.control("sidebar-settings", "Settings", Action::OpenSettings, cx)
                             .debug_selector(|| "sidebar-settings".into())
                             .track_focus(&self.settings_button_focus)

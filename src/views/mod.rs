@@ -46,3 +46,5 @@ mod file_drop_tests;
 pub(crate) mod change_session;
 
 pub mod connections_panel;
+
+mod usage_panel;

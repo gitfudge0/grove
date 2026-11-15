@@ -3898,6 +3898,8 @@ impl Actor {
             }
             "rate_limit_event" => {
                 let info = &value["rate_limit_info"];
+                self.state.account_usage =
+                    crate::account_usage::claude(info, crate::account_usage::now());
                 match info["status"].as_str() {
                     Some("rejected") => self.state.set_provider_error(
                         "Claude",
@@ -4859,11 +4861,19 @@ mod tests {
         assert_eq!(actor.state.status, Status::Working);
         assert!(actor.state.error.is_none());
         assert_eq!(
+            actor.state.account_usage.as_ref().unwrap().status,
+            crate::account_usage::UsageStatus::Warning
+        );
+        assert_eq!(
             actor.state.saved.items.last().unwrap()["severity"],
             "warning"
         );
         actor.message(json!({"type":"rate_limit_event","parent_tool_use_id":"child","rate_limit_info":{"status":"rejected"}})).unwrap();
         assert!(actor.state.error.is_none());
+        assert_eq!(
+            actor.state.account_usage.as_ref().unwrap().status,
+            crate::account_usage::UsageStatus::Warning
+        );
         actor.message(json!({"type":"rate_limit_event","rate_limit_info":{"status":"rejected","rateLimitType":"five_hour","resetsAt":1234}})).unwrap();
         let notice = actor.state.effective_notice().unwrap();
         assert_eq!(notice.kind, provider::SessionNoticeKind::UsageLimit);

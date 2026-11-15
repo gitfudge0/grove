@@ -1,5 +1,6 @@
 //! Grove's domain layer (git worktrees, tmux, storage, themes, agents, self-upgrade); no UI-framework dependency, so the GUI/domain boundary is compiler-enforced.
 
+pub mod account_usage;
 pub mod activity;
 mod activity_mcp;
 pub mod agent;

@@ -267,6 +267,73 @@ impl ConnectionContext {
             }
         }
     }
+    /// Configuration identity only; never an account identifier or credential.
+    /// Call on a background worker because configuration fingerprinting reads files.
+    pub fn fingerprint(&self) -> Option<String> {
+        if self.generation.is_empty() {
+            return None;
+        }
+        let mut input = self.server_key("account-usage").into_bytes();
+        input.extend_from_slice(&self.configuration_generation()?);
+        Some(format!(
+            "{:?}",
+            ring::digest::digest(&ring::digest::SHA256, &input)
+        ))
+    }
+
+    /// Read-only account allowance; never creates/resumes a conversation or prompt.
+    pub fn usage(&self) -> Result<UsageReading, String> {
+        let _lease = ProviderUse::acquire(self.provider)?;
+        let context_key = self.fingerprint();
+        let reading = self.usage_read(context_key.clone())?;
+        if self.fingerprint() != context_key {
+            return Err(
+                "Provider configuration changed while checking usage. Refresh to try again.".into(),
+            );
+        }
+        Ok(reading)
+    }
+
+    fn usage_read(&self, context_key: Option<String>) -> Result<UsageReading, String> {
+        if self.externally_managed() {
+            return Ok(UsageReading {
+                context_key,
+                account: AccountStatus::External,
+                usage: None,
+            });
+        }
+        if self.provider == Provider::Claude {
+            return Ok(UsageReading {
+                context_key,
+                account: self.account()?,
+                usage: None,
+            });
+        }
+        self.codex_query(|request| {
+            let result = request(2, "account/read", serde_json::json!({"refreshToken":false}))?;
+            let account = match result["account"]["type"].as_str() {
+                Some("apiKey") => AccountStatus::External,
+                Some("chatgpt") => AccountStatus::Connected {
+                    identity: result["account"]["email"].as_str().map(safe_label),
+                    method: "Browser sign-in".into(),
+                },
+                None if result["account"].is_null() => AccountStatus::SignedOut,
+                _ => return Err("Codex returned an unsupported account status".into()),
+            };
+            let usage = if matches!(account, AccountStatus::Connected { .. }) {
+                let result = request(3, "account/rateLimits/read", serde_json::json!({}))?;
+                crate::account_usage::codex(&result, crate::account_usage::now())
+            } else {
+                None
+            };
+            Ok(UsageReading {
+                context_key,
+                account,
+                usage,
+            })
+        })
+    }
+
     /// Explicit inventory request. Claude's CLI enforces its project-server approval
     /// choices. No configuration is edited and no project approval is supplied here.
     pub fn servers(&self) -> Result<Vec<ServerStatus>, String> {
@@ -363,14 +430,19 @@ impl ConnectionContext {
         }
         Ok(configured)
     }
-    fn codex_inventory(&self) -> Result<Vec<Value>, String> {
+    fn codex_query<T>(
+        &self,
+        query: impl FnOnce(
+            &mut dyn FnMut(u64, &str, Value) -> Result<Value, String>,
+        ) -> Result<T, String>,
+    ) -> Result<T, String> {
         let mut child = self
             .command(&["--no-daemon", "app-server", "--stdio"])
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .spawn()
-            .map_err(|_| "Could not start Codex connection discovery")?;
+            .map_err(|_| "Could not start Codex account/connection discovery")?;
         let result = (|| {
             let mut input = child
                 .stdin
@@ -382,10 +454,22 @@ impl ConnectionContext {
                 .ok_or("Codex connection output is unavailable")?;
             let (send, recv) = std::sync::mpsc::channel();
             std::thread::spawn(move || {
-                for line in BufReader::new(output).lines() {
-                    let Ok(line) = line else {
+                // Bound each line before allocating and the total stream to 4 MiB.
+                let mut output = BufReader::new(output);
+                let mut total = 0usize;
+                loop {
+                    let mut line = String::new();
+                    let read = output.by_ref().take(1024 * 1024 + 1).read_line(&mut line);
+                    let Ok(read) = read else {
                         break;
                     };
+                    if read == 0 {
+                        break;
+                    }
+                    total = total.saturating_add(read);
+                    if total > 4 * 1024 * 1024 {
+                        break;
+                    }
                     if line.len() > 1024 * 1024 {
                         break;
                     }
@@ -419,7 +503,7 @@ impl ConnectionContext {
                         .map_err(|_| "Codex connection discovery timed out")?;
                     if value["id"] == id {
                         if !value["error"].is_null() {
-                            return Err("This Codex version could not check MCP connections. Check provider policy/configuration or update the CLI.".into());
+                            return Err("This Codex version could not read provider account/connection data. Check provider configuration or update the CLI.".into());
                         }
                         return Ok(value["result"].clone());
                     }
@@ -428,8 +512,15 @@ impl ConnectionContext {
             request(
                 1,
                 "initialize",
-                serde_json::json!({"clientInfo":{"name":"grove-connections","version":env!("CARGO_PKG_VERSION")},"capabilities":{"experimentalApi":true}}),
+                serde_json::json!({"clientInfo":{"name":"grove-provider-status","version":env!("CARGO_PKG_VERSION")},"capabilities":{"experimentalApi":true}}),
             )?;
+            query(&mut request)
+        })();
+        kill_query(&mut child);
+        result
+    }
+    fn codex_inventory(&self) -> Result<Vec<Value>, String> {
+        self.codex_query(|request| {
             let mut rows = Vec::new();
             let mut cursor = Value::Null;
             for page in 0..32 {
@@ -448,9 +539,7 @@ impl ConnectionContext {
                 }
             }
             Err("Codex returned too many MCP inventory pages".into())
-        })();
-        kill_query(&mut child);
-        result
+        })
     }
     pub fn start(&self, action: ConnectionAction) -> Result<AuthJob, String> {
         if self.externally_managed()
@@ -645,6 +734,14 @@ impl ConnectionContext {
             }
         }
     }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct UsageReading {
+    /// Configuration fingerprint, not proof of account identity.
+    pub context_key: Option<String>,
+    pub account: AccountStatus,
+    pub usage: Option<crate::account_usage::AccountUsage>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1065,6 +1162,80 @@ mod tests {
         let context = context.refreshed();
         (dir, context)
     }
+    #[cfg(unix)]
+    #[test]
+    fn usage_query_reads_account_and_limits_without_creating_a_conversation() {
+        let (_dir, context) = fake_context(
+            r#"
+while IFS= read -r line; do
+ case "$line" in
+  *'"method":"initialize"'*) echo '{"id":1,"result":{}}';;
+  *'"method":"initialized"'*) ;;
+  *'"method":"account/read"'*) echo '{"id":2,"result":{"account":{"type":"chatgpt","email":"reader@example.test"}}}';;
+  *'"method":"account/rateLimits/read"'*) echo '{"id":3,"result":{"rateLimits":{"primary":{"usedPercent":38,"windowDurationMins":300}}}}';;
+  *) exit 7;;
+ esac
+done
+"#,
+        );
+        let reading = context.usage().unwrap();
+        assert!(reading.context_key.is_some());
+        assert_eq!(
+            reading.account,
+            AccountStatus::Connected {
+                identity: Some("reader@example.test".into()),
+                method: "Browser sign-in".into()
+            }
+        );
+        assert_eq!(
+            reading.usage.unwrap().windows[0].remaining_percent,
+            Some(62.0)
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn usage_external_and_signed_out_never_request_allowance() {
+        let (_dir, context) = fake_context(
+            r#"
+while IFS= read -r line; do
+ case "$line" in
+  *'"method":"initialize"'*) echo '{"id":1,"result":{}}';;
+  *'"method":"initialized"'*) ;;
+  *'"method":"account/read"'*) echo '{"id":2,"result":{"account":null}}';;
+  *) exit 7;;
+ esac
+done
+"#,
+        );
+        let reading = context.usage().unwrap();
+        assert_eq!(reading.account, AccountStatus::SignedOut);
+        assert!(reading.usage.is_none());
+        let mut external = context.clone();
+        external
+            .environment
+            .push(("OPENAI_API_KEY".into(), "fixture-key".into()));
+        let reading = external.usage().unwrap();
+        assert_eq!(reading.account, AccountStatus::External);
+        assert!(reading.usage.is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn usage_context_proof_changes_with_configuration_and_environment() {
+        let (dir, context) = fake_context("exit 9");
+        let first = context.fingerprint().unwrap();
+        fs_err::create_dir_all(dir.path().join(".codex")).unwrap();
+        fs_err::write(dir.path().join(".codex/config.toml"), "model='other'").unwrap();
+        assert_ne!(context.fingerprint().unwrap(), first);
+        let mut other = context.refreshed();
+        let second = other.fingerprint().unwrap();
+        other
+            .environment
+            .push(("ACCOUNT_CONFIG".into(), "other".into()));
+        assert_ne!(other.fingerprint().unwrap(), second);
+    }
+
     fn finished(job: &AuthJob) -> JobSnapshot {
         let deadline = Instant::now() + Duration::from_secs(5);
         loop {

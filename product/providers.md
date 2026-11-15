@@ -196,3 +196,19 @@ requires disposable `GROVE_CONFIG_DIR` and authenticated provider CLIs. It exerc
 real tool discovery/calls, publication and reference reload; without the native UI
 loop it checks truthful preview unavailability, not screenshot success. It answers
 no approval requests. Run native capture/UI checks separately.
+
+## Account allowance
+
+`account_usage` normalizes provider-reported quota windows separately from context
+occupancy. Codex reads `account/read` and `account/rateLimits/read` through the
+bounded connection-discovery transport without creating a thread. Per-limit maps
+supersede the compatibility snapshot. Claude account discovery uses `auth status`
+only; its optional percentages and reset windows come from `rate_limit_event`
+notifications on an existing live conversation. Missing utilization remains unknown.
+
+Reads hold the credential-use lease and reject configuration changes during the
+query. Native usage state is transient and per-source: no quota disk cache,
+credential-file reads, inferred prompt counts, automatic retries or provider
+switches. A percentage never becomes a rejection without provider status.
+`provider_connections_smoke PROVIDER EMPTY_CWD usage` exercises the production
+read-only service and prints sanitized account state and reported quota windows.

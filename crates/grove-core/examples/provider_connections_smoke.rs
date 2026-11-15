@@ -10,7 +10,7 @@ use std::{
 };
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut args = std::env::args().skip(1);
-    let provider=match args.next().as_deref(){Some("codex")=>Provider::Codex,Some("claude")=>Provider::Claude,_=>return Err("usage: provider_connections_smoke codex|claude CWD [status|servers|fixture-login|fixture-cancel|fixture-clear] [SERVER]".into())};
+    let provider=match args.next().as_deref(){Some("codex")=>Provider::Codex,Some("claude")=>Provider::Claude,_=>return Err("usage: provider_connections_smoke codex|claude CWD [status|usage|servers|fixture-login|fixture-cancel|fixture-clear] [SERVER]".into())};
     let cwd = PathBuf::from(args.next().ok_or("CWD required")?);
     let mode = args.next().unwrap_or_else(|| "status".into());
     let context = ConnectionContext::new(provider, cwd, Vec::new())?;
@@ -23,6 +23,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 AccountStatus::Connected { .. } => "connected",
             };
             println!("provider={} account={state}", provider.label());
+        }
+        "usage" => {
+            let reading = context.usage()?;
+            let state = match reading.account {
+                AccountStatus::SignedOut => "signed-out",
+                AccountStatus::External => "external",
+                AccountStatus::Connected { .. } => "connected",
+            };
+            println!("provider={} account={state}", provider.label());
+            if let Some(usage) = reading.usage {
+                println!("status={:?} windows={}", usage.status, usage.windows.len());
+                for window in usage.windows {
+                    println!(
+                        "window={} remaining={:?} reset={:?}",
+                        window.name, window.remaining_percent, window.resets_at
+                    );
+                }
+            } else {
+                println!("allowance=unavailable");
+            }
         }
         "servers" => {
             for server in context.check_servers()? {

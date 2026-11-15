@@ -1,3 +1,41 @@
+## Provider account usage (November 2026)
+
+The footer uses the bundled Lucide pie-chart icon immediately left of Settings,
+with the same icon size and Grove outline weight. Hover opens a viewport-bounded
+allowance view without stealing focus, supports crossing into the panel and uses
+a leave grace period. Click/keyboard activation retains explicit focus access.
+Codex uses read-only account/rate-limit discovery; Claude displays matching live
+conversation events received after the surface opens. Unknown, API-key, signed-out
+and stale data remain explicit.
+
+Linux checks passed four new GPUI usage fixtures in the six-test usage filter,
+five core parser/reset fixtures, eighteen connection-service tests, the existing
+Codex usage-notice recovery regression and the Claude rate-limit actor fixture.
+The native fixtures cover hover/focus/crossing/cancellation, repeated trigger
+activation, Escape after focus leaves, Dashboard checkout/configuration ownership,
+unknown percentages and narrow/zoom geometry. Thirty-three UI conformance checks,
+formatting, production Clippy, all-target Clippy with the repository's test
+unwrap/expect allowances, the optimized local build and artifact policy passed.
+The final shipping check reran the focused usage tests and all-target Clippy;
+prior concurrent inline-HTML fixture warnings no longer blocked the check.
+
+**Codex: verified live.** The production read-only service returned a signed-in
+account and a weekly allowance, also observed in the actual QA popover.
+**Claude: quota events untested live.** Its production auth check returned signed
+out and the QA popover showed that state. Optional utilization, partial/unknown
+windows and limit states have parser/actor and native fixture coverage only.
+No account credentials were changed and no model prompt was sent for usage checks.
+
+The task-owned binary was launched with an isolated configuration. Actual Linux
+X11/XWayland dark and enlarged-text light popovers were captured and inspected.
+The final standard icon and click-free hover opening were inspected in native QA.
+External pointer/keyboard automation did not reliably establish full live crossing,
+dismissal and focus behavior; those paths passed GPUI fixtures. Native warning,
+stale and multiple-account states, report-webview overlap, full motion and
+macOS/Windows runtime remain untested. Screenshots/logs are retained under
+`.grove-artifacts/provider-usage-qa/`. No installed app replacement or release
+occurred; delivery is a local commit on the current branch.
+
 ## Question decision review (November 2026)
 
 Native questions now show every question in numbered plan-style sections, with

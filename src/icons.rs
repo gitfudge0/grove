@@ -147,6 +147,16 @@ fn wrap_svg(inner: &str) -> String {
 }
 
 fn svg_for(name: &str) -> String {
+    // Reuse the standard Lucide asset; normalize its 24-unit outline weight
+    // to Grove's 16-unit catalog without redrawing the artwork.
+    if name == "chart-pie" {
+        return include_str!("../vendor/gpui-component/assets/assets/icons/chart-pie.svg")
+            .trim()
+            .replace(
+                "stroke-width=\"2\"",
+                &format!("stroke-width=\"{}\"", ICON_STROKE_WIDTH * 1.5),
+            );
+    }
     let inner = match name {
         "toggle-on" => {
             r#"<rect x="1.5" y="4" width="13" height="8" rx="4"/><circle cx="10.5" cy="8" r="2" fill="currentColor" stroke="none"/>"#

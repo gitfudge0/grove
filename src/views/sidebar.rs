@@ -30,6 +30,7 @@ mod session_placement;
 mod side_chat;
 mod task_glance;
 mod title_edit;
+mod usage;
 mod worktree_form;
 mod worktree_terminal;
 use super::{motion, rpx, terminal_view::TerminalView, tokens::*};
@@ -349,6 +350,7 @@ enum Action {
     RefreshDiff,
     AddTerminal,
     OpenSettings,
+    ToggleUsage,
     UpdateApp,
     #[cfg(test)]
     NewMultiProjectSession,
@@ -546,6 +548,14 @@ pub struct Sidebar {
     session_grid_focus: FocusHandle,
     grid_blocked_by_shell: bool,
     settings_button_focus: FocusHandle,
+    usage_button_focus: FocusHandle,
+    usage_panel: Option<Entity<super::usage_panel::UsagePanel>>,
+    usage_subscription: Option<gpui::Subscription>,
+    usage_hover_open: bool,
+    usage_hover_suppressed: bool,
+    usage_open_task: Option<gpui::Task<()>>,
+    usage_hide_task: Option<gpui::Task<()>>,
+    usage_anchor: std::rc::Rc<std::cell::Cell<gpui::Bounds<gpui::Pixels>>>,
     session_history: Vec<grove_core::codex::SavedSession>,
     cli_session_history: Vec<grove_core::session_meta::ClosedCliSession>,
     session_history_loading: bool,
@@ -822,6 +832,14 @@ impl Sidebar {
             session_grid_focus: cx.focus_handle().tab_stop(true),
             grid_blocked_by_shell: false,
             settings_button_focus: cx.focus_handle().tab_stop(true),
+            usage_button_focus: cx.focus_handle().tab_stop(true),
+            usage_panel: None,
+            usage_subscription: None,
+            usage_hover_open: false,
+            usage_hover_suppressed: false,
+            usage_open_task: None,
+            usage_hide_task: None,
+            usage_anchor: std::rc::Rc::new(std::cell::Cell::new(gpui::Bounds::default())),
             session_history: Vec::new(),
             cli_session_history: Vec::new(),
             session_history_loading: false,
@@ -2017,7 +2035,11 @@ impl Sidebar {
         cx: &mut Context<Self>,
     ) -> Stateful<Div> {
         let label = label.into();
-        let source_bounds = std::rc::Rc::new(std::cell::Cell::new(gpui::Bounds::default()));
+        let source_bounds = if matches!(action, Action::ToggleUsage) {
+            self.usage_anchor.clone()
+        } else {
+            std::rc::Rc::new(std::cell::Cell::new(gpui::Bounds::default()))
+        };
         let click_bounds = source_bounds.clone();
         let key_bounds = source_bounds.clone();
         let click = action.clone();
@@ -2160,6 +2182,7 @@ impl Sidebar {
                             | Action::RunNamedScript(..)
                             | Action::RemoveWorktree(..)
                             | Action::HistoryFilterMenu(..)
+                            | Action::ToggleUsage
                     )
                 {
                     this.action_source_bounds.set(click_bounds.get());
@@ -2194,6 +2217,7 @@ impl Sidebar {
                                     | Action::RunNamedScript(..)
                                     | Action::RemoveWorktree(..)
                                     | Action::HistoryFilterMenu(..)
+                                    | Action::ToggleUsage
                             )
                         {
                             this.action_source_bounds.set(key_bounds.get());
@@ -2592,7 +2616,8 @@ impl Sidebar {
     }
 
     pub(super) fn html_overlay_open(&self) -> bool {
-        self.confirmation_open()
+        self.usage_panel.is_some()
+            || self.confirmation_open()
             || self.header_tasks.open.is_some()
             || self.history.is_some()
             || self.diff_viewer.is_some()
@@ -3050,6 +3075,9 @@ impl Sidebar {
         {
             return;
         }
+        if !matches!(action, Action::ToggleUsage) {
+            self.dismiss_usage(false, window, cx);
+        }
         let was_project_flyout = self.project_flyout.is_some();
         if !action.is_fixture_launch()
             && !matches!(
@@ -3194,6 +3222,7 @@ impl Sidebar {
                 }
             }
             Action::Destination(destination) => self.open_destination(destination, window, cx),
+            Action::ToggleUsage => self.toggle_usage(window, cx),
             Action::OpenSettings => {
                 if self.navigation_available() {
                     cx.emit(SidebarEvent::Settings);
@@ -5614,6 +5643,7 @@ impl Render for Sidebar {
             .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, window, cx| {
                 this.divider_move(event, window, cx);
                 this.track_project_flyout_pointer(event.position, window, cx);
+                this.track_usage_pointer(event.position, window, cx);
                 if this.menu_opened_by_hover
                     && !this.menu_trigger_bounds.get().contains(&event.position)
                     && !this.menu_popup_bounds.get().contains(&event.position)
@@ -5634,6 +5664,13 @@ impl Render for Sidebar {
                 }),
             )
             .capture_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
+                if event.keystroke.key == "escape" && this.usage_panel.is_some() {
+                    this.dismiss_usage(!this.usage_hover_open, window, cx);
+                    window.prevent_default();
+                    cx.stop_propagation();
+                    cx.notify();
+                    return;
+                }
                 if event.keystroke.key == "escape" && this.branch_peek.is_some() {
                     this.dismiss_branch_peek(window, cx);
                     window.prevent_default();
@@ -5848,6 +5885,9 @@ impl Render for Sidebar {
                         )
                     }),
             )
+            .when_some(self.render_usage_popup(window, cx), |root, popup| {
+                root.child(popup)
+            })
             .when_some(navigation_close_confirmation, |root, popup| {
                 root.child(popup)
             })
