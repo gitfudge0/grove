@@ -1991,3 +1991,16 @@ GPUI fixture. Evidence is under `.grove-artifacts/project-identity-qa/` and
 `.grove-artifacts/mosaic-shipping/` (the latter also retains superseded mosaic
 experiments). No installed app replacement, release or live provider launch occurs
 as part of this verification.
+
+## Session card provider placement (2026-11-15)
+
+Session-list cards now reserve the top-right header slot for the provider mark,
+including passive exit snapshots. Linux GPUI layout fixtures passed for Codex and
+Claude in both cross-project and narrow-rail list views, asserting the provider
+slot follows the worktree and aligns with the title's right edge. All 33 UI
+conformance checks, formatting and repository artifact policy passed. These are
+fixture layout checks, not native screenshot or live provider-boundary evidence.
+Native appearance across themes/zoom and exit-animation rendering remain untested;
+the existing session-list screenshot fixture requires macOS Metal. Live Codex and
+Claude checks were not run because provider transport is unchanged. No app was
+installed, restarted or released.

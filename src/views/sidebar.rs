@@ -4361,20 +4361,6 @@ impl Sidebar {
                             .min_w_0()
                             .h(rpx(SESSION_LIST_HEADER_H))
                             .gap(rpx(SPACE_SM))
-                            .child(
-                                div()
-                                    .flex_shrink_0()
-                                    .w(rpx(SIDEBAR_ICON_SLOT))
-                                    .h(rpx(SESSION_LIST_HEADER_H))
-                                    .flex()
-                                    .items_center()
-                                    .justify_center()
-                                    .id(("session-list-agent", id.raw()))
-                                    .debug_selector(move || {
-                                        format!("session-list-agent-{}", id.raw())
-                                    })
-                                    .child(icon(meta.agent.icon_name(), TEXT_MICRO, c::FG_DIM())),
-                            )
                             .child(super::components::project_symbol_for_path(
                                 &meta.wt_path,
                                 ICON_MD,
@@ -4413,6 +4399,20 @@ impl Sidebar {
                                         format!("session-list-worktree-{}", id.raw())
                                     })
                                     .child(name.clone()),
+                            )
+                            .child(
+                                div()
+                                    .flex_shrink_0()
+                                    .w(rpx(SIDEBAR_ICON_SLOT))
+                                    .h(rpx(SESSION_LIST_HEADER_H))
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .id(("session-list-agent", id.raw()))
+                                    .debug_selector(move || {
+                                        format!("session-list-agent-{}", id.raw())
+                                    })
+                                    .child(icon(meta.agent.icon_name(), TEXT_MICRO, c::FG_DIM())),
                             ),
                     )
                     .child(
@@ -8044,6 +8044,16 @@ mod tests {
                 assert!(project.bottom() <= title.top());
                 assert!(worktree.bottom() <= title.top());
                 assert!(worktree.left() >= project.right());
+                let provider = cx
+                    .debug_bounds(if project_id == "session-list-context-1" {
+                        "session-list-agent-1"
+                    } else {
+                        "session-list-agent-2"
+                    })
+                    .unwrap();
+                assert!(provider.left() >= worktree.right());
+                assert_eq!(provider.right(), title.right());
+                assert!(provider.bottom() <= title.top());
                 assert!(status.top() >= title.bottom());
                 assert!(status.right() <= done.left());
                 assert!(done.right() <= title.right());

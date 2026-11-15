@@ -342,11 +342,6 @@ impl Sidebar {
                     .min_w_0()
                     .h(rpx(SESSION_LIST_HEADER_H))
                     .gap(rpx(SPACE_SM))
-                    .child(div().flex_shrink_0().size(rpx(TEXT_MICRO)).child(icon(
-                        meta.agent.icon_name(),
-                        TEXT_MICRO,
-                        c::FG_DIM(),
-                    )))
                     .child(
                         div()
                             .min_w_0()
@@ -371,6 +366,16 @@ impl Sidebar {
                             .line_height(rpx(SESSION_LIST_FOOTER_H))
                             .text_color(c::FG_DIM())
                             .child(card.worktree.clone()),
+                    )
+                    .child(
+                        div()
+                            .flex_shrink_0()
+                            .w(rpx(SIDEBAR_ICON_SLOT))
+                            .h(rpx(SESSION_LIST_HEADER_H))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child(icon(meta.agent.icon_name(), TEXT_MICRO, c::FG_DIM())),
                     ),
             )
             .child(
