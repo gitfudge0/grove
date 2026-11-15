@@ -1883,3 +1883,36 @@ failed one stale subagent edit-guard assertion. All three failures reproduced
 identically on clean main `1f4adc8`: adoption height 752 vs 800, inset position
 148 vs 100, and the conformance guard missing the existing source-index
 condition. They were not repaired as part of this setting change.
+
+## Compact published HTML attachments (November 2026)
+
+The selected variant-six direction is implemented in the shared published-artifact
+attachment: file icon, bounded two-line title, HTML artifact metadata, labeled Open
+action, independently named browser action, and a full-title disclosure. Narrow
+panes wrap the action group below the identity; the disclosure is left-aligned.
+The source-owned viewer, retained document and immutable-bundle failure handling
+are preserved. No thumbnail or inline live HTML was added.
+
+Linux verification passed 29 inline-HTML tests, including all four presentation
+modes at 280/900 px and rem 16/20, full-title disclosure, disabled opening, pointer
+opening, Escape focus restoration and Enter down/up reopening. Six isolated X11
+native fixture captures were inspected: wide dark, constrained narrow light with
+enlarged text, details, loading, immutable failure, and the expanded viewer shell.
+An initial capture did not enforce pane width; the corrected fixture constrains
+its actual content width. The native test backend reports HTML preview unavailable,
+so the viewer capture establishes its shell/error treatment, not live web content.
+The fixture captures use illustrative saved-reference metadata, not a real provider
+publication. The first input-test attempt omitted key-up; the complete key sequence
+passed. Formatting, production and test-target Clippy (with the repository test
+unwrap/expect allowances), diff whitespace and repository artifact policy passed.
+Full UI conformance passed 32 checks but its icon check failed on
+the concurrently edited chart-pie SVG's trailing newline (outside this change).
+
+**Codex: untested live. Claude: untested live.** The production shared attachment
+and GPUI TestPlatform input/layout fixtures were exercised; neither provider was
+asked to publish and reopen a live artifact. Real browser handoff and live webview
+input retention were not exercised. macOS/Windows runtime and measured-reference
+certification remain untested/unsupported on this Linux host; the reference author
+command explicitly rejected Linux capture. Evidence is under
+`.grove-artifacts/html-transcript-exploration/`. Delivery is a scoped local commit
+without installation, installed-app restart, push or release.

@@ -26,6 +26,8 @@ use std::{
 
 const CONTEXT_VEIL_OPACITY: f32 = 0.14;
 const INLINE_HEIGHT: f32 = 360.0;
+// Leave room for a useful title before the attachment actions wrap.
+const ARTIFACT_IDENTITY_BASIS: f32 = 220.0;
 // Bound adversarial or viewport-dependent reports within the transcript.
 const REPORT_MAX_HEIGHT: f32 = INLINE_HEIGHT * 8.;
 const REPORT_MARKER: &str = "<!-- grove:integrated-report -->";
@@ -1195,6 +1197,7 @@ impl Drop for SurfaceLease {
 struct HtmlArtifact {
     publication: Option<grove_core::visuals::Reference>,
     publication_failed: bool,
+    details_expanded: bool,
     version: Version,
     path: Option<PathBuf>,
     owner: EntityId,
@@ -1235,6 +1238,7 @@ impl HtmlArtifact {
         let mut artifact = Self {
             publication: None,
             publication_failed: false,
+            details_expanded: false,
             anchor,
             reveal: false,
             report: false,
@@ -1810,7 +1814,8 @@ impl Render for HtmlArtifact {
                 .flex()
                 .flex_col()
                 .gap(rpx(SPACE_SM))
-                .p(rpx(SPACE_SM))
+                .py(rpx(SPACE_LG))
+                .px(rpx(SPACE_2XL))
                 .border_1()
                 .border_color(c::BORDER())
                 .rounded(rpx(RADIUS_GROUP))
@@ -1818,47 +1823,97 @@ impl Render for HtmlArtifact {
                 .child(
                     div()
                         .flex()
+                        .flex_wrap()
                         .items_center()
-                        .gap(rpx(SPACE_SM))
+                        .gap(rpx(SPACE_LG))
                         .w_full()
                         .min_w_0()
                         .child(
                             div()
-                                .flex_1()
+                                .flex()
+                                .items_center()
+                                .gap(rpx(SPACE_LG))
+                                .flex_grow(1.)
+                                .flex_basis(rpx(ARTIFACT_IDENTITY_BASIS))
                                 .min_w_0()
-                                .truncate()
-                                .debug_selector(|| "html-artifact-title".into())
-                                .text_size(rpx(TEXT_SMALL))
-                                .child(title),
+                                .child(crate::icons::icon("file", ICON_MD, c::FG_DIM()))
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .min_w_0()
+                                        .child(
+                                            div()
+                                                .debug_selector(|| "html-artifact-title".into())
+                                                .text_size(rpx(TEXT_SMALL))
+                                                .line_clamp(2)
+                                                .text_ellipsis()
+                                                .child(title.clone()),
+                                        )
+                                        .child(
+                                            div()
+                                                .debug_selector(|| "html-artifact-format".into())
+                                                .text_size(rpx(TEXT_MICRO))
+                                                .text_color(c::FG_DIM())
+                                                .child(if self.loading_file {
+                                                    "Loading artifact…"
+                                                } else {
+                                                    "HTML artifact"
+                                                }),
+                                        ),
+                                ),
                         )
                         .child(
                             div()
+                                .flex()
                                 .flex_shrink_0()
-                                .text_size(rpx(TEXT_SMALL))
-                                .text_color(c::FG_DIM())
-                                .child("Artifact"),
-                        )
-                        .child(
-                            document_action(
-                                "html-publication-open",
-                                "Open artifact",
-                                "zen",
-                                window,
-                                cx,
-                            )
-                            .debug_selector(|| "html-publication-open".into())
-                            .with_focus_handle(self.expand_focus.clone())
-                            .disabled(self.loading_file || self.publication_failed)
-                            .on_click(cx.listener(Self::toggle_expand_click)),
-                        )
-                        .child(browser_action),
+                                .items_center()
+                                .gap(rpx(SPACE_SM))
+                                .child(
+                                    recovery_action(
+                                        "html-publication-open",
+                                        "Open artifact",
+                                        "zen",
+                                        window,
+                                        cx,
+                                    )
+                                    .debug_selector(|| "html-publication-open".into())
+                                    .with_focus_handle(self.expand_focus.clone())
+                                    .disabled(self.loading_file || self.publication_failed)
+                                    .on_click(cx.listener(Self::toggle_expand_click)),
+                                )
+                                .child(browser_action),
+                        ),
                 )
-                .when(self.loading_file, |card| {
+                .child(
+                    super::components::dense_disclosure_action(
+                        "html-artifact-details",
+                        "Artifact details",
+                        window,
+                        cx,
+                    )
+                    .icon(
+                        gpui_component::Icon::default()
+                            .path(if self.details_expanded {
+                                "icons/chev-down.svg"
+                            } else {
+                                "icons/chev-right.svg"
+                            })
+                            .size(rpx(ICON_SM)),
+                    )
+                    .debug_selector(|| "html-artifact-details".into())
+                    .self_start()
+                    .aria_expanded(self.details_expanded)
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.details_expanded = !this.details_expanded;
+                        cx.notify();
+                    })),
+                )
+                .when(self.details_expanded, |card| {
                     card.child(
                         div()
+                            .debug_selector(|| "html-artifact-full-title".into())
                             .text_size(rpx(TEXT_SMALL))
-                            .text_color(c::FG_DIM())
-                            .child("Loading artifact…"),
+                            .child(title),
                     )
                 })
                 .when_some(
@@ -2219,6 +2274,115 @@ mod tests {
         });
     }
 
+    fn attachment_reference() -> grove_core::visuals::Reference {
+        use grove_core::visuals::{Presentation, PresentationOptions, Reference};
+        Reference {
+            scope: "0".repeat(64), publication_id: "1".repeat(64),
+            visual_id: "1".repeat(64), revision_id: "1".repeat(64),
+            source_digest: "2".repeat(64),
+            title: "Project identity — six visual directions, symbols, wordmarks and typography for the next design review".into(),
+            item_id: "tool".into(), turn_id: "turn".into(),
+            presentation: PresentationOptions { mode: Presentation::Document, width: 900, height: 900, preview_region: None },
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[ignore = "opens an isolated native attachment fixture; requires X11 and import"]
+    fn publication_attachment_native_capture() {
+        use gpui::AppContext as _;
+        struct Fixture {
+            artifact: Entity<HtmlArtifact>,
+            _session: Entity<HtmlSession>,
+            width: Rc<Cell<f32>>,
+            rem: Rc<Cell<f32>>,
+        }
+        impl Render for Fixture {
+            fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+                window.set_rem_size(gpui::px(self.rem.get()));
+                div()
+                    .size_full()
+                    .p(rpx(SPACE_3XL))
+                    .bg(c::BG())
+                    .text_color(c::FG())
+                    .font_family(crate::fonts::UI_FAMILY)
+                    .text_size(rpx(TEXT_BODY))
+                    .child(
+                        div()
+                            .w(gpui::px(self.width.get()))
+                            .max_w_full()
+                            .child(self.artifact.clone()),
+                    )
+                    .children(render_expanded(window, cx))
+            }
+        }
+        assert!(std::env::var_os("GROVE_CONFIG_DIR").is_some());
+        let output = PathBuf::from(std::env::var("GROVE_ARTIFACT_CAPTURE_DIR").unwrap());
+        assert!(output.is_absolute());
+        fs_err::create_dir_all(&output).unwrap();
+        gpui_platform::application().with_assets(crate::assets::Assets).run(move |cx| {
+            gpui_component::init(cx);
+            crate::fonts::register(cx).unwrap();
+            c::sync_component_theme(cx);
+            cx.set_reduce_motion(true);
+            let mut retained = None;
+            let pane_width = Rc::new(Cell::new(808.));
+            let pane_rem = Rc::new(Cell::new(16.));
+            let window = cx.open_window(gpui::WindowOptions {
+                window_bounds: Some(gpui::WindowBounds::Windowed(gpui::Bounds::new(
+                    gpui::point(gpui::px(30.), gpui::px(30.)), gpui::size(gpui::px(840.), gpui::px(540.)),
+                ))), ..Default::default()
+            }, |window, cx| {
+                window.set_window_title("Grove artifact attachment QA");
+                let session = cx.new(|_| HtmlSession::new(std::env::current_dir().unwrap(), ScrollHandle::new()));
+                let artifact = cx.new(|cx| {
+                    let mut artifact = HtmlArtifact::new(String::new(), String::new(), None, session.downgrade(), Rc::default(), ScrollHandle::new(), cx);
+                    artifact.publication = Some(attachment_reference());
+                    artifact.version.active = "<!doctype html><html><body><h1>Project identity</h1><input value='Retained reader input'></body></html>".into();
+                    artifact
+                });
+                retained = Some(artifact.clone());
+                let fixture = cx.new(|_| Fixture { artifact, _session: session, width: pane_width.clone(), rem: pane_rem.clone() });
+                cx.new(|cx| gpui_component::Root::new(fixture, window, cx).bordered(false))
+            }).unwrap();
+            let artifact = retained.unwrap();
+            cx.activate(true);
+            cx.spawn(async move |cx| {
+                for (name, width, light, rem, state) in [
+                    ("wide-dark",840.,false,16.,"ready"),
+                    ("narrow-light-zoom",360.,true,20.,"ready"),
+                    ("details",840.,false,16.,"details"),
+                    ("loading",840.,false,16.,"loading"),
+                    ("failed",360.,true,16.,"failed"),
+                    ("viewer",840.,false,16.,"viewer"),
+                ] {
+                    pane_width.set(width - 32.);
+                    pane_rem.set(rem);
+                    cx.update_window(window.into(), |_, window, cx| {
+                        grove_core::theme::set_by_name(if light { c::DEFAULT_LIGHT_THEME } else { c::DEFAULT_DARK_THEME });
+                        c::sync_component_theme(cx);
+                        window.set_rem_size(gpui::px(rem));
+                        artifact.update(cx, |artifact, cx| {
+                            artifact.details_expanded = state == "details";
+                            artifact.loading_file = state == "loading";
+                            artifact.publication_failed = state == "failed";
+                            artifact.error = (state == "failed").then(|| "Saved artifact is unavailable or corrupt.".into());
+                            if state == "viewer" { artifact.toggle_expand(window, cx); }
+                            cx.notify();
+                        });
+                        window.resize(gpui::size(gpui::px(width), gpui::px(540.)));
+                        window.refresh();
+                    }).unwrap();
+                    cx.background_executor().timer(Duration::from_millis(800)).await;
+                    assert!(std::process::Command::new("import").args(["-window", "Grove artifact attachment QA"]).arg(output.join(format!("{name}.png"))).status().unwrap().success());
+                }
+                cx.update_window(window.into(), |_, window, _| window.remove_window()).unwrap();
+                drop(artifact);
+                cx.update(|cx| cx.quit());
+            }).detach();
+        });
+    }
+
     #[gpui::test]
     fn publication_attachment_is_compact_for_every_presentation(cx: &mut gpui::TestAppContext) {
         use grove_core::visuals::{Presentation, PresentationOptions, Reference};
@@ -2244,7 +2408,8 @@ mod tests {
             Presentation::Canvas,
             Presentation::Document,
         ] {
-            for width in [280., 900.] {
+            for (width, rem) in [(280., 16.), (280., 20.), (900., 16.)] {
+                cx.update(|window, _| window.set_rem_size(gpui::px(rem)));
                 fixture.update(cx, |fixture, cx| {
                     fixture.width = Some(gpui::px(width));
                     cx.notify();
@@ -2275,17 +2440,29 @@ mod tests {
                 });
                 draw_links(cx);
                 let bounds = cx.debug_bounds("html-publication-attachment").unwrap();
-                assert!(f32::from(bounds.size.height) < 64.);
+                assert!(
+                    f32::from(bounds.size.height) < 150. * rem / 16.,
+                    "attachment grew into a preview: {bounds:?}"
+                );
                 let open = cx.debug_bounds("html-publication-open").unwrap();
                 let browser = cx.debug_bounds("html-artifact-browser").unwrap();
                 let title = cx.debug_bounds("html-artifact-title").unwrap();
                 assert_eq!(open.top(), browser.top());
-                assert!(title.right() <= open.left());
+                assert!(title.right() <= open.left() || title.bottom() <= open.top());
                 assert!(open.right() <= browser.left());
                 assert!(browser.right() <= bounds.right());
                 assert!(f32::from(bounds.size.width) <= width);
                 assert!(cx.debug_bounds("html-document-body").is_none());
                 assert!(artifact.read_with(cx, |artifact, _| artifact.surface.is_none()));
+                assert!(cx.debug_bounds("html-artifact-format").is_some());
+                assert!(cx.debug_bounds("html-artifact-full-title").is_none());
+                let details = cx.debug_bounds("html-artifact-details").unwrap();
+                cx.simulate_click(details.center(), gpui::Modifiers::default());
+                draw_links(cx);
+                assert!(cx.debug_bounds("html-artifact-full-title").is_some());
+                cx.simulate_click(details.center(), gpui::Modifiers::default());
+                draw_links(cx);
+                assert!(cx.debug_bounds("html-artifact-full-title").is_none());
                 assert_eq!(
                     artifact.read_with(cx, |artifact, _| artifact
                         .publication
@@ -2297,6 +2474,71 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[gpui::test]
+    fn publication_attachment_open_and_disabled_states(cx: &mut gpui::TestAppContext) {
+        let (fixture, cx) = link_fixture(cx);
+        fixture.update(cx, |fixture, cx| {
+            fixture.text = "```html\n<html>Retained reader</html>\n```".into();
+            cx.notify();
+        });
+        draw_links(cx);
+        let artifact = fixture.read_with(cx, |fixture, cx| {
+            fixture
+                .session
+                .read(cx)
+                .artifacts
+                .values()
+                .next()
+                .unwrap()
+                .clone()
+        });
+        artifact.update(cx, |artifact, cx| {
+            artifact.publication = Some(attachment_reference());
+            artifact.surface = None;
+            cx.notify();
+        });
+        for (loading, failed) in [(true, false), (false, true)] {
+            artifact.update(cx, |artifact, cx| {
+                artifact.loading_file = loading;
+                artifact.publication_failed = failed;
+                artifact.error = failed.then(|| "Saved artifact is corrupt".into());
+                cx.notify();
+            });
+            draw_links(cx);
+            let open = cx.debug_bounds("html-publication-open").unwrap();
+            cx.simulate_click(open.center(), gpui::Modifiers::default());
+            draw_links(cx);
+            assert!(cx.debug_bounds("html-expanded-overlay").is_none());
+            assert!(artifact.read_with(cx, |a, _| a.surface.is_none()));
+        }
+        artifact.update(cx, |artifact, cx| {
+            artifact.loading_file = false;
+            artifact.publication_failed = false;
+            artifact.error = None;
+            cx.notify();
+        });
+        draw_links(cx);
+        let open = cx.debug_bounds("html-publication-open").unwrap();
+        cx.simulate_click(open.center(), gpui::Modifiers::default());
+        draw_links(cx);
+        assert!(cx.debug_bounds("html-expanded-overlay").is_some());
+        cx.simulate_keystrokes("escape");
+        draw_links(cx);
+        assert!(cx.debug_bounds("html-expanded-overlay").is_none());
+        cx.update(|window, cx| {
+            assert!(artifact.read(cx).expand_focus.is_focused(window));
+        });
+        // Button activation requires a full key-down/key-up pair.
+        draw_links(cx);
+        cx.simulate_keystrokes("enter");
+        cx.simulate_event(gpui::KeyUpEvent {
+            keystroke: gpui::Keystroke::parse("enter").unwrap(),
+        });
+        draw_links(cx);
+        assert!(cx.debug_bounds("html-expanded-overlay").is_some());
+        assert!(artifact.read_with(cx, |a, _| a.version.active.contains("Retained reader")));
     }
 
     #[gpui::test]

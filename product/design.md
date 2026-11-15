@@ -266,10 +266,15 @@ New conversations publish HTML as durable artifacts through explicit publication
 HTML fences remain code; ordinary HTML file links open the file viewer. Existing
 conversations retain their saved legacy rendering policy. Published visuals stay
 attached to their source tool event and visible independently of collapsed work
-details. The transcript shows a single-line artifact row with a truncating title, muted
-Artifact label and fixed trailing icon-only Open artifact and Open in browser
-actions. Both actions retain accessible names, keyboard access and explanatory
-tooltips. The transcript contains no live HTML surface or automatic screenshot.
+details. The transcript shows a compact attachment with a leading file icon, a
+title bounded to two lines, and muted HTML artifact metadata beneath the title.
+Open artifact is a labeled action with a leading expand icon; Open in browser
+remains a separately named icon-only action with an explanatory tooltip. Actions
+retain fixed widths and wrap together below the identity when space is limited.
+Artifact details discloses the complete title without relying on pointer hover.
+Loading keeps the identity visible with a source-owned loading label and disabled
+open actions. Both actions retain keyboard access and visible focus. The transcript
+contains no live HTML surface or automatic screenshot.
 All presentation modes use this same attachment treatment. Open enters the dedicated
 native document viewer; Back returns to the source attachment and restores focus.
 The live document is created on demand and retained across return/reopening, so
