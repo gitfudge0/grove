@@ -155,14 +155,17 @@ fn main() {
             }
 
             let bounds = Bounds::centered(None, size(px(WINDOW_W), px(WINDOW_H)), cx);
+            let qa = std::env::var_os("GROVE_ISOLATED_QA").is_some()
+                && std::env::var_os("GROVE_CONFIG_DIR").is_some();
             let opts = WindowOptions {
+                app_id: qa.then(|| "dev.grove.projects-qa".into()),
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
                 window_min_size: Some(size(px(WINDOW_MIN_W), px(WINDOW_MIN_H))),
                 window_background: WindowBackgroundAppearance::Opaque,
                 app_owns_titlebar_drag: true,
                 window_decorations: Some(gpui::WindowDecorations::Client),
                 titlebar: Some(TitlebarOptions {
-                    title: None,
+                    title: qa.then(|| "Grove — Projects QA".into()),
                     appears_transparent: true,
                     ..Default::default()
                 }),
@@ -188,6 +191,9 @@ fn main() {
                 }
             };
             let _ = window.update(cx, |_, window, cx| {
+                if qa {
+                    window.set_window_title("Grove — Projects QA");
+                }
                 theme::ThemeState::set_system_mode(cx, window.appearance());
             });
             cx.activate(true);

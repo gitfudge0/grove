@@ -2004,3 +2004,36 @@ Native appearance across themes/zoom and exit-animation rendering remain unteste
 the existing session-list screenshot fixture requires macOS Metal. Live Codex and
 Claude checks were not run because provider transport is unchanged. No app was
 installed, restarted or released.
+
+## Work-first project administration (2026-11-15)
+
+Projects has moved out of primary navigation into Settings → Projects, with
+contextual composer-picker links and a focused Checkouts utility. Linux checks
+passed 147 tests across Shell (44), Settings (24), navigation (8), Dashboard (19),
+project lifecycle (5), content (14), and UI conformance (33). Five opt-in Settings
+capture fixtures were ignored. The two already-documented Dashboard appbar layout
+expectation failures were excluded; this change does not repair those expectations.
+The optimized local build, formatting, diff and artifact-policy checks passed.
+
+Codex and Claude are verified by local native fixtures for retained composer
+entity, draft, provider preferences, Settings/Checkouts return, and real Git
+worktree creation/cancel. Store-observer coverage additionally checks repository
+reindexing and selected-project archival without retargeting or clearing the draft.
+Live Codex and Claude transport is untested; no provider messages were sent.
+
+An isolated production Linux X11 app was launched with a distinct QA app identity,
+private Grove/Codex/Claude configuration, private D-Bus session and disposable Git
+repositories. Native pointer actions and captured Dark renders exercised the
+project picker, Settings category, editor return and Checkouts utility. The actual
+window was constrained to 1402 × 1698 device pixels at host scale 2; this is not a
+wide-layout or measured-reference parity claim. Initial blank/stale captures
+required explicit Expose events; only subsequent rendered frames were inspected.
+Evidence and the task-local runnable binary are under the ignored
+`.grove-artifacts/projects-native-qa/` directory. The QA app remains running for
+review; the installed app was not replaced.
+
+Unfinished coverage: native Light appearance, enlarged-rem/keyboard/pointer state
+matrix, all destructive confirmation interactions, participant usability, and
+macOS/Windows runtime. Existing service/GPUI lifecycle fixtures cover archive,
+restore, move and guarded removal, rather than a complete production-app click
+walkthrough of every operation.

@@ -56,6 +56,9 @@ pub(crate) enum DestinationEvent {
     Worktree(String),
     NewWorktree,
     NewProject,
+    ProjectSettings,
+    ManageProjects,
+    ManageCheckouts,
     Home,
     RefreshWorktrees,
 }
@@ -222,11 +225,12 @@ impl DestinationTray {
                         }),
                     );
                 }
+                let create_owner = owner.clone();
                 menu = menu.separator().item(
                     PopupMenuItem::element(|_, _| {
                         div()
                             .id("destination-new-project")
-                            .aria_label("New project")
+                            .aria_label("Add project")
                             .flex()
                             .items_center()
                             .gap(rpx(SPACE_SM))
@@ -238,11 +242,40 @@ impl DestinationTray {
                                     .justify_center()
                                     .child(icon("plus", ICON_SM, c::FG_DIM())),
                             )
-                            .child("New project")
+                            .child("Add project")
                     })
                     .on_click(move |_, _, cx| {
-                        let _ = owner.update(cx, |_, cx| cx.emit(DestinationEvent::NewProject));
+                        let _ =
+                            create_owner.update(cx, |_, cx| cx.emit(DestinationEvent::NewProject));
                     }),
+                );
+                if selected_project != NO_PROJECT {
+                    let edit_owner = owner.clone();
+                    menu = menu.item(
+                        PopupMenuItem::new("Project settings")
+                            .icon(
+                                gpui_component::Icon::default()
+                                    .path("icons/cog.svg")
+                                    .size(rpx(ICON_SM)),
+                            )
+                            .on_click(move |_, _, cx| {
+                                let _ = edit_owner
+                                    .update(cx, |_, cx| cx.emit(DestinationEvent::ProjectSettings));
+                            }),
+                    );
+                }
+                let manage_owner = owner.clone();
+                menu = menu.item(
+                    PopupMenuItem::new("Manage projects")
+                        .icon(
+                            gpui_component::Icon::default()
+                                .path("icons/folder.svg")
+                                .size(rpx(ICON_SM)),
+                        )
+                        .on_click(move |_, _, cx| {
+                            let _ = manage_owner
+                                .update(cx, |_, cx| cx.emit(DestinationEvent::ManageProjects));
+                        }),
                 );
             } else {
                 menu = menu.check_side(gpui_component::Side::Right);
@@ -263,6 +296,7 @@ impl DestinationTray {
                             }),
                     );
                 }
+                let create_owner = owner.clone();
                 menu = menu.separator().item(
                     PopupMenuItem::new("New worktree")
                         .icon(
@@ -271,8 +305,20 @@ impl DestinationTray {
                                 .size(rpx(ICON_SM)),
                         )
                         .on_click(move |_, _, cx| {
-                            let _ =
-                                owner.update(cx, |_, cx| cx.emit(DestinationEvent::NewWorktree));
+                            let _ = create_owner
+                                .update(cx, |_, cx| cx.emit(DestinationEvent::NewWorktree));
+                        }),
+                );
+                menu = menu.item(
+                    PopupMenuItem::new("Manage checkouts")
+                        .icon(
+                            gpui_component::Icon::default()
+                                .path("icons/git-branch.svg")
+                                .size(rpx(ICON_SM)),
+                        )
+                        .on_click(move |_, _, cx| {
+                            let _ = owner
+                                .update(cx, |_, cx| cx.emit(DestinationEvent::ManageCheckouts));
                         }),
                 );
             }
@@ -700,6 +746,37 @@ impl Sidebar {
                 cx.subscribe_in(&tray, window, |this, _, event, window, cx| {
                     match event {
                         DestinationEvent::NewProject => this.add_project(window, cx),
+                        DestinationEvent::ManageProjects | DestinationEvent::ProjectSettings => {
+                            let path = if matches!(event, DestinationEvent::ProjectSettings) {
+                                this.dashboard.as_ref().and_then(|d| {
+                                    let tray = d.tray.read(cx);
+                                    tray.projects
+                                        .iter()
+                                        .find(|p| p.0 == tray.project)
+                                        .map(|p| p.2.clone())
+                                        .filter(|path| this.project_path_is_active(path, cx))
+                                })
+                            } else {
+                                None
+                            };
+                            if let Some(settings) = this.settings_panel.clone() {
+                                settings.update(cx, |settings, cx| {
+                                    settings.open_projects(path, window, cx)
+                                });
+                            }
+                        }
+                        DestinationEvent::ManageCheckouts => {
+                            let path = this.dashboard.as_ref().and_then(|d| {
+                                let tray = d.tray.read(cx);
+                                tray.projects
+                                    .iter()
+                                    .find(|p| p.0 == tray.project)
+                                    .map(|p| p.2.clone())
+                            });
+                            if let Some(path) = path {
+                                this.manage_project_checkouts(&path, window, cx);
+                            }
+                        }
                         DestinationEvent::Home => {
                             if let Some(d) = &this.dashboard {
                                 d.tray.update(cx, |t, cx| {
@@ -768,46 +845,8 @@ impl Sidebar {
                 _events: events,
             });
         }
-        let projects: Vec<_> = cx
-            .global::<SettingsState>()
-            .store
-            .workspace_projects(self.active_workspace)
-            .map(|(idx, p)| (idx, p.name.clone(), p.path.clone()))
-            .collect();
-        let mut destination_changed = false;
-        if let Some(d) = &self.dashboard {
-            let current = d.tray.read(cx).project;
-            let fallback = Some(NO_PROJECT);
-            let selected = if current == NO_PROJECT || projects.iter().any(|p| p.0 == current) {
-                Some(current)
-            } else {
-                fallback
-            };
-            destination_changed = selected != Some(current);
-            d.tray.update(cx, |t, cx| {
-                t.projects = projects;
-                if let Some(idx) = selected {
-                    if t.project != idx {
-                        t.project = idx;
-                        t.path = cx
-                            .global::<SettingsState>()
-                            .store
-                            .projects
-                            .get(idx)
-                            .map_or_else(dashboard_home_dir, |p| p.path.clone());
-                        t.generation = t.generation.wrapping_add(1);
-                        t.worktrees.clear();
-                        t.loading = false;
-                        t.error = None;
-                    }
-                }
-                cx.notify();
-            });
-        }
+        self.refresh_dashboard_projects(cx);
         self.refresh_dashboard_worktrees(cx);
-        if destination_changed {
-            self.refresh_dashboard_catalog(cx);
-        }
         self.dashboard_open = true;
         self.enter_dashboard_timeline_scope(cx);
         if let Some(d) = &self.dashboard {
@@ -815,6 +854,49 @@ impl Sidebar {
         }
         cx.notify();
     }
+    /// Reconcile by repository path: removal or reordering must not retarget a draft.
+    pub(super) fn refresh_dashboard_projects(&mut self, cx: &mut Context<Self>) {
+        let Some(dashboard) = &self.dashboard else {
+            return;
+        };
+        let projects: Vec<_> = cx
+            .global::<SettingsState>()
+            .store
+            .workspace_projects(self.active_workspace)
+            .map(|(idx, p)| (idx, p.name.clone(), p.path.clone()))
+            .collect();
+        let tray = dashboard.tray.clone();
+        if tray.read(cx).projects == projects {
+            return;
+        }
+        let old = tray.read(cx);
+        let root = old
+            .projects
+            .iter()
+            .find(|p| p.0 == old.project)
+            .map(|p| p.2.clone());
+        let selected = root
+            .as_ref()
+            .and_then(|root| projects.iter().find(|p| &p.2 == root))
+            .map(|p| p.0)
+            .unwrap_or(NO_PROJECT);
+        let removed = old.project != NO_PROJECT && selected == NO_PROJECT;
+        tray.update(cx, |tray, cx| {
+            tray.projects = projects;
+            tray.project = selected;
+            if removed {
+                tray.path = dashboard_home_dir();
+                tray.generation = tray.generation.wrapping_add(1);
+                tray.worktrees.clear();
+                tray.loading = false;
+                tray.error = None;
+            }
+            cx.notify();
+        });
+        self.refresh_dashboard_worktrees(cx);
+        self.refresh_dashboard_catalog(cx);
+    }
+
     fn launch_dashboard(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(d) = &self.dashboard else {
             return;
@@ -1856,6 +1938,10 @@ mod tests {
         });
         cx.update(|window, cx| {
             sidebar.update(cx, |sidebar, cx| {
+                let settings = cx.new(|cx| {
+                    crate::views::settings_panel::SettingsPanel::new(sidebar.runtime.clone(), cx)
+                });
+                sidebar.set_settings_panel(settings.clone(), cx);
                 sidebar.open_dashboard(window, cx);
                 for provider in [
                     grove_core::codex::Provider::Codex,
@@ -1892,9 +1978,47 @@ mod tests {
                         Some((1, "/tmp/picker-second".into()))
                     );
                     assert!(sidebar.dashboard_open);
+                    settings.update(cx, |settings, cx| {
+                        settings.open_projects(Some("/tmp/picker-second".into()), window, cx)
+                    });
+                    assert!(settings.read(cx).is_open());
+                    settings.update(cx, |settings, cx| settings.close(window, cx));
+                    sidebar.manage_project_checkouts("/tmp/picker-second", window, cx);
+                    sidebar.open_destination(
+                        super::super::global_navigation::Destination::Home,
+                        window,
+                        cx,
+                    );
+                    let dashboard = sidebar.dashboard.as_ref().unwrap();
+                    assert_eq!(dashboard.session, session);
+                    assert_eq!(dashboard.view, view);
+                    assert_eq!(session.read(cx).state.saved.draft, "Retain literal draft");
+                    assert_eq!(session.read(cx).state.saved.provider, provider);
                     assert_eq!(sidebar.runtime.read(cx).registry.read(cx).len(), 0);
                 }
             });
+        });
+        cx.update(|_, cx| {
+            SettingsState::update(cx, |store| {
+                store.projects.remove(0);
+            })
+        });
+        cx.run_until_parked();
+        cx.update(|_, cx| {
+            assert_eq!(
+                sidebar.read(cx).dashboard_destination_for_test(cx),
+                Some((0, "/tmp/picker-second".into()))
+            );
+            SettingsState::update(cx, |store| store.projects[0].archived = true);
+        });
+        cx.run_until_parked();
+        cx.update(|_, cx| {
+            let dashboard = sidebar.read(cx).dashboard.as_ref().unwrap();
+            assert_eq!(dashboard.tray.read(cx).project, NO_PROJECT);
+            assert_eq!(
+                dashboard.session.read(cx).state.saved.draft,
+                "Retain literal draft"
+            );
         });
     }
 

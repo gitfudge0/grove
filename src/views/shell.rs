@@ -182,6 +182,18 @@ impl Shell {
                 window,
                 |this, _, event, window, cx| match event {
                     SettingsPanelEvent::Closed => cx.notify(),
+                    SettingsPanelEvent::ManageCheckouts(path) => {
+                        this.sidebar.update(cx, |sidebar, cx| {
+                            sidebar.manage_project_checkouts(path, window, cx)
+                        });
+                    }
+                    SettingsPanelEvent::AddProject => {
+                        this.settings
+                            .update(cx, |panel, cx| panel.close(window, cx));
+                        this.sidebar.update(cx, |sidebar, cx| {
+                            sidebar.add_project_from_palette(window, cx)
+                        });
+                    }
                     SettingsPanelEvent::ConnectionsChanged(provider) => this
                         .sidebar
                         .update(cx, |sidebar, cx| sidebar.credentials_changed(*provider, cx)),
@@ -2028,7 +2040,7 @@ mod tests {
         assert!(cx.debug_bounds("app-header").is_some());
         assert!(cx.debug_bounds("statusbar").is_none());
         assert!(cx.debug_bounds("sidebar-rail").is_none());
-        assert!(cx.debug_bounds("projects-destination").is_some());
+        assert!(cx.debug_bounds("checkout-management").is_some());
         cx.update(|window, cx| window.dispatch_action(Box::new(k::ToggleZen), cx));
         draw(cx);
         assert!(cx.debug_bounds("app-header").is_some());
@@ -2133,7 +2145,7 @@ mod tests {
         cx.update(|window, cx| window.dispatch_action(Box::new(k::ToggleZen), cx));
         draw(cx);
         assert!(cx.debug_bounds("app-header").is_some());
-        assert!(cx.debug_bounds("projects-destination").is_some());
+        assert!(cx.debug_bounds("checkout-management").is_some());
         assert!(cx.debug_bounds("session-grid-layout").is_none());
         cx.update(|window, cx| window.dispatch_action(Box::new(k::ToggleZen), cx));
         draw(cx);
@@ -2229,11 +2241,7 @@ mod tests {
         cx.update(|cx| cx.bind_keys(k::shell_bindings()));
         let (shell, cx) = cx.add_window_view(Shell::new);
         draw(cx);
-        for (key, destination) in [
-            ("3", "projects-destination"),
-            ("2", "history-list-scroll"),
-            ("1", "dashboard-page"),
-        ] {
+        for (key, destination) in [("2", "history-list-scroll"), ("1", "dashboard-page")] {
             cx.update(|window, cx| {
                 let focus = shell.read(cx).focus.clone();
                 focus.focus(window, cx);
@@ -2629,9 +2637,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn global_projects_control_returns_from_grid_while_settings_open(
-        cx: &mut gpui::TestAppContext,
-    ) {
+    fn global_home_control_opens_composer_while_settings_open(cx: &mut gpui::TestAppContext) {
         cx.update(init_projects);
         let (shell, cx) = cx.add_window_view(Shell::new);
         draw(cx);
@@ -2650,10 +2656,14 @@ mod tests {
         draw(cx);
         assert!(cx.update(|_, cx| shell.read(cx).sidebar.read(cx).is_grid()));
         assert!(cx.debug_bounds("sidebar-rail").is_none());
-        let projects = cx.debug_bounds("global-nav-projects").unwrap();
+        let projects = cx.debug_bounds("global-nav-home").unwrap();
         cx.simulate_click(projects.center(), gpui::Modifiers::default());
         draw(cx);
-        assert!(!cx.update(|_, cx| shell.read(cx).sidebar.read(cx).is_grid()));
+        assert!(
+            cx.update(|_, cx| shell.read(cx).sidebar.read(cx).is_grid()),
+            "Home preserves the preferred session view"
+        );
+        assert!(cx.debug_bounds("dashboard-page").is_some());
         assert!(!cx.update(|_, cx| shell.read(cx).settings.read(cx).is_open()));
         assert_rail_alignment(cx, 260.);
     }
@@ -2675,7 +2685,7 @@ mod tests {
         draw(cx);
         assert!(cx.debug_bounds("workspace-popup").is_none());
         assert_eq!(cx.debug_bounds("global-navigation").unwrap(), rail);
-        assert!(cx.debug_bounds("global-nav-projects").is_some());
+        assert!(cx.debug_bounds("global-nav-history").is_some());
     }
 
     #[gpui::test]
@@ -2829,7 +2839,7 @@ mod tests {
         cx.simulate_click(home.center(), gpui::Modifiers::default());
         draw(cx);
         assert_rail_alignment(cx, 220.0);
-        let projects = cx.debug_bounds("global-nav-projects").unwrap();
+        let projects = cx.debug_bounds("global-nav-history").unwrap();
         cx.simulate_click(projects.center(), gpui::Modifiers::default());
         draw(cx);
         assert_rail_alignment(cx, 220.0);
@@ -2931,11 +2941,7 @@ mod tests {
         cx.update(init_projects);
         let (_, cx) = cx.add_window_view(Shell::new);
         draw(cx);
-        for destination in [
-            "global-nav-home",
-            "global-nav-projects",
-            "global-nav-history",
-        ] {
+        for destination in ["global-nav-home", "global-nav-history"] {
             let target = cx.debug_bounds(destination).expect("destination");
             cx.simulate_click(target.center(), gpui::Modifiers::default());
             draw(cx);
@@ -2961,8 +2967,8 @@ mod tests {
         let (_, cx) = cx.add_window_view(Shell::new);
         draw(cx);
         let project = cx
-            .debug_bounds("global-nav-projects")
-            .expect("Projects navigation")
+            .debug_bounds("global-nav-history")
+            .expect("History navigation")
             .center();
         cx.simulate_mouse_down(project, MouseButton::Left, gpui::Modifiers::default());
         cx.simulate_mouse_up(project, MouseButton::Left, gpui::Modifiers::default());
@@ -3118,24 +3124,17 @@ mod tests {
                 .projects[0]
                 .path = env!("CARGO_MANIFEST_DIR").into();
         });
-        let (_, cx) = cx.add_window_view(Shell::new);
+        let (shell, cx) = cx.add_window_view(Shell::new);
         draw(cx);
-        let projects = cx
-            .debug_bounds("global-nav-projects")
-            .expect("Projects destination");
-        cx.simulate_click(projects.center(), gpui::Modifiers::default());
+        cx.update(|window, cx| {
+            let sidebar = shell.read(cx).sidebar.clone();
+            sidebar.update(cx, |sidebar, cx| {
+                sidebar.manage_project_checkouts(env!("CARGO_MANIFEST_DIR"), window, cx);
+            });
+        });
         draw(cx);
-        let project = cx.debug_bounds("projects-open-0").expect("Open project");
-        cx.simulate_click(project.center(), gpui::Modifiers::default());
-        draw(cx);
-        let menu = cx
-            .debug_bounds("projects-manage-0")
-            .expect("project management menu")
-            .center();
-        cx.simulate_mouse_down(menu, MouseButton::Left, gpui::Modifiers::default());
-        cx.simulate_mouse_up(menu, MouseButton::Left, gpui::Modifiers::default());
-        draw(cx);
-        cx.simulate_keystrokes("down down enter");
+        let add = cx.debug_bounds("checkouts-add").expect("New worktree");
+        cx.simulate_click(add.center(), gpui::Modifiers::default());
         draw(cx);
         let mut fields = Vec::new();
         for selector in [

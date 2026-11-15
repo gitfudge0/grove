@@ -1296,7 +1296,7 @@ impl Render for ProjectPanel {
                             .child(div().flex_1().min_w_0().flex().flex_col().gap(rpx(SPACE_SM))
                                 .child(div().font_weight(FontWeight::MEDIUM).child("Archive project"))
                                 .child(div().text_size(rpx(TEXT_SMALL)).text_color(c::FG_DIM())
-                                    .child("Hide it from Projects without deleting its folder.")))
+                                    .child("Hide it from project pickers without deleting its folder.")))
                             .child(project_action("project-archive".into(), "Archive",
                                 Some("icons/archive.svg"), ProjectActionStyle::Mini, window, cx)
                                 .on_click(cx.listener(move |this, _, window, cx| {
@@ -1925,11 +1925,13 @@ impl Render for ProjectPanel {
                     .px(rpx(SPACE_3XL))
                     .border_b_1()
                     .border_color(c::BORDER_SOFT())
-                    .when(archived_page, |header| {
+                    .when(archived_page || self.settings_origin, |header| {
                         header.child(
                             crate::views::components::back_action(
-                                "project-panel-cancel",
-                                if self.settings_origin {
+                                "project-panel-back",
+                                if self.settings_origin && !archived_page {
+                                    "Back to Projects"
+                                } else if self.settings_origin {
                                     "Back to General"
                                 } else {
                                     "Back to Projects"

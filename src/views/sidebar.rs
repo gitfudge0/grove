@@ -350,6 +350,11 @@ enum Action {
     RefreshDiff,
     AddTerminal,
     OpenSettings,
+    DashboardCheckout {
+        project: usize,
+        root: String,
+        path: String,
+    },
     ToggleUsage,
     UpdateApp,
     #[cfg(test)]
@@ -544,7 +549,7 @@ pub struct Sidebar {
     history_canvas_destination: global_navigation::Destination,
     navigation_transition: Option<(Instant, f32, f32)>,
     navigation_width_override: Option<f32>,
-    navigation_focus: [FocusHandle; 3],
+    navigation_focus: [FocusHandle; 2],
     session_grid_focus: FocusHandle,
     grid_blocked_by_shell: bool,
     settings_button_focus: FocusHandle,
@@ -690,7 +695,10 @@ impl Sidebar {
                     this.worktree_removal_changed(path, cx);
                 }
             }),
-            cx.observe_global::<SettingsState>(|_, cx| cx.notify()),
+            cx.observe_global::<SettingsState>(|this, cx| {
+                this.refresh_dashboard_projects(cx);
+                cx.notify();
+            }),
             cx.subscribe_in(&projects_search, window, |_, _, event, _, cx| {
                 if matches!(event, gpui_component::input::InputEvent::Change) {
                     cx.notify();
@@ -2828,6 +2836,25 @@ impl Sidebar {
         }
     }
 
+    pub(crate) fn manage_project_checkouts(
+        &mut self,
+        path: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let index = cx
+            .global::<SettingsState>()
+            .store
+            .workspace_projects(self.active_workspace)
+            .find(|(_, project)| project.path == path)
+            .map(|(index, _)| index);
+        if let Some(index) = index {
+            self.close_settings_for_session_navigation(window, cx);
+            self.select(Selection::Project(index), cx);
+            self.focus.focus(window, cx);
+        }
+    }
+
     pub(crate) fn add_project_from_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.navigation_available() {
             self.act(Action::AddProject, window, cx);
@@ -3223,6 +3250,13 @@ impl Sidebar {
             }
             Action::Destination(destination) => self.open_destination(destination, window, cx),
             Action::ToggleUsage => self.toggle_usage(window, cx),
+            Action::DashboardCheckout {
+                project,
+                root,
+                path,
+            } => {
+                self.open_dashboard_for_checkout(project, &root, &path, window, cx);
+            }
             Action::OpenSettings => {
                 if self.navigation_available() {
                     cx.emit(SidebarEvent::Settings);
