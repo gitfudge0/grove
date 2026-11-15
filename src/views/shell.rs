@@ -182,9 +182,16 @@ impl Shell {
                 window,
                 |this, _, event, window, cx| match event {
                     SettingsPanelEvent::Closed => cx.notify(),
-                    SettingsPanelEvent::ManageCheckouts(path) => {
+                    SettingsPanelEvent::UseCheckout { root, path } => {
                         this.sidebar.update(cx, |sidebar, cx| {
-                            sidebar.manage_project_checkouts(path, window, cx)
+                            sidebar
+                                .open_project_checkout_from_settings(root, path, false, window, cx);
+                        });
+                    }
+                    SettingsPanelEvent::NewWorktree(root) => {
+                        this.sidebar.update(cx, |sidebar, cx| {
+                            sidebar
+                                .open_project_checkout_from_settings(root, root, true, window, cx);
                         });
                     }
                     SettingsPanelEvent::AddProject => {

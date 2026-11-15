@@ -759,11 +759,11 @@ repository categories. Names and paths distinguish repeated identities when the
 finite library is exhausted.
 
 Project setup shows the assigned symbol beside the name without appearance
-prompts or new steps. Optional appearance editing lives in Manage: Randomize
-previews a different symbol and color together without saving, while named symbol
-and color choices retain manual control. Repeated randomization remains draft-only.
-Use automatic identity restores the
-saved original assignment. Save changes applies name, scripts and appearance
+prompts or new steps. The editor’s Project icon section shows every symbol by
+default and marks the current selection. Color choices remain available without a disclosure. Shuffle
+previews a different symbol and color without saving; Reset icon restores the
+saved original assignment. No automatic, randomized or custom status label is
+shown. Save changes applies name, scripts and appearance
 atomically; Cancel discards edits, and a failed save retains the drafts and the
 previous saved appearance. The same project symbol appears in Projects, project
 pickers, selected Dashboard context and shared Codex/Claude session context and
@@ -775,7 +775,8 @@ Projects is not a primary sidebar destination. The New session composer's existi
 project and checkout pickers remain the everyday entry points for selecting a
 folder, adding a project and creating a worktree. Project settings and Manage
 projects open Settings → Projects; the latter lists active or archived projects
-within the current workspace, with search and direct administration. Rename,
+within the current workspace, with inline worktree disclosures and direct
+administration. Rename,
 appearance, lifecycle and reusable scripts retain explicit Save/Cancel. Moving,
 archiving, restoring and removing registrations keep the existing service guards.
 A contextual Checkouts utility exposes checkout selection and guarded deletion;
@@ -783,3 +784,13 @@ the main checkout has no Delete action. Creating a project returns to New sessio
 with it selected and never starts an agent. Navigation through these utilities
 retains the existing composer entity, provider preferences and unfinished draft.
 Legacy Projects startup preferences land on New session.
+
+The Edit project form omits the project-folder readout. One Scripts section groups
+setup, teardown and reusable shell/prompt entries, with one Add script action.
+Save/Cancel retain their existing meaning without additional save-explanation copy.
+
+Settings → Projects omits project search. Each active project can disclose its
+worktrees inline, with branch/path identity, Use and New worktree actions.
+Archived registrations are available only in that category’s Archived filter;
+General has no Archived projects shortcut. The Sessions preference group, including
+After starting a session, belongs to Agents rather than General.

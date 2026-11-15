@@ -2037,3 +2037,38 @@ matrix, all destructive confirmation interactions, participant usability, and
 macOS/Windows runtime. Existing service/GPUI lifecycle fixtures cover archive,
 restore, move and guarded removal, rather than a complete production-app click
 walkthrough of every operation.
+
+## Project editor and Settings simplification (2026-11-16)
+
+The editor omits its folder readout, exposes all sixteen choices under Project
+icon with the current selection marked, and omits automatic/custom identity
+status labels. Shuffle and Reset icon retain draft-only behavior. Scripts groups
+setup, teardown and reusable entries without the redundant save explanation.
+Settings Projects now discloses cached worktrees inline, with Use/New worktree
+entry points and no project search. Archived registrations remain in Projects;
+the General shortcut was removed and Sessions moved to Agents.
+
+The local production build and 127 focused checks passed: Settings (24), project
+editor/identity (7), UI conformance (33), Dashboard (19), and Shell (44). The
+identity fixtures cover all choices visible by default, draft-only edits,
+keyboard activation, narrow/enlarged-rem geometry and persistence failure. The
+Settings fixture covers workspace scope, expand/collapse, stable disclosure focus
+and editor/Escape return. One parallel preference run overlapped the theme test's
+deliberate disk failure; the preference test now takes the existing shared config
+lock, and the full Settings rerun passed. Six opt-in native captures were ignored;
+the two previously documented Dashboard layout failures remain excluded.
+
+The task-owned QA binary was refreshed with its existing isolated configuration
+and disposable repositories. Actual Dark Linux X11 captures inspected General,
+Agents, collapsed/expanded Projects and the editor. Pointer actions expanded real
+worktrees and changed/restored After starting a session; persisted QA configuration
+confirmed both values. The initial selected icon and all choices were visible;
+standalone symbol-pointer attempts did not establish a changed rendered pick,
+so icon activation evidence remains the passing GPUI pointer/keyboard fixture.
+The host required Expose events for fresh captures. Evidence remains under
+`.grove-artifacts/projects-native-qa/`; the QA app is retained for review.
+
+Codex and Claude retained-draft/checkout behavior passed local native fixtures;
+neither provider's live transport was exercised. Native Light appearance, the
+complete pointer/focus matrix, measured visual parity, and macOS/Windows runtime
+remain unverified. This endpoint refreshes only the isolated QA app.

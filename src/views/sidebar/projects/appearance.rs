@@ -28,6 +28,7 @@ impl ProjectPanel {
         };
         let current = appearance.current();
         let mut section = div()
+            .debug_selector(|| "project-icon-section".into())
             .w_full()
             .min_w_0()
             .flex()
@@ -37,7 +38,7 @@ impl ProjectPanel {
                 div()
                     .text_size(rpx(TEXT_SMALL))
                     .text_color(c::FG_DIM())
-                    .child("Project appearance"),
+                    .child("Project icon"),
             )
             .child(
                 div()
@@ -46,22 +47,11 @@ impl ProjectPanel {
                     .flex_wrap()
                     .gap(rpx(SPACE_2XL))
                     .child(project_symbol(current, ICON_20))
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .text_size(rpx(TEXT_SMALL))
-                            .text_color(c::FG_DIM())
-                            .child(if appearance.custom.is_some() {
-                                "Custom symbol"
-                            } else {
-                                "Automatic symbol"
-                            }),
-                    )
+                    .child(div().flex_1())
                     .child(
                         project_action(
                             "project-appearance-randomize".into(),
-                            "Randomize",
+                            "Shuffle",
                             Some("icons/shuffle.svg"),
                             ProjectActionStyle::Mini,
                             window,
@@ -80,42 +70,10 @@ impl ProjectPanel {
                                 }
                             },
                         )),
-                    )
-                    .child(
-                        project_action(
-                            "project-appearance-change".into(),
-                            if self.appearance_open {
-                                "Done"
-                            } else {
-                                "Change"
-                            },
-                            Some(if self.appearance_open {
-                                "icons/check.svg"
-                            } else {
-                                "icons/edit.svg"
-                            }),
-                            ProjectActionStyle::Mini,
-                            window,
-                            cx,
-                        )
-                        .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
-                            if matches!(event.keystroke.key.as_str(), "enter" | "space")
-                                && !event.is_held
-                            {
-                                this.appearance_open = !this.appearance_open;
-                                window.prevent_default();
-                                cx.stop_propagation();
-                                cx.notify();
-                            }
-                        }))
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.appearance_open = !this.appearance_open;
-                            cx.notify();
-                        })),
                     ),
             );
         // Direct input feedback; no animation or asynchronous state to imply persistence.
-        if self.appearance_open {
+        {
             let mut symbols = div()
                 .id("project-symbol-choices")
                 .debug_selector(|| "project-symbol-choices".into())
@@ -225,44 +183,33 @@ impl ProjectPanel {
                     })),
                 );
             }
-            section = section
-                .child(symbols)
-                .child(colors)
-                .child(
-                    project_action(
-                        "project-appearance-automatic".into(),
-                        "Use automatic identity",
-                        Some("icons/refresh.svg"),
-                        ProjectActionStyle::Quiet,
-                        window,
-                        cx,
-                    )
-                    .debug_selector(|| "project-appearance-automatic".into())
-                    .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
-                        if matches!(event.keystroke.key.as_str(), "enter" | "space")
-                            && !event.is_held
-                        {
-                            if let Some(a) = &mut this.draft_appearance {
-                                a.custom = None;
-                            }
-                            window.prevent_default();
-                            cx.stop_propagation();
-                            cx.notify();
-                        }
-                    }))
-                    .on_click(cx.listener(|this, _, _, cx| {
+            section = section.child(symbols).child(colors).child(
+                project_action(
+                    "project-appearance-automatic".into(),
+                    "Reset icon",
+                    Some("icons/reset.svg"),
+                    ProjectActionStyle::Quiet,
+                    window,
+                    cx,
+                )
+                .debug_selector(|| "project-appearance-automatic".into())
+                .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
+                    if matches!(event.keystroke.key.as_str(), "enter" | "space") && !event.is_held {
                         if let Some(a) = &mut this.draft_appearance {
                             a.custom = None;
                         }
+                        window.prevent_default();
+                        cx.stop_propagation();
                         cx.notify();
-                    })),
-                )
-                .child(
-                    div()
-                        .text_size(rpx(TEXT_SMALL))
-                        .text_color(c::FG_DIM())
-                        .child("Save changes to apply this appearance."),
-                );
+                    }
+                }))
+                .on_click(cx.listener(|this, _, _, cx| {
+                    if let Some(a) = &mut this.draft_appearance {
+                        a.custom = None;
+                    }
+                    cx.notify();
+                })),
+            );
         }
         section
     }
@@ -310,18 +257,36 @@ mod tests {
         let original = panel.read_with(cx, |p, _| p.draft_appearance.unwrap());
         for (width, rem) in [(768., 16.), (360., 16.), (360., 24.)] {
             cx.simulate_resize(gpui::size(gpui::px(width), gpui::px(900.)));
-            cx.update(|window, cx| {
+            cx.update(|window, _| {
                 window.set_rem_size(gpui::px(rem));
-                panel.update(cx, |p, cx| {
-                    p.appearance_open = true;
-                    cx.notify();
-                });
             });
             cx.run_until_parked();
             cx.update(|window, cx| {
                 let _ = window.draw(cx);
             });
             let symbols = cx.debug_bounds("project-symbol-choices").unwrap();
+            let choices = [
+                "project-symbol-choice-0",
+                "project-symbol-choice-1",
+                "project-symbol-choice-2",
+                "project-symbol-choice-3",
+                "project-symbol-choice-4",
+                "project-symbol-choice-5",
+                "project-symbol-choice-6",
+                "project-symbol-choice-7",
+                "project-symbol-choice-8",
+                "project-symbol-choice-9",
+                "project-symbol-choice-10",
+                "project-symbol-choice-11",
+                "project-symbol-choice-12",
+                "project-symbol-choice-13",
+                "project-symbol-choice-14",
+                "project-symbol-choice-15",
+            ];
+            assert_eq!(choices.len(), SYMBOLS.len());
+            for selector in choices {
+                assert!(cx.debug_bounds(selector).is_some());
+            }
             assert!(symbols.left() >= gpui::px(0.) && symbols.right() <= gpui::px(width));
             let name = cx.debug_bounds("project-name").unwrap();
             assert!(name.bottom() <= symbols.top());
@@ -654,7 +619,6 @@ mod native_qa {
                                 cx,
                             )
                         });
-                        panel.update(cx, |p, _| p.appearance_open = true);
                         let gallery = cx.new(|_| Gallery { panel });
                         cx.new(|cx| gpui_component::Root::new(gallery, window, cx))
                     },

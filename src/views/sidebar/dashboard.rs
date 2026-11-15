@@ -1982,7 +1982,14 @@ mod tests {
                         settings.open_projects(Some("/tmp/picker-second".into()), window, cx)
                     });
                     assert!(settings.read(cx).is_open());
-                    settings.update(cx, |settings, cx| settings.close(window, cx));
+                    sidebar.open_project_checkout_from_settings(
+                        "/tmp/picker-second",
+                        "/tmp/picker-second",
+                        false,
+                        window,
+                        cx,
+                    );
+                    assert!(!settings.read(cx).is_open());
                     sidebar.manage_project_checkouts("/tmp/picker-second", window, cx);
                     sidebar.open_destination(
                         super::super::global_navigation::Destination::Home,

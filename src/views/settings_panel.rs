@@ -95,7 +95,8 @@ fn runs_agents_in_terminal(store: &Store) -> bool {
 pub enum SettingsPanelEvent {
     Closed,
     AddProject,
-    ManageCheckouts(String),
+    UseCheckout { root: String, path: String },
+    NewWorktree(String),
     OpenHighlights { debug: bool },
     ConnectionsChanged(grove_core::provider::Provider),
 }
@@ -150,8 +151,9 @@ pub struct SettingsPanel {
     scroll: ScrollHandle,
     archived_panel: Option<Entity<super::sidebar::projects::ProjectPanel>>,
     archived_subscription: Option<Subscription>,
-    project_search: Option<Entity<InputState>>,
-    project_search_subscription: Option<Subscription>,
+    expanded_projects: HashSet<String>,
+    project_disclosure_focus: std::collections::HashMap<String, FocusHandle>,
+    _project_tree_observer: Subscription,
     projects_archived: bool,
     theme_search: Option<Entity<InputState>>,
     theme_search_subscription: Option<Subscription>,
@@ -221,7 +223,7 @@ impl SettingsPanel {
             })
             .collect();
         Self {
-            runtime,
+            runtime: runtime.clone(),
             provider_accounts,
             _account_observers: account_observers,
             _account_subscriptions: account_subscriptions,
@@ -252,8 +254,12 @@ impl SettingsPanel {
                 .map(|_| gpui::ScrollAnchor::for_handle(scroll.clone()))
                 .collect(),
             show_theme_notices: false,
-            project_search: None,
-            project_search_subscription: None,
+            expanded_projects: HashSet::new(),
+            project_disclosure_focus: std::collections::HashMap::new(),
+            _project_tree_observer: {
+                let tree = runtime.read(cx).tree.clone();
+                cx.observe(&tree, |_, _, cx| cx.notify())
+            },
             projects_archived: false,
             archived_panel: None,
             archived_subscription: None,
@@ -337,11 +343,6 @@ impl SettingsPanel {
     }
 
     fn projects_body(&self, window: &Window, cx: &mut Context<Self>) -> gpui::Div {
-        let query = self
-            .project_search
-            .as_ref()
-            .map(|input| input.read(cx).value().to_lowercase())
-            .unwrap_or_default();
         let store = &cx.global::<SettingsState>().store;
         let rows: Vec<_> = store
             .projects
@@ -349,8 +350,6 @@ impl SettingsPanel {
             .filter(|project| {
                 project.archived == self.projects_archived
                     && store.project_workspace_id(&project.path) == store.workspaces.active
-                    && (project.name.to_lowercase().contains(&query)
-                        || project.path.to_lowercase().contains(&query))
             })
             .cloned()
             .collect();
@@ -398,21 +397,9 @@ impl SettingsPanel {
                             ),
                     ),
             );
-        if let Some(input) = &self.project_search {
-            body = body.child(super::components::project_form_field(
-                "settings-project-search",
-                "Find a project",
-                input,
-                None,
-                window,
-                cx,
-            ));
-        }
         if rows.is_empty() {
             body = body.child(div().py(rpx(SPACE_3XL)).text_color(c::FG_DIM()).child(
-                if !query.is_empty() {
-                    "No matching projects."
-                } else if self.projects_archived {
+                if self.projects_archived {
                     "No archived projects. Archived folders remain on disk."
                 } else {
                     "No projects yet. Add a folder to get started."
@@ -424,6 +411,8 @@ impl SettingsPanel {
             let edit = path.clone();
             let move_path = path.clone();
             let checkouts = path.clone();
+            let keyboard_checkouts = path.clone();
+            let expanded = self.expanded_projects.contains(&path);
             let archived = project.archived;
             let mut actions = div().flex().flex_wrap().items_center().gap(rpx(SPACE_SM));
             if archived {
@@ -468,16 +457,42 @@ impl SettingsPanel {
                     );
             } else {
                 actions = actions.child(
-                    self.button(
-                        format!("settings-project-checkouts-{index}"),
-                        "Manage checkouts",
-                        false,
-                        true,
+                    Self::disclosure(
+                        format!("settings-project-worktrees-{index}"),
+                        "Show worktrees",
+                        expanded,
                     )
-                    .child(crate::icons::icon("git-branch", ICON_SM, c::FG_DIM()))
-                    .child("Checkouts")
-                    .on_click(cx.listener(move |_, _, _, cx| {
-                        cx.emit(SettingsPanelEvent::ManageCheckouts(checkouts.clone()))
+                    .debug_selector(move || format!("settings-project-worktrees-{index}"))
+                    .when_some(
+                        self.project_disclosure_focus.get(&project.path),
+                        gpui::InteractiveElement::track_focus,
+                    )
+                    .aria_expanded(expanded)
+                    .child(crate::icons::icon(
+                        if expanded { "chev-down" } else { "chev-right" },
+                        ICON_SM,
+                        c::FG_DIM(),
+                    ))
+                    .child("Worktrees")
+                    .on_key_down(cx.listener(
+                        move |this, event: &gpui::KeyDownEvent, window, cx| {
+                            if matches!(event.keystroke.key.as_str(), "enter" | "space")
+                                && !event.is_held
+                            {
+                                if !this.expanded_projects.remove(&keyboard_checkouts) {
+                                    this.expanded_projects.insert(keyboard_checkouts.clone());
+                                }
+                                window.prevent_default();
+                                cx.stop_propagation();
+                                cx.notify();
+                            }
+                        },
+                    ))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        if !this.expanded_projects.remove(&checkouts) {
+                            this.expanded_projects.insert(checkouts.clone());
+                        }
+                        cx.notify();
                     })),
                 );
                 actions = actions
@@ -556,11 +571,140 @@ impl SettingsPanel {
                                     .truncate()
                                     .text_size(rpx(TEXT_SMALL))
                                     .text_color(c::FG_DIM())
-                                    .child(project.path),
+                                    .child(project.path.clone()),
                             ),
                     )
                     .child(actions),
             );
+            if expanded && !archived {
+                let runtime = self.runtime.read(cx);
+                let active = runtime.state.read(cx).proj_idx();
+                let project_index = cx
+                    .global::<SettingsState>()
+                    .store
+                    .projects
+                    .iter()
+                    .position(|p| p.path == project.path);
+                let worktrees = project_index
+                    .map(|index| {
+                        runtime
+                            .tree
+                            .read(cx)
+                            .worktrees_for_project(index, active)
+                            .to_vec()
+                    })
+                    .unwrap_or_default();
+                let new_root = project.path.clone();
+                let mut children = div()
+                    .id(format!("settings-project-worktree-list-{index}"))
+                    .debug_selector(move || format!("settings-project-worktree-list-{index}"))
+                    .w_full()
+                    .min_w_0()
+                    .pl(rpx(SPACE_2XL))
+                    .flex()
+                    .flex_col()
+                    .gap(rpx(SPACE_LG))
+                    .child(
+                        div().flex().justify_end().child(
+                            super::components::form_action(
+                                format!("settings-project-new-worktree-{index}"),
+                                "New worktree",
+                                false,
+                                window,
+                                cx,
+                            )
+                            .icon(gpui_component::Icon::default().path("icons/plus.svg"))
+                            .on_click(cx.listener(
+                                move |_, _, _, cx| {
+                                    cx.emit(SettingsPanelEvent::NewWorktree(new_root.clone()))
+                                },
+                            )),
+                        ),
+                    );
+                if worktrees.is_empty() {
+                    children = children.child(
+                        div()
+                            .text_size(rpx(TEXT_SMALL))
+                            .text_color(c::FG_DIM())
+                            .child("No worktrees available. Check the project folder."),
+                    );
+                }
+                for (row, tree) in worktrees.into_iter().enumerate() {
+                    let root = project.path.clone();
+                    let path = tree.path.clone();
+                    let name = if tree.is_main {
+                        "Main checkout".to_string()
+                    } else {
+                        std::path::Path::new(&tree.path)
+                            .file_name()
+                            .and_then(|p| p.to_str())
+                            .unwrap_or(&tree.path)
+                            .to_string()
+                    };
+                    children = children.child(
+                        div()
+                            .w_full()
+                            .min_w_0()
+                            .py(rpx(SPACE_LG))
+                            .border_b_1()
+                            .border_color(c::BORDER_SOFT())
+                            .flex()
+                            .items_center()
+                            .gap(rpx(SPACE_LG))
+                            .child(crate::icons::icon("git-branch", ICON_SM, c::FG_DIM()))
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .flex()
+                                    .flex_col()
+                                    .gap(rpx(SPACE_SM))
+                                    .child(div().truncate().child(name))
+                                    .child(
+                                        div()
+                                            .truncate()
+                                            .text_size(rpx(TEXT_SMALL))
+                                            .text_color(c::FG_DIM())
+                                            .child(tree.branch),
+                                    )
+                                    .child(
+                                        super::components::readonly_value(
+                                            format!("settings-worktree-path-{index}-{row}"),
+                                            tree.path,
+                                        )
+                                        .text_size(rpx(TEXT_SMALL))
+                                        .text_color(c::FG_DIM()),
+                                    ),
+                            )
+                            .child(
+                                super::components::form_action(
+                                    format!("settings-worktree-use-{index}-{row}"),
+                                    "Use",
+                                    false,
+                                    window,
+                                    cx,
+                                )
+                                .debug_selector(move || {
+                                    format!("settings-worktree-use-{index}-{row}")
+                                })
+                                .icon(gpui_component::Icon::default().path("icons/check.svg"))
+                                .on_click(cx.listener(
+                                    move |_, _, _, cx| {
+                                        cx.emit(SettingsPanelEvent::UseCheckout {
+                                            root: root.clone(),
+                                            path: path.clone(),
+                                        })
+                                    },
+                                )),
+                            ),
+                    );
+                }
+                body = body.child(super::motion::base(
+                    children,
+                    format!("settings-worktrees-{index}"),
+                    cx,
+                ));
+            }
         }
         body
     }
@@ -1885,7 +2029,14 @@ impl SettingsPanel {
                         "Reduce motion",
                         "Skip decorative interface transitions",
                         reduce_motion_control,
-                    ))
+                    )),
+            )
+        });
+        body = body.when(self.category == Category::Agents, |body| {
+            body.child(
+                div()
+                    .flex()
+                    .flex_col()
                     .child(Self::section("Sessions"))
                     .child(Self::setting_row(
                         "After starting a session",
@@ -2238,22 +2389,6 @@ impl SettingsPanel {
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.open_nested(Page::Shortcuts, window, cx);
                             })),
-                    ))
-                    .child(Self::setting_row(
-                        "Archived projects",
-                        "Restore or remove archived project registrations",
-                        self.button(
-                            "settings-archived-projects",
-                            "Archived projects",
-                            false,
-                            true,
-                        )
-                        .debug_selector(|| "settings-archived-projects".into())
-                        .child(crate::icons::icon("archive", ICON_SM, c::FG_DIM()))
-                        .child("Manage")
-                        .on_click(cx.listener(|this, _, window, cx| {
-                            this.open_nested(Page::Archived, window, cx);
-                        })),
                     )),
             )
         })
@@ -2460,10 +2595,21 @@ impl Focusable for SettingsPanel {
 
 impl Render for SettingsPanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        if self.category == Category::Projects && self.project_search.is_none() {
-            let input = cx.new(|cx| InputState::new(window, cx).placeholder("Name or folder"));
-            self.project_search_subscription = Some(cx.observe(&input, |_, _, cx| cx.notify()));
-            self.project_search = Some(input);
+        if self.category == Category::Projects {
+            let paths: Vec<_> = cx
+                .global::<SettingsState>()
+                .store
+                .projects
+                .iter()
+                .map(|p| p.path.clone())
+                .collect();
+            self.project_disclosure_focus
+                .retain(|path, _| paths.contains(path));
+            for path in paths {
+                self.project_disclosure_focus
+                    .entry(path)
+                    .or_insert_with(|| cx.focus_handle().tab_stop(true));
+            }
         }
         if self.connections_pending_focus {
             self.connections_pending_focus = false;
@@ -2743,18 +2889,49 @@ mod tests {
         draw(cx);
         assert!(cx.debug_bounds("settings-project-row-0").is_some());
         assert!(cx.debug_bounds("settings-project-row-1").is_none());
-        cx.update(|window, cx| {
-            let search = panel.read(cx).project_search.clone().unwrap();
-            search.update(cx, |input, cx| input.set_value("Other", window, cx));
+        cx.update(|_, cx| {
+            let runtime = panel.read(cx).runtime.clone();
+            let tree = runtime.read(cx).tree.clone();
+            let active = runtime.read(cx).state.read(cx).proj_idx();
+            tree.update(cx, |tree, _| {
+                tree.register_project_worktrees(
+                    0,
+                    active,
+                    vec![
+                        grove_core::git::Worktree {
+                            path: "/qa/Atlas".into(),
+                            branch: "main".into(),
+                            mtime: None,
+                            is_main: true,
+                        },
+                        grove_core::git::Worktree {
+                            path: "/qa/feature".into(),
+                            branch: "feature".into(),
+                            mtime: None,
+                            is_main: false,
+                        },
+                    ],
+                )
+            });
         });
+        assert!(cx.debug_bounds("settings-project-search").is_none());
+        let disclosure = cx.debug_bounds("settings-project-worktrees-0").unwrap();
+        cx.simulate_click(disclosure.center(), gpui::Modifiers::default());
         draw(cx);
-        assert!(
-            cx.debug_bounds("settings-project-row-0").is_none(),
-            "other workspace must stay hidden"
-        );
+        assert!(cx
+            .debug_bounds("settings-project-worktree-list-0")
+            .is_some());
         cx.update(|window, cx| {
-            let search = panel.read(cx).project_search.clone().unwrap();
-            search.update(cx, |input, cx| input.set_value("", window, cx));
+            panel.read(cx).project_disclosure_focus["/qa/Atlas"]
+                .clone()
+                .focus(window, cx)
+        });
+        cx.simulate_keystrokes("space");
+        draw(cx);
+        assert!(cx
+            .debug_bounds("settings-project-worktree-list-0")
+            .is_none());
+        cx.update(|window, cx| {
             panel.update(cx, |panel, cx| {
                 panel.open_project_page(
                     super::super::sidebar::projects::Page::Edit("/qa/Atlas".into()),
@@ -3633,6 +3810,7 @@ mod tests {
                     .child(self.0.clone())
             }
         }
+        let _disk = crate::settings::lock_test_config();
         cx.update(setup);
         let mut panel = None;
         let (_, cx) = cx.add_window_view(|_, cx| {
@@ -3642,7 +3820,12 @@ mod tests {
             NavigationHost(entity)
         });
         let panel = panel.unwrap();
-        cx.update(|window, cx| panel.update(cx, |panel, cx| panel.open(window, cx)));
+        cx.update(|window, cx| {
+            panel.update(cx, |panel, cx| {
+                panel.open(window, cx);
+                panel.select_category(Category::Agents, cx);
+            })
+        });
         draw(cx);
         for (id, expected) in [
             (
@@ -3717,9 +3900,11 @@ mod tests {
         cx.update(|window, cx| panel.update(cx, |panel, cx| panel.open(window, cx)));
         draw(cx);
         assert!(cx.debug_bounds("settings-landing-history").is_none());
-        let archive = cx.debug_bounds("settings-archived-projects").unwrap();
-        let shortcuts = cx.debug_bounds("settings-shortcuts").unwrap();
-        assert!(archive.top() > shortcuts.bottom());
+        assert!(cx.debug_bounds("settings-archived-projects").is_none());
+        assert!(cx
+            .debug_bounds("settings-after-session-start-stay")
+            .is_none());
+        assert!(cx.debug_bounds("settings-shortcuts").is_some());
         cx.update(|_, cx| {
             panel.update(cx, |panel, cx| panel.select_category(Category::Agents, cx));
         });

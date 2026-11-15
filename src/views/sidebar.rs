@@ -2836,6 +2836,27 @@ impl Sidebar {
         }
     }
 
+    pub(crate) fn open_project_checkout_from_settings(
+        &mut self,
+        root: &str,
+        path: &str,
+        create: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let index = cx
+            .global::<SettingsState>()
+            .store
+            .workspace_projects(self.active_workspace)
+            .find(|(_, project)| project.path == root)
+            .map(|(index, _)| index);
+        if let Some(index) = index {
+            if self.open_dashboard_for_checkout(index, root, path, window, cx) && create {
+                self.begin_worktree(index, window, cx);
+            }
+        }
+    }
+
     pub(crate) fn manage_project_checkouts(
         &mut self,
         path: &str,
