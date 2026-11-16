@@ -1,13 +1,16 @@
 name: Release bundles
 
-# Draft releases do not trigger release events. Run this workflow from a draft's
-# tag, or provide source_tag from main, to attach bundles while keeping it draft.
-# Published releases run normally.
+# Build candidates on main so later versions can restore its release caches.
+# Publication is a separate explicit workflow and never compiles the app.
+# source_tag retains draft-only recovery for an existing tagged release.
 on:
+  push:
+    branches: [main]
+    paths-ignore: ['product/**', '*.md', '.agents/**', '.claude/**']
   workflow_dispatch:
     inputs:
       source_tag:
-        description: Existing release tag to bundle (leave empty when running from its tag)
+        description: Optional existing draft release tag for recovery; empty prepares a candidate
         type: string
         default: ''
       platform:
@@ -15,11 +18,13 @@ on:
         type: choice
         options: [all, macos-x86_64]
         default: all
-  release:
-    types: [published]
+# Superseded preparation runs can stop; tagged recovery runs are independent.
+concurrency:
+  group: release-${{ inputs.source_tag || format('prepare-{0}', github.ref) }}
+  cancel-in-progress: ${{ inputs.source_tag == '' || github.event_name == 'push' }}
 
 permissions:
-  contents: write
+  contents: read
 
 # Baked into the binary at compile time (src/telemetry.rs option_env!).
 # Unset (e.g. forked-PR runs) simply ships with telemetry disabled.
@@ -28,8 +33,9 @@ env:
 
 jobs:
   bundle:
-    # Assets on publication mean the draft was already bundled from its tag.
-    if: (github.ref_type == 'tag' || (github.event_name == 'workflow_dispatch' && inputs.source_tag != '')) && (github.event_name == 'workflow_dispatch' || github.event.release.assets[0] == null)
+    if: github.ref == 'refs/heads/main'
+    permissions:
+      contents: write  # Only tagged recovery uploads to an existing draft.
     name: Bundle (${{ matrix.os }}-${{ matrix.arch }})
     runs-on: ${{ matrix.runner }}
     strategy:
@@ -40,23 +46,25 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.source_tag || github.ref }}
+          ref: ${{ inputs.source_tag || github.sha }}
 
-      - name: Validate release tag
-        id: release
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Validate candidate or draft recovery
         shell: bash
         env:
-          RELEASE_TAG: ${{ inputs.source_tag || github.ref_name }}
-          MANUAL: ${{ github.event_name == 'workflow_dispatch' }}
+          RELEASE_TAG: ${{ inputs.source_tag }}
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "Expected an existing version tag" >&2; exit 1; }
-          [ "$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")" = "$(git rev-parse HEAD)" ] || { echo "Checkout does not match release tag" >&2; exit 1; }
-          if [ "$MANUAL" = true ]; then
-            [ "$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft)" = true ] || { echo "Manual bundles require an existing draft release" >&2; exit 1; }
+          if [ -n "$RELEASE_TAG" ]; then
+            [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "Expected an existing version tag" >&2; exit 1; }
+            [ "$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")" = "$(git rev-parse HEAD)" ] || { echo "Checkout does not match release tag" >&2; exit 1; }
+            [ "$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft)" = true ] || { echo "Recovery requires an existing draft release" >&2; exit 1; }
+            python scripts/release-candidate.py check-tag "$RELEASE_TAG"
           fi
-          echo "tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
 
       - name: Install Rust toolchain
         uses: actions-rust-lang/setup-rust-toolchain@v1
@@ -76,8 +84,13 @@ jobs:
         uses: actions/cache@v4
         with:
           path: target
-          key: release-${{ matrix.os }}-${{ matrix.arch }}-v2-${{ hashFiles('rust-toolchain.toml', 'Cargo.toml', 'Cargo.lock', '.cargo/config.toml') }}-${{ github.sha }}-${{ inputs.source_tag }}
-          restore-keys: release-${{ matrix.os }}-${{ matrix.arch }}-v2-${{ hashFiles('rust-toolchain.toml', 'Cargo.toml', 'Cargo.lock', '.cargo/config.toml') }}-
+          key: release-${{ matrix.os }}-${{ matrix.arch }}-v3-${{ hashFiles('rust-toolchain.toml', '.cargo/config.toml') }}-${{ hashFiles('Cargo.toml', 'Cargo.lock') }}-${{ github.sha }}-${{ inputs.source_tag }}
+          restore-keys: |
+            release-${{ matrix.os }}-${{ matrix.arch }}-v3-${{ hashFiles('rust-toolchain.toml', '.cargo/config.toml') }}-${{ hashFiles('Cargo.toml', 'Cargo.lock') }}-
+            release-${{ matrix.os }}-${{ matrix.arch }}-v3-${{ hashFiles('rust-toolchain.toml', '.cargo/config.toml') }}-
+            release-${{ matrix.os }}-${{ matrix.arch }}-v2-${{ hashFiles('rust-toolchain.toml', 'Cargo.toml', 'Cargo.lock', '.cargo/config.toml') }}-
+          # Cargo validates fingerprints after restoration, including toolchain,
+          # profile and dependency changes. Version bumps retain reusable crates.
 
       - name: Install Linux build deps
         if: matrix.os == 'linux'
@@ -113,31 +126,20 @@ jobs:
         if: matrix.target != ''
         run: rustup target add ${{ matrix.target }}
 
-      # Packaging executables run on the host, including cross-target builds.
-      # Keep these separate from target artifacts and pin the tool versions.
-      - name: Cache cargo-bundle executable
-        if: matrix.os != 'windows'
-        id: bundle-tool
-        uses: actions/cache@v4
-        with:
-          path: ~/.cargo/bin/cargo-bundle
-          key: cargo-bundle-0.12.0-${{ runner.os }}-${{ runner.arch }}
+      # The Intel macOS target also uses an ARM64 host packaging executable.
+      - name: Prepare packaging tool
+        uses: ./.github/actions/release-tools
 
-      - name: Install cargo-bundle
-        if: matrix.os != 'windows' && steps.bundle-tool.outputs.cache-hit != 'true'
-        run: cargo install cargo-bundle --version 0.12.0 --locked
-
-      - name: Cache cargo-wix executable
-        if: matrix.os == 'windows'
-        id: wix-tool
-        uses: actions/cache@v4
-        with:
-          path: ~/.cargo/bin/cargo-wix.exe
-          key: cargo-wix-0.3.9-${{ runner.os }}-${{ runner.arch }}
-
-      - name: Install cargo-wix
-        if: matrix.os == 'windows' && steps.wix-tool.outputs.cache-hit != 'true'
-        run: cargo install cargo-wix --version 0.3.9 --locked
+      - name: Clear stale bundle output while retaining compiled dependencies
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          if [ -n "$TARGET" ]; then
+            rm -rf "target/$TARGET/release/bundle"
+          else
+            rm -rf target/release/bundle
+          fi
 
       - name: Build release bundle (macOS/Linux)
         if: matrix.os != 'windows'
@@ -199,10 +201,33 @@ jobs:
           cargo wix -p grove --no-build --nocapture -o "dist/Grove-${VERSION}-windows-x86_64-alpha.msi"
           echo "Built dist/Grove-${VERSION}-windows-x86_64-alpha.msi"
 
+      - name: Record candidate identity and checksums
+        shell: bash
+        run: python scripts/release-candidate.py record dist '${{ matrix.os }}-${{ matrix.arch }}'
+
+      - name: Retain candidate installers
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-${{ matrix.os }}-${{ matrix.arch }}
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 14
+          overwrite: true
+
+      - name: Recheck draft before recovery upload
+        if: inputs.source_tag != ''
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ inputs.source_tag }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          [ "$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft)" = true ] || { echo 'Release is no longer draft' >&2; exit 1; }
+
       - name: Upload bundles to release
+        if: inputs.source_tag != ''
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ steps.release.outputs.tag }}
-          draft: ${{ github.event_name == 'workflow_dispatch' }}
+          tag_name: ${{ inputs.source_tag }}
+          draft: true
           fail_on_unmatched_files: true
-          files: dist/*
+          files: dist/Grove-*

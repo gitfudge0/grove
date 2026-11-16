@@ -1,0 +1,33 @@
+name: Prepare release packaging tool
+description: Restore pinned host tools and save cold installations before app compilation
+runs:
+  using: composite
+  steps:
+    - id: tool
+      shell: bash
+      run: |
+        if [ "$RUNNER_OS" = Windows ]; then
+          echo 'name=cargo-wix' >> "$GITHUB_OUTPUT"
+          echo 'version=0.3.9' >> "$GITHUB_OUTPUT"
+          echo 'file=cargo-wix.exe' >> "$GITHUB_OUTPUT"
+        else
+          echo 'name=cargo-bundle' >> "$GITHUB_OUTPUT"
+          echo 'version=0.12.0' >> "$GITHUB_OUTPUT"
+          echo 'file=cargo-bundle' >> "$GITHUB_OUTPUT"
+        fi
+    - id: cache
+      uses: actions/cache/restore@v4
+      with:
+        path: ~/.cargo/bin/${{ steps.tool.outputs.file }}
+        key: ${{ steps.tool.outputs.name }}-${{ steps.tool.outputs.version }}-${{ runner.os }}-${{ runner.arch }}
+    - if: steps.cache.outputs.cache-hit != 'true'
+      shell: bash
+      env:
+        TOOL: ${{ steps.tool.outputs.name }}
+        VERSION: ${{ steps.tool.outputs.version }}
+      run: cargo install "$TOOL" --version "$VERSION" --locked
+    - if: steps.cache.outputs.cache-hit != 'true'
+      uses: actions/cache/save@v4
+      with:
+        path: ~/.cargo/bin/${{ steps.tool.outputs.file }}
+        key: ${{ steps.tool.outputs.name }}-${{ steps.tool.outputs.version }}-${{ runner.os }}-${{ runner.arch }}

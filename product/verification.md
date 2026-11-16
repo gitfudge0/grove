@@ -2326,3 +2326,15 @@ updates untested. **Claude:** verified the same shared fixture; live provider
 updates untested. No provider transport was started. Manual native screenshots,
 pointer/keyboard walkthroughs and macOS/Windows execution remain untested.
 No installation, restart, push or release was performed.
+
+## Release candidate preparation and promotion
+
+Release tooling now prepares four platform candidates on main and promotes an
+exact successful run without compilation; see [release tooling](releasing.md).
+Hosted validation remains untested: warm-cache timing, scheduled tool warming,
+macOS/Linux/Windows artifact production, GitHub artifact restoration, and draft
+promotion must be exercised on the next authorized preparation/release. No remote
+workflow, app installation or release publication was started for this change.
+Local manifest fixtures establish rejection behavior, not GitHub service behavior
+or measured build-time savings. Existing unrelated Clippy, spelling and standalone
+Windows-probe failures were observed in the earlier cancelled-release investigation.

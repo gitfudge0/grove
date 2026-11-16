@@ -17,6 +17,7 @@ verification records are evidence, not competing specifications.
 | GPUI APIs, state, async work or rendering | [Development guidance](development.md) |
 | A measured native/HTML component reference | [Reference workflow](ui-reference.md) |
 | Native provider contracts, completion, ownership or diagnostics | [Provider guidance](providers.md) |
+| Release preparation, cache reuse or installer publication | [Release tooling](releasing.md) |
 | Validation, provider smoke checks or known verification gaps | [Verification](verification.md) |
 
 `design.md` is the normative semantic UI contract. Exact values and complete

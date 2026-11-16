@@ -1,0 +1,30 @@
+name: Prepare release tools
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '20 3 * * 1,4'
+  push:
+    branches: [main]
+    paths:
+      - .github/actions/release-tools/**
+      - .github/workflows/release-tools.yml
+      - rust-toolchain.toml
+permissions:
+  contents: read
+concurrency:
+  group: release-tools-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  tools:
+    if: github.ref == 'refs/heads/main'
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          cache: false
+      - uses: ./.github/actions/release-tools
