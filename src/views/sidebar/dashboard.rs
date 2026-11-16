@@ -297,6 +297,8 @@ impl DestinationTray {
                         PopupMenuItem::element(|_, _| {
                             div()
                                 .id("destination-no-project")
+                                .flex_1()
+                                .min_w_0()
                                 .aria_label("No project")
                                 .flex()
                                 .items_center()
@@ -328,6 +330,8 @@ impl DestinationTray {
                         PopupMenuItem::element(move |_, _| {
                             div()
                                 .id(format!("destination-project-{idx}"))
+                                .flex_1()
+                                .min_w_0()
                                 .aria_label(name.clone())
                                 .flex()
                                 .items_center()
@@ -348,6 +352,8 @@ impl DestinationTray {
                     PopupMenuItem::element(|_, _| {
                         div()
                             .id("destination-across-worktrees")
+                            .flex_1()
+                            .min_w_0()
                             .debug_selector(|| "destination-across-worktrees".into())
                             .aria_label("Across worktrees")
                             .flex()
