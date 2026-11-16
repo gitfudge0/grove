@@ -1,3 +1,25 @@
+# Grove 1.2.1
+
+## Projects and sessions
+
+- Manage projects and worktrees in Settings, with simpler editing, automatic project symbols, and compact icon selection.
+- Choose where new sessions open and keep their order stable within activity groups.
+- See provider usage in a footer hover panel and sign in to providers and MCP services from Grove.
+
+## Plans, artifacts, and conversations
+
+- Review native plans around visible behavior, with concise overviews, expandable implementation details, and reviewed responses.
+- Open durable HTML artifacts with native previews and see their full titles in the conversation.
+- Run agent shell snippets inline with output collapsed until needed.
+- Use fuzzy matching for skill and command completion, reveal transcript files in the explorer, and keep short reply suggestions until sending.
+- Improve question decisions, tool outcomes, pending-message ordering, and automatic queue delivery after manual compaction.
+
+## Desktop and reliability
+
+- Respect Linux desktop scaling and text size preferences, and use platform-specific window-edge controls.
+- Install on macOS with a drag-to-Applications disk image.
+- Improve startup reuse, Settings recovery, native plan link handling, and review-summary placement.
+
 # Grove 1.2.0
 
 Grove 1.2.0 is a major redesign of the app—from how you start work to how you follow agents, review changes, and move between projects. A new sidebar, live dashboard, and redesigned conversation workspace bring your coding workflow into one place.
