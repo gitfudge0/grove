@@ -37,8 +37,6 @@ pub(super) struct ScopePicker {
     _input_events: gpui::Subscription,
     focus: FocusHandle,
     row_focus: HashMap<String, FocusHandle>,
-    cwd_focus: FocusHandle,
-    cwd_rows: HashMap<String, FocusHandle>,
     cancel_focus: FocusHandle,
     confirm_focus: FocusHandle,
     retry_focus: FocusHandle,
@@ -48,7 +46,6 @@ pub(super) struct ScopePicker {
     generation: u64,
     error: Option<String>,
     query: String,
-    cwd_open: bool,
     scroll: ScrollHandle,
     presence: motion::Presence,
 }
@@ -84,8 +81,6 @@ impl ScopePicker {
             _input_events: input_events,
             focus: cx.focus_handle(),
             row_focus: HashMap::new(),
-            cwd_focus: cx.focus_handle(),
-            cwd_rows: HashMap::new(),
             cancel_focus: cx.focus_handle(),
             confirm_focus: cx.focus_handle(),
             retry_focus: cx.focus_handle(),
@@ -95,7 +90,6 @@ impl ScopePicker {
             generation: 0,
             error: None,
             query: String::new(),
-            cwd_open: false,
             scroll: ScrollHandle::new(),
             presence: motion::Presence::fast(),
         };
@@ -156,9 +150,6 @@ impl ScopePicker {
                     this.row_focus
                         .entry(path.clone())
                         .or_insert_with(|| cx.focus_handle());
-                    this.cwd_rows
-                        .entry(path.clone())
-                        .or_insert_with(|| cx.focus_handle());
                 }
                 this.reconcile_cwd();
                 cx.notify();
@@ -201,7 +192,6 @@ impl ScopePicker {
             self.selected.push(path.to_owned());
         }
         self.reconcile_cwd();
-        self.cwd_open = false;
         cx.notify();
     }
     fn available(&self, path: &str) -> bool {
@@ -255,16 +245,6 @@ impl ScopePicker {
         {
             handles.push(self.retry_focus.clone());
         }
-        if !self.selected.is_empty() {
-            handles.push(self.cwd_focus.clone());
-            if self.cwd_open {
-                handles.extend(
-                    self.selected
-                        .iter()
-                        .filter_map(|p| self.cwd_rows.get(p).cloned()),
-                );
-            }
-        }
         handles.push(self.cancel_focus.clone());
         if self.can_apply() {
             handles.push(self.confirm_focus.clone());
@@ -304,13 +284,7 @@ impl ScopePicker {
         }
         match key.key.as_str() {
             "escape" => {
-                if self.cwd_open {
-                    self.cwd_open = false;
-                    self.cwd_focus.focus(window, cx);
-                    cx.notify();
-                } else {
-                    self.dismiss(ScopePickerEvent::Cancelled, cx);
-                }
+                self.dismiss(ScopePickerEvent::Cancelled, cx);
             }
             "tab" => {
                 let handles = self.focus_order(cx);
@@ -336,25 +310,6 @@ impl ScopePicker {
                     self.apply(cx);
                 } else if self.retry_focus.is_focused(window) {
                     self.load(cx);
-                } else if self.cwd_focus.is_focused(window) {
-                    self.cwd_open = !self.cwd_open;
-                    cx.notify();
-                } else if self.cwd_open {
-                    if let Some(path) = self
-                        .selected
-                        .iter()
-                        .find(|path| {
-                            self.cwd_rows
-                                .get(*path)
-                                .is_some_and(|h| h.is_focused(window))
-                        })
-                        .cloned()
-                    {
-                        self.cwd = path;
-                        self.cwd_open = false;
-                        self.cwd_focus.focus(window, cx);
-                        cx.notify();
-                    }
                 } else if let Some(path) = self
                     .row_focus
                     .iter()
@@ -404,7 +359,6 @@ impl ScopePicker {
             .border_1()
             .border_color(gpui::transparent_black())
             .cursor_pointer()
-            .when(checked, |row| row.bg(c::BG_HOVER()))
             .hover(|row| row.bg(c::BG_HOVER()))
             .focus_visible(|row| row.border_color(c::SEL_RING()).bg(c::BG_HOVER()))
             .on_click(cx.listener(move |this, _, window, cx| {
@@ -594,106 +548,6 @@ impl Render for ScopePicker {
                 .on_click(cx.listener(|this, _, _, cx| this.load(cx))),
             );
         }
-        let cwd_label = self
-            .targets
-            .iter()
-            .find(|t| t.path == self.cwd)
-            .map(|t| format!("{} / {}", t.project_name, t.branch))
-            .unwrap_or_else(|| "Choose a working directory".into());
-        let mut cwd = div()
-            .flex_shrink_0()
-            .px(rpx(SPACE_3XL))
-            .py(rpx(SPACE_LG))
-            .border_t_1()
-            .border_color(c::BORDER_SOFT())
-            .flex()
-            .flex_col()
-            .gap(rpx(SPACE_SM))
-            .child(
-                div()
-                    .text_size(rpx(TEXT_SMALL))
-                    .text_color(c::FG_DIM())
-                    .child("Working directory"),
-            )
-            .child(
-                components::form_action("scope-working-directory", cwd_label, false, window, cx)
-                    .icon(gpui_component::Icon::default().path("icons/git-branch.svg"))
-                    .with_focus_handle(self.cwd_focus.clone())
-                    .w_full()
-                    .justify_start()
-                    .child(icon(
-                        if self.cwd_open {
-                            "chev-up"
-                        } else {
-                            "chev-down"
-                        },
-                        ICON_SM,
-                        c::FG_DIM(),
-                    ))
-                    .disabled(self.selected.is_empty())
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.cwd_open = !this.cwd_open;
-                        cx.notify();
-                    })),
-            );
-        if self.cwd_open {
-            let mut options = div()
-                .id("scope-cwd-options")
-                .max_h(rpx(APPBAR_H * 3.))
-                .overflow_y_scroll()
-                .flex()
-                .flex_col()
-                .gap(rpx(SPACE_XS));
-            for path in &self.selected {
-                let label = self
-                    .targets
-                    .iter()
-                    .find(|t| &t.path == path)
-                    .map(|t| format!("{} / {}", t.project_name, t.branch))
-                    .unwrap_or_else(|| path.clone());
-                let chosen = path == &self.cwd;
-                let path = path.clone();
-                let focus = self
-                    .cwd_rows
-                    .get(&path)
-                    .cloned()
-                    .unwrap_or_else(|| self.focus.clone());
-                options = options.child(
-                    div()
-                        .id(SharedString::from(format!("scope-cwd-{path}")))
-                        .role(gpui::Role::RadioButton)
-                        .aria_label(label.clone())
-                        .aria_toggled(if chosen {
-                            gpui::Toggled::True
-                        } else {
-                            gpui::Toggled::False
-                        })
-                        .track_focus(&focus)
-                        .tab_index(0)
-                        .px(rpx(SPACE_LG))
-                        .py(rpx(SPACE_SM))
-                        .flex()
-                        .items_center()
-                        .gap(rpx(SPACE_SM))
-                        .rounded(rpx(RADIUS_CONTROL))
-                        .border_1()
-                        .border_color(gpui::transparent_black())
-                        .when(chosen, |row| row.bg(c::BG_HOVER()))
-                        .hover(|row| row.bg(c::BG_HOVER()))
-                        .focus_visible(|row| row.border_color(c::SEL_RING()))
-                        .child(icon("git-branch", ICON_SM, c::FG_DIM()))
-                        .child(div().flex_1().min_w_0().truncate().child(label))
-                        .when(chosen, |row| row.child(icon("check", ICON_SM, c::FG())))
-                        .on_click(cx.listener(move |this, _, window, cx| {
-                            this.cwd = path.clone();
-                            this.cwd_open = false;
-                            this.cwd_focus.focus(window, cx);
-                            cx.notify();
-                        })),
-                );
-            }
-            cwd = cwd.child(options);
-        }
         let invalid = !self.loading && self.selected.iter().any(|path| !self.available(path));
         let footer = div()
             .flex_shrink_0()
@@ -784,7 +638,6 @@ impl Render for ScopePicker {
                     )),
             )
             .child(rows)
-            .child(cwd)
             .child(footer);
         let overlay = div()
             .id("worktree-scope-overlay")
