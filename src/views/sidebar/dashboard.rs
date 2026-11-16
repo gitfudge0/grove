@@ -374,7 +374,7 @@ impl DestinationTray {
                                     .flex()
                                     .items_center()
                                     .justify_center()
-                                    .child(icon("workspaces", ICON_SM, c::FG_DIM())),
+                                    .child(icon("across-worktrees", ICON_SM, c::FG_DIM())),
                             )
                             .child("Across worktrees…")
                     })
@@ -563,7 +563,11 @@ impl Render for DestinationTray {
             .flex_wrap()
             .gap(rpx(SPACE_SM));
         for (idx, (is_project, label, glyph)) in [
-            (true, project, if scoped { "workspaces" } else { "folder" }),
+            (
+                true,
+                project,
+                if scoped { "across-worktrees" } else { "folder" },
+            ),
             (false, worktree, "git-branch"),
         ]
         .into_iter()

@@ -227,6 +227,10 @@ fn svg_for(name: &str) -> String {
         "person" => r#"<circle cx="8" cy="5" r="2.5"/><path d="M3 14v-1.5a5 5 0 0 1 10 0V14"/>"#,
         "history" => r#"<path d="M2 7a6 6 0 1 1 1.2 4M2 2v5h5M8 4v4l2.5 1.5"/>"#,
         "reset" => r#"<path d="M2.5 6a5.5 5.5 0 1 1 .5 5M2.5 2.5V6H6"/>"#,
+        // Several checkout branches sharing one session context.
+        "across-worktrees" => {
+            r#"<circle cx="3.5" cy="3" r="1.5"/><circle cx="12.5" cy="3" r="1.5"/><circle cx="8" cy="13" r="1.5"/><path d="M3.5 4.5v2a3 3 0 0 0 3 3h3a3 3 0 0 0 3-3v-2M8 9.5v2"/>"#
+        }
         "workspaces" => {
             r#"<rect x="2" y="5" width="9" height="9" rx="1.5"/><path d="M5 5V2h9v9h-3"/>"#
         }
@@ -501,6 +505,7 @@ mod tests {
             "sidebar-expand",
             "add-project",
             "workspaces",
+            "across-worktrees",
             "add-terminal",
             "chev-down",
             "chev-up",
