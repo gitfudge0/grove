@@ -2236,3 +2236,27 @@ live-provider claim is made. Codex and Claude were exercised only through shared
 native fixtures for navigation/draft ownership; both live provider boundaries
 remain untested. macOS and Windows runtime were not exercised. No installed app
 was replaced or restarted, and no release or push was performed.
+
+
+## Stable sidebar activity order (November 2026)
+
+Activity-grouped navigation now retains arrival order within each group. Status
+and activity updates and session selection preserve slots; new sessions and
+settled transfers append. The existing 500 ms settle, immediate Needs you entry,
+row motion and visible keyboard order remain in place. Workspace switches reset
+placement from registry order; the Dashboard keeps its separate recency behavior.
+
+On Linux, 53 focused checks passed against an isolated source snapshot of
+`eb6887e` plus this scoped change: four placement tests, six session-list tests,
+eight navigation fixtures, two row-motion fixtures and 33 UI conformance checks.
+The new shared Codex/Claude ordering fixture failed against the original sorter
+and passed with stable ordering. Formatting and repository artifact checks passed.
+The combined working-tree rerun failed with borrow errors in concurrently edited
+`codex_view/snippets.rs` and its `codex_view.rs` fixture; those changes were not
+included in this commit. This does not establish a clean combined-tree build.
+
+**Codex:** verified shared GPUI metadata/state and selection fixture; live provider
+updates untested. **Claude:** verified the same shared fixture; live provider
+updates untested. No provider transport was started. Manual native screenshots,
+pointer/keyboard walkthroughs and macOS/Windows execution remain untested.
+No installation, restart, push or release was performed.

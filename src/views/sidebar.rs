@@ -2514,10 +2514,9 @@ impl Sidebar {
         group_sessions_for_list(&entries, Instant::now())
             .into_iter()
             .map(|(heading, indices)| {
-                (
-                    heading,
-                    indices.into_iter().map(|index| entries[index].id).collect(),
-                )
+                let mut ids: Vec<_> = indices.into_iter().map(|index| entries[index].id).collect();
+                self.session_placement.sort(&mut ids);
+                (heading, ids)
             })
             .collect()
     }
