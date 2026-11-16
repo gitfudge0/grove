@@ -1,3 +1,18 @@
+## Usage popup while Settings is open (November 2026)
+
+Removed the Settings-open exclusion from the usage opener. Seven usage-related
+GPUI fixtures passed on Linux, including hover opening without stealing Settings
+focus, click-to-pin, and Escape dismissal while Settings stays open. All 33 UI
+conformance checks, focused formatting and repository artifact policy passed.
+An original-guard countercheck was blocked by concurrent unrelated compilation
+changes, so no executed before/after failure claim is made.
+
+Manual desktop visual inspection remains untested. Codex and Claude live provider
+checks remain untested; this change exercises shared native UI fixtures without
+changing provider transport. macOS and Windows were not run. No installation or
+restart was performed. The scoped fix was committed after configuring the repository author from the
+authenticated GitHub account.
+
 ## Encoded native plan destinations (November 2026)
 
 Core import/retry regressions passed 27 tests, including saved-error recovery for

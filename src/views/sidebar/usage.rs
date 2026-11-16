@@ -39,10 +39,6 @@ impl Sidebar {
         }
         if !self.navigation_available()
             || self
-                .settings_panel
-                .as_ref()
-                .is_some_and(|panel| panel.read(cx).is_open())
-            || self
                 .workspace_selector
                 .as_ref()
                 .is_some_and(|selector| selector.read(cx).is_open())
@@ -238,6 +234,68 @@ mod tests {
         cx.set_global(crate::zoom::ZoomState::new(1.));
         cx.set_global(crate::zoom::CurrentPtyDims::default());
         c::sync_component_theme(cx);
+    }
+    #[gpui::test]
+    fn usage_opens_over_settings_without_closing_it(cx: &mut gpui::TestAppContext) {
+        cx.update(setup);
+        let mut sidebar = None;
+        let (_, cx) = cx.add_window_view(|window, cx| {
+            let runtime = cx.new(Runtime::new);
+            let settings =
+                cx.new(|cx| crate::views::settings_panel::SettingsPanel::new(runtime.clone(), cx));
+            let view = cx.new(|cx| {
+                let mut view = Sidebar::new(runtime, window, cx);
+                view.set_settings_panel(settings.clone(), cx);
+                view
+            });
+            sidebar = Some(view.clone());
+            gpui_component::Root::new(view, window, cx)
+        });
+        let sidebar = sidebar.unwrap();
+        cx.simulate_resize(gpui::size(gpui::px(1280.), gpui::px(900.)));
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            let settings = sidebar.read(cx).settings_panel.clone().unwrap();
+            settings.update(cx, |settings, cx| settings.open(window, cx));
+        });
+        cx.update(|window, cx| {
+            let _ = window.draw(cx);
+        });
+        let anchor = cx.debug_bounds("sidebar-usage").unwrap();
+        cx.simulate_mouse_move(anchor.center(), None, gpui::Modifiers::default());
+        cx.executor()
+            .advance_clock(Duration::from_millis(MOTION_BASE_MS + 1));
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            let _ = window.draw(cx);
+            let sidebar = sidebar.read(cx);
+            assert!(sidebar.usage_panel.is_some());
+            assert!(sidebar.usage_hover_open);
+            let settings = sidebar.settings_panel.as_ref().unwrap();
+            assert!(settings.read(cx).is_open());
+            assert!(settings.focus_handle(cx).contains_focused(window, cx));
+        });
+        assert!(cx.debug_bounds("provider-usage-panel").is_some());
+        cx.simulate_click(anchor.center(), gpui::Modifiers::default());
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            let sidebar = sidebar.read(cx);
+            assert!(!sidebar.usage_hover_open);
+            assert!(sidebar
+                .usage_panel
+                .as_ref()
+                .unwrap()
+                .focus_handle(cx)
+                .contains_focused(window, cx));
+        });
+        cx.simulate_keystrokes("escape");
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            let sidebar = sidebar.read(cx);
+            assert!(sidebar.usage_panel.is_none());
+            assert!(sidebar.settings_panel.as_ref().unwrap().read(cx).is_open());
+            assert!(sidebar.usage_button_focus.is_focused(window));
+        });
     }
     #[gpui::test]
     fn usage_icon_opens_by_keyboard_and_escape_restores_focus(cx: &mut gpui::TestAppContext) {
