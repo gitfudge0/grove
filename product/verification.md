@@ -2113,3 +2113,101 @@ not live-provider UI interaction evidence. A live end-to-end native UI run remai
 untested, as do Wayland, macOS and Windows execution; no platform-specific code
 changed. Rerun `compaction_queue_smoke claude EMPTY_CWD` with disposable
 `GROVE_CONFIG_DIR` after CLI authentication to close the live Claude gap.
+## Work-first project administration (2026-11-15)
+
+Projects has moved out of primary navigation into Settings → Projects, with
+contextual composer-picker links and a focused Checkouts utility. Linux checks
+passed 147 tests across Shell (44), Settings (24), navigation (8), Dashboard (19),
+project lifecycle (5), content (14), and UI conformance (33). Five opt-in Settings
+capture fixtures were ignored. The two already-documented Dashboard appbar layout
+expectation failures were excluded; this change does not repair those expectations.
+The optimized local build, formatting, diff and artifact-policy checks passed.
+
+Codex and Claude are verified by local native fixtures for retained composer
+entity, draft, provider preferences, Settings/Checkouts return, and real Git
+worktree creation/cancel. Store-observer coverage additionally checks repository
+reindexing and selected-project archival without retargeting or clearing the draft.
+Live Codex and Claude transport is untested; no provider messages were sent.
+
+An isolated production Linux X11 app was launched with a distinct QA app identity,
+private Grove/Codex/Claude configuration, private D-Bus session and disposable Git
+repositories. Native pointer actions and captured Dark renders exercised the
+project picker, Settings category, editor return and Checkouts utility. The actual
+window was constrained to 1402 × 1698 device pixels at host scale 2; this is not a
+wide-layout or measured-reference parity claim. Initial blank/stale captures
+required explicit Expose events; only subsequent rendered frames were inspected.
+Evidence and the task-local runnable binary are under the ignored
+`.grove-artifacts/projects-native-qa/` directory. The QA app remains running for
+review; the installed app was not replaced.
+
+Unfinished coverage: native Light appearance, enlarged-rem/keyboard/pointer state
+matrix, all destructive confirmation interactions, participant usability, and
+macOS/Windows runtime. Existing service/GPUI lifecycle fixtures cover archive,
+restore, move and guarded removal, rather than a complete production-app click
+walkthrough of every operation.
+
+## Project editor and Settings simplification (2026-11-16)
+
+The editor omits its folder readout, exposes all sixteen choices under Project
+icon with the current selection marked, and omits automatic/custom identity
+status labels. Shuffle and Reset icon retain draft-only behavior. Scripts groups
+setup, teardown and reusable entries without the redundant save explanation.
+Settings Projects now discloses cached worktrees inline, with Use/New worktree
+entry points and no project search. Archived registrations remain in Projects;
+the General shortcut was removed and Sessions moved to Agents.
+
+The local production build and 127 focused checks passed: Settings (24), project
+editor/identity (7), UI conformance (33), Dashboard (19), and Shell (44). The
+identity fixtures cover all choices visible by default, draft-only edits,
+keyboard activation, narrow/enlarged-rem geometry and persistence failure. The
+Settings fixture covers workspace scope, expand/collapse, stable disclosure focus
+and editor/Escape return. One parallel preference run overlapped the theme test's
+deliberate disk failure; the preference test now takes the existing shared config
+lock, and the full Settings rerun passed. Six opt-in native captures were ignored;
+the two previously documented Dashboard layout failures remain excluded.
+
+The task-owned QA binary was refreshed with its existing isolated configuration
+and disposable repositories. Actual Dark Linux X11 captures inspected General,
+Agents, collapsed/expanded Projects and the editor. Pointer actions expanded real
+worktrees and changed/restored After starting a session; persisted QA configuration
+confirmed both values. The initial selected icon and all choices were visible;
+standalone symbol-pointer attempts did not establish a changed rendered pick,
+so icon activation evidence remains the passing GPUI pointer/keyboard fixture.
+The host required Expose events for fresh captures. Evidence remains under
+`.grove-artifacts/projects-native-qa/`; the QA app is retained for review.
+
+Codex and Claude retained-draft/checkout behavior passed local native fixtures;
+neither provider's live transport was exercised. Native Light appearance, the
+complete pointer/focus matrix, measured visual parity, and macOS/Windows runtime
+remain unverified. This endpoint refreshes only the isolated QA app.
+
+### Compact project icon rows (2026-11-16)
+
+Implemented selected exploratory variant A in the native project editor: Symbol
+and Color rows, six swatches with the selected color name, and Shuffle/Reset in
+the header. Removed the standalone preview and borders on unselected symbols.
+Existing draft, atomic Save and Reset-to-original behavior remain in place.
+
+- Built with `CARGO_TARGET_DIR=/home/gitfudge/Projects/grove/target cargo build
+  --profile local -q -p grove`. Formatting, diff whitespace and repository
+  artifact-policy checks passed. No app installation, replacement or release.
+- The final test binary passed 64 focused checks: 7 project editor/appearance,
+  24 Settings and 33 UI conformance checks. Six opt-in capture tests were ignored.
+  The existing appearance test now checks all symbol bounds, the selected-color
+  label, pointer selection, and long-name preservation at widths 768/360 and rem
+  16/24 in Grove Dark and Light. Persistence/save-failure tests passed.
+- Native Linux/X11 gallery fixtures used separate configuration, process and app
+  identity. Inspected both theme layouts. Observed Leaf/Rose pointer selection;
+  in the final Light fixture, pointer selection followed by Tab/Enter selected
+  Olive, and Reset restored the original Flower/Teal assignment. Native inspection
+  exposed missing color Tab stops; the focused regression initially failed and
+  passed after explicit Tab stops and pointer-focus ownership were added.
+- Final Dark layout was inspected; its OS keyboard attempt did not produce a
+  confirmed changed capture. Both-theme layout/pointer checks and additional
+  keyboard checks used GPUI TestPlatform, not live provider sessions. Codex and
+  Claude live transports
+  remain untested; this picker does not alter their boundaries.
+- Native fixtures were stopped after inspection. Captures and logs remain in
+  ignored task artifacts. Measured HTML/native parity certification is unsupported
+  on Linux (the tool requires macOS Metal); the exploratory mock is not a measured
+  reference. Windows/macOS runtime and participant usability remain unverified.

@@ -82,7 +82,6 @@ pub(in crate::views) struct ProjectPanel {
     add_script_focus: FocusHandle,
     archive_overflow: Option<String>,
     draft_appearance: Option<grove_core::storage::identity::ProjectAppearance>,
-    appearance_open: bool,
     appearance_symbol_focus: Vec<FocusHandle>,
     appearance_color_focus: Vec<FocusHandle>,
     error: Option<String>,
@@ -216,13 +215,12 @@ impl ProjectPanel {
             add_script_focus: cx.focus_handle(),
             archive_overflow: None,
             draft_appearance,
-            appearance_open: false,
             appearance_symbol_focus: grove_core::storage::identity::SYMBOLS
                 .iter()
                 .map(|_| cx.focus_handle())
                 .collect(),
             appearance_color_focus: (0..grove_core::storage::identity::COLOR_COUNT)
-                .map(|_| cx.focus_handle())
+                .map(|_| cx.focus_handle().tab_stop(true))
                 .collect(),
             error: None,
             destination: None,
@@ -552,10 +550,7 @@ impl ProjectPanel {
             )
     }
     fn render_lifecycle(&self, window: &mut Window, cx: &mut Context<Self>) -> gpui::Div {
-        let mut group = div().flex().flex_col().child(register_heading(
-            "Automatic lifecycle",
-            "Optional setup and teardown commands.",
-        ));
+        let mut group = div().flex().flex_col();
         for (label, index, editor, focus_index) in [
             ("Setup", 1, ScriptEditor::Setup, 0),
             ("Teardown", 3, ScriptEditor::Teardown, 1),
@@ -634,20 +629,13 @@ impl ProjectPanel {
                     .items_center()
                     .gap(rpx(SPACE_LG))
                     .child(div().flex_1().min_w_0().child(register_heading(
-                        "Reusable actions",
-                        "Shell commands and agent prompts.",
+                        "Scripts",
+                        "Setup, teardown, shell commands and agent prompts.",
                     )))
                     .child(add),
             );
-        if self.script_entries.is_empty() {
-            list = list.child(
-                div()
-                    .py(rpx(SPACE_2XL))
-                    .border_y_1()
-                    .border_color(c::BORDER_SOFT())
-                    .text_color(c::FG_DIM())
-                    .child("No scripts yet. Add a shell command or agent prompt."),
-            );
+        if self.draft_appearance.is_some() {
+            list = list.child(self.render_lifecycle(window, cx));
         }
         for (id, prompt, name, body) in &self.script_entries {
             let editor = ScriptEditor::Action(id.clone());
@@ -802,14 +790,9 @@ impl ProjectPanel {
             }
             list = list.child(item);
         }
-        list.child(
-            div()
-                .pt(rpx(SPACE_2XL))
-                .text_size(rpx(TEXT_SMALL))
-                .text_color(c::FG_DIM())
-                .child("Changes apply when you save this project."),
-        )
+        list
     }
+
     fn move_project(&mut self, cx: &mut Context<Self>) {
         let Page::Move(path) = &self.page else { return };
         let path = path.clone();
@@ -1052,7 +1035,7 @@ impl Render for ProjectPanel {
         let mut heading = title.to_owned();
         let mut description: String = match page {
             Page::Edit(_) => {
-                "Manage this project’s automatic lifecycle and reusable actions.".into()
+                "Manage this project’s name, icon and scripts.".into()
             }
             Page::Remove(_) => "Review what Grove will remove before continuing.".into(),
             Page::Move(_) => {
@@ -1263,28 +1246,9 @@ impl Render for ProjectPanel {
                                         },
                                         window,
                                         cx,
-                                    )))
-                                    .child(
-                                        div()
-                                            .min_w_0()
-                                            .w_full()
-                                            .debug_selector(|| "Project folder".into())
-                                            .text_size(rpx(TEXT_SMALL))
-                                            .text_color(c::FG_DIM())
-                                            .child("Project folder")
-                                            .child(
-                                                crate::views::components::readonly_value(
-                                                    "project-folder-path",
-                                                    path.clone(),
-                                                )
-                                                .text_size(rpx(TEXT_SMALL))
-                                                .line_height(rpx(CARD_LINE_SM_H))
-                                                .text_color(c::FG_DIM()),
-                                            ),
-                                    ),
+                                    ))),
                             )
-                            .child(self.render_appearance(window, cx))
-                            .child(self.render_lifecycle(window, cx));
+                            .child(self.render_appearance(window, cx));
                     } else {
                         heading = "Directory scripts".into();
                         description = "Reusable actions for this directory.".into();
@@ -1296,7 +1260,7 @@ impl Render for ProjectPanel {
                             .child(div().flex_1().min_w_0().flex().flex_col().gap(rpx(SPACE_SM))
                                 .child(div().font_weight(FontWeight::MEDIUM).child("Archive project"))
                                 .child(div().text_size(rpx(TEXT_SMALL)).text_color(c::FG_DIM())
-                                    .child("Hide it from Projects without deleting its folder.")))
+                                    .child("Hide it from project pickers without deleting its folder.")))
                             .child(project_action("project-archive".into(), "Archive",
                                 Some("icons/archive.svg"), ProjectActionStyle::Mini, window, cx)
                                 .on_click(cx.listener(move |this, _, window, cx| {
@@ -1925,11 +1889,13 @@ impl Render for ProjectPanel {
                     .px(rpx(SPACE_3XL))
                     .border_b_1()
                     .border_color(c::BORDER_SOFT())
-                    .when(archived_page, |header| {
+                    .when(archived_page || self.settings_origin, |header| {
                         header.child(
                             crate::views::components::back_action(
-                                "project-panel-cancel",
-                                if self.settings_origin {
+                                "project-panel-back",
+                                if self.settings_origin && !archived_page {
+                                    "Back to Projects"
+                                } else if self.settings_origin {
                                     "Back to General"
                                 } else {
                                     "Back to Projects"
@@ -2365,10 +2331,11 @@ mod tests {
             cx.simulate_resize(gpui::size(gpui::px(width), gpui::px(900.)));
             draw(cx);
             let field = cx.debug_bounds("project-name").unwrap();
-            let folder = cx.debug_bounds("Project folder").unwrap();
+            assert!(cx.debug_bounds("Project folder").is_none());
+            let folder = cx.debug_bounds("project-icon-section").unwrap();
             assert!(
                 folder.top() >= field.bottom(),
-                "project folder must stay below the full-width name"
+                "project icons must stay below the full-width name"
             );
             assert_eq!(field.left(), folder.left());
             assert_eq!(field.right(), folder.right());
@@ -2701,7 +2668,8 @@ mod tests {
             cx.simulate_resize(gpui::size(gpui::px(width), gpui::px(height)));
             draw(cx);
             let field = cx.debug_bounds("project-name").unwrap();
-            let folder = cx.debug_bounds("Project folder").unwrap();
+            assert!(cx.debug_bounds("Project folder").is_none());
+            let folder = cx.debug_bounds("project-icon-section").unwrap();
             let scroll = cx.debug_bounds("project-panel-scroll").unwrap();
             let footer = cx.debug_bounds("project-panel-footer").unwrap();
             assert!(f32::from(field.left()) >= 0.);

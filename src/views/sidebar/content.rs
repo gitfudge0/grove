@@ -418,7 +418,15 @@ impl Sidebar {
                             store.workspaces.select(*workspace);
                         });
                         this.project_setup = None;
-                        this.finish_project_selection(path, window, cx);
+                        if let Some(index) = cx
+                            .global::<SettingsState>()
+                            .store
+                            .projects
+                            .iter()
+                            .position(|p| p.path == *path)
+                        {
+                            this.open_dashboard_for_project(index, path, window, cx);
+                        }
                     }
                     super::project_setup::ProjectSetupEvent::Cancelled => {
                         this.project_setup = None;
@@ -2056,6 +2064,9 @@ impl Sidebar {
         if canvas_destination == super::global_navigation::Destination::Projects
             && matches!(self.selection, None | Some(Selection::Project(_)))
         {
+            if let Some(Selection::Project(index)) = self.selection {
+                return self.render_checkout_management(index, window, cx);
+            }
             return self.render_projects_destination(window, cx);
         }
         if canvas_destination == super::global_navigation::Destination::Sessions
@@ -3437,7 +3448,7 @@ mod tests {
         assert_eq!(page, canvas);
         assert!(cx.debug_bounds("projects-add").is_some());
         assert!(cx.debug_bounds("canvas-empty-card").is_none());
-        assert!(cx.debug_bounds("global-nav-projects").is_some());
+        assert!(cx.debug_bounds("global-nav-projects").is_none());
         assert!(cx.debug_bounds("sidebar-rail").is_none());
     }
     #[test]

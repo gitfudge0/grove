@@ -1,11 +1,14 @@
 //! Optional project appearance editing. Choices remain in the outer form draft.
 use super::*;
-use crate::views::components::{dense_action_with_colors, project_symbol};
+use crate::views::components::dense_action_with_colors;
+#[cfg(test)]
+use crate::views::components::project_symbol;
 use gpui_component::Selectable;
 use grove_core::storage::identity::{ProjectIdentity, COLOR_COUNT, SYMBOLS};
 
 const SYMBOL_CONTROL_SIZE: f32 = 28.;
-const SYMBOL_PICKER_MAX_H: f32 = 224.;
+const APPEARANCE_LABEL_W: f32 = 54.;
+const COLOR_SWATCH_SIZE: f32 = 12.;
 const COLOR_NAMES: [&str; 6] = ["Teal", "Copper", "Slate", "Rose", "Olive", "Neutral"];
 
 impl ProjectPanel {
@@ -27,101 +30,78 @@ impl ProjectPanel {
             return div();
         };
         let current = appearance.current();
+        let shuffle = project_action(
+            "project-appearance-randomize".into(),
+            "Shuffle",
+            Some("icons/shuffle.svg"),
+            ProjectActionStyle::Quiet,
+            window,
+            cx,
+        )
+        .debug_selector(|| "project-appearance-randomize".into())
+        .on_click(cx.listener(|this, _, _, cx| this.randomize_appearance(cx)))
+        .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
+            if matches!(event.keystroke.key.as_str(), "enter" | "space") && !event.is_held {
+                this.randomize_appearance(cx);
+                window.prevent_default();
+                cx.stop_propagation();
+            }
+        }));
+        let reset = project_action(
+            "project-appearance-automatic".into(),
+            "Reset",
+            Some("icons/reset.svg"),
+            ProjectActionStyle::Quiet,
+            window,
+            cx,
+        )
+        .debug_selector(|| "project-appearance-automatic".into())
+        .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
+            if matches!(event.keystroke.key.as_str(), "enter" | "space") && !event.is_held {
+                if let Some(a) = &mut this.draft_appearance {
+                    a.custom = None;
+                }
+                window.prevent_default();
+                cx.stop_propagation();
+                cx.notify();
+            }
+        }))
+        .on_click(cx.listener(|this, _, _, cx| {
+            if let Some(a) = &mut this.draft_appearance {
+                a.custom = None;
+            }
+            cx.notify();
+        }));
         let mut section = div()
+            .debug_selector(|| "project-icon-section".into())
             .w_full()
             .min_w_0()
             .flex()
             .flex_col()
-            .gap(rpx(SPACE_LG))
+            .gap(rpx(SPACE_2XL))
             .child(
                 div()
-                    .text_size(rpx(TEXT_SMALL))
-                    .text_color(c::FG_DIM())
-                    .child("Project appearance"),
-            )
-            .child(
-                div()
+                    .w_full()
                     .flex()
                     .items_center()
                     .flex_wrap()
-                    .gap(rpx(SPACE_2XL))
-                    .child(project_symbol(current, ICON_20))
+                    .gap(rpx(SPACE_LG))
                     .child(
                         div()
                             .flex_1()
-                            .min_w_0()
                             .text_size(rpx(TEXT_SMALL))
                             .text_color(c::FG_DIM())
-                            .child(if appearance.custom.is_some() {
-                                "Custom symbol"
-                            } else {
-                                "Automatic symbol"
-                            }),
+                            .child("Project icon"),
                     )
-                    .child(
-                        project_action(
-                            "project-appearance-randomize".into(),
-                            "Randomize",
-                            Some("icons/shuffle.svg"),
-                            ProjectActionStyle::Mini,
-                            window,
-                            cx,
-                        )
-                        .debug_selector(|| "project-appearance-randomize".into())
-                        .on_click(cx.listener(|this, _, _, cx| this.randomize_appearance(cx)))
-                        .on_key_down(cx.listener(
-                            |this, event: &gpui::KeyDownEvent, window, cx| {
-                                if matches!(event.keystroke.key.as_str(), "enter" | "space")
-                                    && !event.is_held
-                                {
-                                    this.randomize_appearance(cx);
-                                    window.prevent_default();
-                                    cx.stop_propagation();
-                                }
-                            },
-                        )),
-                    )
-                    .child(
-                        project_action(
-                            "project-appearance-change".into(),
-                            if self.appearance_open {
-                                "Done"
-                            } else {
-                                "Change"
-                            },
-                            Some(if self.appearance_open {
-                                "icons/check.svg"
-                            } else {
-                                "icons/edit.svg"
-                            }),
-                            ProjectActionStyle::Mini,
-                            window,
-                            cx,
-                        )
-                        .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
-                            if matches!(event.keystroke.key.as_str(), "enter" | "space")
-                                && !event.is_held
-                            {
-                                this.appearance_open = !this.appearance_open;
-                                window.prevent_default();
-                                cx.stop_propagation();
-                                cx.notify();
-                            }
-                        }))
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.appearance_open = !this.appearance_open;
-                            cx.notify();
-                        })),
-                    ),
+                    .child(div().flex().gap(rpx(SPACE_SM)).child(shuffle).child(reset)),
             );
         // Direct input feedback; no animation or asynchronous state to imply persistence.
-        if self.appearance_open {
+        {
             let mut symbols = div()
                 .id("project-symbol-choices")
                 .debug_selector(|| "project-symbol-choices".into())
-                .w_full()
-                .max_h(rpx(SYMBOL_PICKER_MAX_H))
-                .overflow_y_scrollbar()
+                .flex_1()
+                .min_w_0()
                 .flex()
                 .flex_wrap()
                 .gap(rpx(SPACE_SM));
@@ -148,9 +128,14 @@ impl ProjectPanel {
                     .tooltip(name)
                     .p_0()
                     .border_1()
-                    .border_color(if selected { c::FG() } else { c::BORDER_SOFT() })
+                    .border_color(if selected {
+                        c::BORDER_STRONG()
+                    } else {
+                        gpui::transparent_black()
+                    })
                     .w(rpx(SYMBOL_CONTROL_SIZE))
                     .h(rpx(SYMBOL_CONTROL_SIZE))
+                    .flex_shrink_0()
                     .debug_selector(move || format!("project-symbol-choice-{index}"))
                     .icon(
                         gpui_component::Icon::default()
@@ -174,7 +159,8 @@ impl ProjectPanel {
                             }
                         },
                     ))
-                    .on_click(cx.listener(move |this, _, _, cx| {
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.appearance_symbol_focus[index].focus(window, cx);
                         if let Some(a) = &mut this.draft_appearance {
                             a.custom = Some(ProjectIdentity {
                                 symbol,
@@ -185,7 +171,14 @@ impl ProjectPanel {
                     })),
                 );
             }
-            let mut colors = div().flex().flex_wrap().gap(rpx(SPACE_SM));
+            let mut colors = div()
+                .debug_selector(|| "project-color-choices".into())
+                .flex_1()
+                .min_w_0()
+                .flex()
+                .items_center()
+                .flex_wrap()
+                .gap(rpx(SPACE_SM));
             for color in 0..COLOR_COUNT {
                 colors = colors.child(
                     crate::views::components::settings_control(
@@ -194,7 +187,38 @@ impl ProjectPanel {
                         color == current.color,
                         true,
                     )
-                    .child(COLOR_NAMES[usize::from(color)])
+                    .p_0()
+                    .w(rpx(SYMBOL_CONTROL_SIZE))
+                    .h(rpx(SYMBOL_CONTROL_SIZE))
+                    .flex_shrink_0()
+                    .justify_center()
+                    .bg(if color == current.color {
+                        c::BG_HOVER()
+                    } else {
+                        gpui::transparent_black()
+                    })
+                    .border_color(if color == current.color {
+                        c::BORDER_STRONG()
+                    } else {
+                        gpui::transparent_black()
+                    })
+                    .focus_visible(|style| style.border_color(c::FG_DIM()))
+                    .tooltip(move |window, cx| {
+                        crate::views::components::tooltip(COLOR_NAMES[usize::from(color)], window)
+                            .build(window, cx)
+                    })
+                    .child(
+                        div()
+                            .size(rpx(COLOR_SWATCH_SIZE))
+                            .rounded_full()
+                            .bg(c::PROJECT_IDENTITY(color))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .when(color == current.color, |el| {
+                                el.child(div().size(rpx(SPACE_SM)).rounded_full().bg(c::BG()))
+                            }),
+                    )
                     .track_focus(&self.appearance_color_focus[usize::from(color)])
                     .debug_selector(move || format!("project-symbol-color-{color}"))
                     .on_key_down(cx.listener(
@@ -214,7 +238,8 @@ impl ProjectPanel {
                             }
                         },
                     ))
-                    .on_click(cx.listener(move |this, _, _, cx| {
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.appearance_color_focus[usize::from(color)].focus(window, cx);
                         if let Some(a) = &mut this.draft_appearance {
                             a.custom = Some(ProjectIdentity {
                                 color,
@@ -225,44 +250,37 @@ impl ProjectPanel {
                     })),
                 );
             }
-            section = section
-                .child(symbols)
-                .child(colors)
-                .child(
-                    project_action(
-                        "project-appearance-automatic".into(),
-                        "Use automatic identity",
-                        Some("icons/refresh.svg"),
-                        ProjectActionStyle::Quiet,
-                        window,
-                        cx,
+            colors = colors.child(
+                div()
+                    .debug_selector(|| "project-selected-color-name".into())
+                    .ml(rpx(SPACE_LG))
+                    .text_size(rpx(TEXT_SMALL))
+                    .text_color(c::FG_DIM())
+                    .child(COLOR_NAMES[usize::from(current.color)]),
+            );
+            let row = |label: &'static str, choices: gpui::AnyElement| {
+                div()
+                    .w_full()
+                    .min_w_0()
+                    .flex()
+                    .items_start()
+                    .gap(rpx(SPACE_2XL))
+                    .child(
+                        div()
+                            .w(rpx(APPEARANCE_LABEL_W))
+                            .flex_shrink_0()
+                            .h(rpx(SYMBOL_CONTROL_SIZE))
+                            .flex()
+                            .items_center()
+                            .text_size(rpx(TEXT_SMALL))
+                            .text_color(c::FG_DIM())
+                            .child(label),
                     )
-                    .debug_selector(|| "project-appearance-automatic".into())
-                    .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
-                        if matches!(event.keystroke.key.as_str(), "enter" | "space")
-                            && !event.is_held
-                        {
-                            if let Some(a) = &mut this.draft_appearance {
-                                a.custom = None;
-                            }
-                            window.prevent_default();
-                            cx.stop_propagation();
-                            cx.notify();
-                        }
-                    }))
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        if let Some(a) = &mut this.draft_appearance {
-                            a.custom = None;
-                        }
-                        cx.notify();
-                    })),
-                )
-                .child(
-                    div()
-                        .text_size(rpx(TEXT_SMALL))
-                        .text_color(c::FG_DIM())
-                        .child("Save changes to apply this appearance."),
-                );
+                    .child(choices)
+            };
+            section = section
+                .child(row("Symbol", symbols.into_any_element()))
+                .child(row("Color", colors.into_any_element()));
         }
         section
     }
@@ -276,6 +294,10 @@ mod tests {
     fn symbol_editor_keeps_choices_draft_and_preserves_name_at_narrow_zoom(
         cx: &mut gpui::TestAppContext,
     ) {
+        let _theme_lock = c::ACTIVE_THEME_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _theme_restore = c::ActiveThemeGuard::capture();
         cx.update(|cx| {
             gpui_component::init(cx);
             cx.set_global(SettingsState::new(grove_core::storage::Store {
@@ -308,23 +330,66 @@ mod tests {
         });
         cx.run_until_parked();
         let original = panel.read_with(cx, |p, _| p.draft_appearance.unwrap());
-        for (width, rem) in [(768., 16.), (360., 16.), (360., 24.)] {
+        for (theme, width, rem) in [
+            ("grove-dark", 768., 16.),
+            ("grove-dark", 360., 16.),
+            ("grove-dark", 360., 24.),
+            ("grove-light", 768., 16.),
+            ("grove-light", 360., 16.),
+            ("grove-light", 360., 24.),
+        ] {
             cx.simulate_resize(gpui::size(gpui::px(width), gpui::px(900.)));
-            cx.update(|window, cx| {
+            cx.update(|window, _| {
                 window.set_rem_size(gpui::px(rem));
-                panel.update(cx, |p, cx| {
-                    p.appearance_open = true;
-                    cx.notify();
-                });
+                assert!(grove_core::theme::set_by_name(theme));
             });
+            cx.update(|_, cx| c::sync_component_theme(cx));
             cx.run_until_parked();
             cx.update(|window, cx| {
                 let _ = window.draw(cx);
             });
             let symbols = cx.debug_bounds("project-symbol-choices").unwrap();
+            let choices = [
+                "project-symbol-choice-0",
+                "project-symbol-choice-1",
+                "project-symbol-choice-2",
+                "project-symbol-choice-3",
+                "project-symbol-choice-4",
+                "project-symbol-choice-5",
+                "project-symbol-choice-6",
+                "project-symbol-choice-7",
+                "project-symbol-choice-8",
+                "project-symbol-choice-9",
+                "project-symbol-choice-10",
+                "project-symbol-choice-11",
+                "project-symbol-choice-12",
+                "project-symbol-choice-13",
+                "project-symbol-choice-14",
+                "project-symbol-choice-15",
+            ];
+            assert_eq!(choices.len(), SYMBOLS.len());
+            for selector in choices {
+                let choice = cx.debug_bounds(selector).unwrap();
+                assert!(choice.left() >= symbols.left() && choice.right() <= symbols.right());
+                assert!(choice.top() >= symbols.top() && choice.bottom() <= symbols.bottom());
+            }
             assert!(symbols.left() >= gpui::px(0.) && symbols.right() <= gpui::px(width));
             let name = cx.debug_bounds("project-name").unwrap();
             assert!(name.bottom() <= symbols.top());
+            let color_name = cx.debug_bounds("project-selected-color-name").unwrap();
+            assert!(symbols.bottom() <= color_name.top());
+            assert!(color_name.right() <= gpui::px(width));
+            cx.update(|_, cx| {
+                panel.update(cx, |p, cx| {
+                    let a = p.draft_appearance.as_mut().unwrap();
+                    a.custom = Some(ProjectIdentity {
+                        color: 0,
+                        ..a.current()
+                    });
+                    cx.notify();
+                });
+            });
+            cx.run_until_parked();
             let color = cx.debug_bounds("project-symbol-color-3").unwrap().center();
             cx.simulate_click(color, gpui::Modifiers::default());
             cx.run_until_parked();
@@ -342,6 +407,15 @@ mod tests {
                 );
             });
         }
+        // Mouse selection establishes the starting point for actual Tab navigation.
+        cx.update(|window, cx| {
+            assert!(panel.read(cx).appearance_color_focus[3].is_focused(window));
+        });
+        cx.simulate_keystrokes("tab space");
+        cx.run_until_parked();
+        panel.read_with(cx, |p, _| {
+            assert_eq!(p.draft_appearance.unwrap().current().color, 4);
+        });
         cx.simulate_resize(gpui::size(gpui::px(768.), gpui::px(1200.)));
         cx.update(|window, _| window.set_rem_size(gpui::px(16.)));
         cx.run_until_parked();
@@ -368,6 +442,9 @@ mod tests {
         let symbol = cx.debug_bounds("project-symbol-choice-0").unwrap().center();
         cx.simulate_click(symbol, gpui::Modifiers::default());
         cx.run_until_parked();
+        panel.read_with(cx, |p, _| {
+            assert_eq!(p.draft_appearance.unwrap().current().symbol, 0);
+        });
         cx.update(|window, cx| {
             panel.update(cx, |p, cx| {
                 p.appearance_symbol_focus[0].focus(window, cx);
@@ -654,7 +731,6 @@ mod native_qa {
                                 cx,
                             )
                         });
-                        panel.update(cx, |p, _| p.appearance_open = true);
                         let gallery = cx.new(|_| Gallery { panel });
                         cx.new(|cx| gpui_component::Root::new(gallery, window, cx))
                     },

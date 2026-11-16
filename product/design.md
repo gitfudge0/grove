@@ -570,7 +570,7 @@ Catalog outline icons use the shared thin stroke weight owned by `src/icons.rs`,
 
 The sidebar Sessions heading matches the New session navigation label size and uses the primary foreground color.
 
-Sidebar New session, History, Projects and Terminals labels use the primary foreground independently of their muted icons and shortcut hints.
+Sidebar New session, History and Terminals labels use the primary foreground independently of their muted icons and shortcut hints.
 
 Sidebar session-view controls are standalone icons without an enclosing border or selected background. Selection and pointer hover use foreground emphasis; keyboard focus remains independently visible.
 
@@ -760,12 +760,44 @@ repository categories. Names and paths distinguish repeated identities when the
 finite library is exhausted.
 
 Project setup shows the assigned symbol beside the name without appearance
-prompts or new steps. Optional appearance editing lives in Manage: Randomize
-previews a different symbol and color together without saving, while named symbol
-and color choices retain manual control. Repeated randomization remains draft-only.
-Use automatic identity restores the
-saved original assignment. Save changes applies name, scripts and appearance
+prompts or new steps. The editor’s Project icon section shows every symbol by
+default in a compact Symbol row and marks the current selection with a neutral
+fill and border; unselected symbols have no visible tile border. A Color row
+shows six directly selectable swatches with accessible names and a visible
+selected-color name. Clicking a symbol or swatch establishes keyboard focus;
+Tab continues through the choices, and Enter/Space selects without saving. Both
+rows wrap within the form at narrow widths. Shuffle
+and Reset share the section header; there is no separate icon preview. Shuffle
+previews a different symbol and color without saving; Reset restores the
+saved original assignment. No automatic, randomized or custom status label is
+shown. Save changes applies name, scripts and appearance
 atomically; Cancel discards edits, and a failed save retains the drafts and the
 previous saved appearance. The same project symbol appears in Projects, project
 pickers, selected Dashboard context and shared Codex/Claude session context and
 history headers.
+
+## Work-first project access
+
+Projects is not a primary sidebar destination. The New session composer's existing
+project and checkout pickers remain the everyday entry points for selecting a
+folder, adding a project and creating a worktree. Project settings and Manage
+projects open Settings → Projects; the latter lists active or archived projects
+within the current workspace, with inline worktree disclosures and direct
+administration. Rename,
+appearance, lifecycle and reusable scripts retain explicit Save/Cancel. Moving,
+archiving, restoring and removing registrations keep the existing service guards.
+A contextual Checkouts utility exposes checkout selection and guarded deletion;
+the main checkout has no Delete action. Creating a project returns to New session
+with it selected and never starts an agent. Navigation through these utilities
+retains the existing composer entity, provider preferences and unfinished draft.
+Legacy Projects startup preferences land on New session.
+
+The Edit project form omits the project-folder readout. One Scripts section groups
+setup, teardown and reusable shell/prompt entries, with one Add script action.
+Save/Cancel retain their existing meaning without additional save-explanation copy.
+
+Settings → Projects omits project search. Each active project can disclose its
+worktrees inline, with branch/path identity, Use and New worktree actions.
+Archived registrations are available only in that category’s Archived filter;
+General has no Archived projects shortcut. The Sessions preference group, including
+After starting a session, belongs to Agents rather than General.

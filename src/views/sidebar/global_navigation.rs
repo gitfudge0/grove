@@ -30,16 +30,15 @@ impl From<LandingPage> for Destination {
         match page {
             LandingPage::NewSession => Self::NewSession,
             LandingPage::Home => Self::Home,
-            LandingPage::Projects => Self::Projects,
+            LandingPage::Projects => Self::Home,
             LandingPage::History => Self::History,
             LandingPage::Sessions => Self::Sessions,
         }
     }
 }
-const NAVIGATION_ITEMS: [(Destination, &str, &str); 3] = [
+const NAVIGATION_ITEMS: [(Destination, &str, &str); 2] = [
     (Destination::Home, "New session", "plus"),
     (Destination::History, "History", "history"),
-    (Destination::Projects, "Projects", "folder"),
 ];
 
 impl Sidebar {
@@ -783,7 +782,7 @@ mod tests {
         assert!(cx.debug_bounds("sidebar-sessions-heading").is_none());
         assert_eq!(cx.debug_bounds("single-terminals-scroll"), Some(terminals));
 
-        let projects = cx.debug_bounds("global-nav-projects").unwrap();
+        let projects = cx.debug_bounds("global-nav-home").unwrap();
         cx.simulate_click(projects.center(), gpui::Modifiers::default());
         draw(cx);
         assert!(cx.debug_bounds("sidebar-scroll").is_some());
@@ -834,15 +833,14 @@ mod tests {
             let navigation = cx.debug_bounds("global-navigation").unwrap();
             let home = cx.debug_bounds("global-nav-home").unwrap();
             let history = cx.debug_bounds("global-nav-history").unwrap();
-            let projects = cx.debug_bounds("global-nav-projects").unwrap();
+            assert!(cx.debug_bounds("global-nav-projects").is_none());
             let terminals = cx.debug_bounds("single-terminals-scroll").unwrap();
             let heading = cx.debug_bounds("sidebar-sessions-heading").unwrap();
             let grid = cx.debug_bounds("sidebar-grid").unwrap();
             assert!(home.top() >= gpui::px(APPBAR_TOTAL_H));
             assert!(home.left() >= navigation.left() && home.right() <= navigation.right());
             assert!(home.bottom() <= history.top());
-            assert!(history.bottom() <= projects.top());
-            assert!(projects.bottom() <= terminals.top());
+            assert!(history.bottom() <= terminals.top());
             assert!(terminals.bottom() <= heading.top());
             for selector in [
                 "session-group-false",
@@ -855,10 +853,10 @@ mod tests {
             }
             assert_eq!(grid.size.width, gpui::px(STEPPER_BTN_W));
         }
-        let projects = cx.debug_bounds("global-nav-projects").unwrap();
+        let projects = cx.debug_bounds("global-nav-home").unwrap();
         cx.simulate_click(projects.center(), gpui::Modifiers::default());
         draw(cx);
-        assert!(cx.debug_bounds("projects-destination").is_some());
+        assert!(cx.debug_bounds("dashboard-page").is_some());
         assert!(cx.debug_bounds("session-group-true").is_none());
         let group = cx.debug_bounds("session-group-false").unwrap();
         assert_eq!(f32::from(group.size.height), STEPPER_BTN_W);
@@ -1121,6 +1119,7 @@ mod tests {
     }
     #[test]
     fn legacy_sessions_landing_remains_distinct_from_history() {
+        assert_eq!(Destination::from(LandingPage::Projects), Destination::Home);
         assert_eq!(
             Destination::from(LandingPage::Sessions),
             Destination::Sessions
