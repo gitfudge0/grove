@@ -2211,3 +2211,28 @@ Existing draft, atomic Save and Reset-to-original behavior remain in place.
   ignored task artifacts. Measured HTML/native parity certification is unsupported
   on Linux (the tool requires macOS Metal); the exploratory mock is not a measured
   reference. Windows/macOS runtime and participant usability remain unverified.
+
+## Projects settings integration and retired sidebar canvas (November 2026)
+
+Merged `feat/projects-reworked` into main, preserving the Projects settings,
+inline worktrees and compact appearance editor. Removed the retired Projects
+management canvas, its search/disclosure state, obsolete third destination
+shortcut and advertised Projects landing option. Legacy saved Projects landing
+preferences still open New session; contextual Checkouts remains available.
+
+On the combined source, 130 focused tests passed: 44 Shell, 24 Settings (five
+opt-in captures ignored), eight navigation, 19 keymap, 33 conformance, one
+contextual-checkout fixture and one core landing-preference regression. The first
+core test invocation terminated with exit 143 without a diagnostic; its repeat
+passed. The final changes after these fixtures only resolve nine strict Clippy
+style diagnostics in imported code (semicolons and equivalent `map_or` usage).
+The final development build, strict production Clippy, formatting, diff and
+repository-artifact checks passed.
+
+Native Linux visual acceptance remains unverified: a freshly built isolated QA
+app produced a fully black X11 capture, retained under
+`.grove-artifacts/remove-projects/qa/`, and was stopped. No visual-compliance or
+live-provider claim is made. Codex and Claude were exercised only through shared
+native fixtures for navigation/draft ownership; both live provider boundaries
+remain untested. macOS and Windows runtime were not exercised. No installed app
+was replaced or restarted, and no release or push was performed.

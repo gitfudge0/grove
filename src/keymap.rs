@@ -35,7 +35,6 @@ pub enum GlobalShortcut {
     NewSession,
     OpenNavigation1,
     OpenNavigation2,
-    OpenNavigation3,
     NewSessionInWorktree,
     Settings,
     ToggleZen,
@@ -174,15 +173,6 @@ pub const SHORTCUTS: &[ShortcutDef] = &[
         triggers: &["2"],
         display_keys: "2",
         description: "Second navigation item",
-        scopes: G,
-        requires_alt: false,
-        literal: false,
-    },
-    ShortcutDef {
-        action: Some(GlobalShortcut::OpenNavigation3),
-        triggers: &["3"],
-        display_keys: "3",
-        description: "Third navigation item",
         scopes: G,
         requires_alt: false,
         literal: false,
@@ -569,7 +559,6 @@ actions!(
         NewSession,
         OpenNavigation1,
         OpenNavigation2,
-        OpenNavigation3,
         NewSessionInWorktree,
         SwitchSession,
         NextSession,
@@ -787,7 +776,6 @@ fn binding_for(keystroke: &str, sc: GlobalShortcut, ctx: Option<&str>) -> Option
         S::NewSession => KeyBinding::new(keystroke, NewSession, ctx),
         S::OpenNavigation1 => KeyBinding::new(keystroke, OpenNavigation1, ctx),
         S::OpenNavigation2 => KeyBinding::new(keystroke, OpenNavigation2, ctx),
-        S::OpenNavigation3 => KeyBinding::new(keystroke, OpenNavigation3, ctx),
         S::NewSessionInWorktree => KeyBinding::new(keystroke, NewSessionInWorktree, ctx),
         S::SwitchSession => KeyBinding::new(keystroke, SwitchSession, ctx),
         S::NextSession => KeyBinding::new(keystroke, NextSession, ctx),
@@ -846,7 +834,6 @@ pub fn shell_bindings() -> Vec<KeyBinding> {
             S::NewSession
                 | S::OpenNavigation1
                 | S::OpenNavigation2
-                | S::OpenNavigation3
                 | S::NewSessionInWorktree
                 | S::SwitchSession
                 | S::NextSession

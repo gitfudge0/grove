@@ -453,7 +453,7 @@ pub enum LandingPage {
     History,
 }
 impl LandingPage {
-    pub const ALL: [Self; 4] = [Self::NewSession, Self::Home, Self::Projects, Self::History];
+    pub const ALL: [Self; 3] = [Self::NewSession, Self::Home, Self::History];
     pub fn label(self) -> &'static str {
         match self {
             Self::NewSession => "New Session",

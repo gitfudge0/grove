@@ -1133,7 +1133,6 @@ mod tests {
             [
                 LandingPage::NewSession,
                 LandingPage::Home,
-                LandingPage::Projects,
                 LandingPage::History
             ]
         );

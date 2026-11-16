@@ -299,19 +299,22 @@ enum Action {
     Select(Selection),
     #[cfg(test)]
     ToggleProject(String),
-    ToggleProjectsDestination(String),
     Mode(ViewMode),
+    #[cfg(test)]
     Menu(usize),
     NewWorktree(String),
     InitializeGit(String),
     RefreshGit(String),
+    #[cfg(test)]
     EditProject(String),
     EditProjectScripts(String, bool),
+    #[cfg(test)]
     MoveProject(String),
     AddProject,
     #[cfg(test)]
     ArchivedProjects,
     Reveal(String),
+    #[cfg(test)]
     RemoveProject(String),
     #[cfg(test)]
     ConfirmRemove(usize),
@@ -493,7 +496,9 @@ pub struct Sidebar {
     multi_project_group_bounds: std::rc::Rc<std::cell::Cell<gpui::Bounds<gpui::Pixels>>>,
     menu: Option<usize>,
     menu_opened_by_hover: bool,
+    #[cfg(test)]
     menu_focus: FocusHandle,
+    #[cfg(test)]
     menu_index: usize,
     project_menu_focus: HashMap<usize, FocusHandle>,
     project_toggle_focus: HashMap<String, FocusHandle>,
@@ -568,8 +573,6 @@ pub struct Sidebar {
     session_history_selected: Option<session_history::HistorySelection>,
     session_history_view: Option<Entity<super::codex_view::CodexView>>,
     history_search: Entity<InputState>,
-    projects_search: Entity<InputState>,
-    projects_expanded: HashSet<String>,
     history_project_filter: Option<String>,
     history_provider_filter: Option<Agent>,
     history_filter_popup: Option<Entity<gpui_component::menu::PopupMenu>>,
@@ -676,8 +679,6 @@ impl Sidebar {
         let worktree_branch =
             cx.new(|cx| InputState::new(window, cx).placeholder("feat/billing-retry"));
         let worktree_base = cx.new(|cx| InputState::new(window, cx).placeholder("main"));
-        let projects_search =
-            cx.new(|cx| InputState::new(window, cx).placeholder("Find a project"));
         let history_search =
             cx.new(|cx| InputState::new(window, cx).placeholder("Search sessions and transcripts"));
         let mut observers = vec![
@@ -698,11 +699,6 @@ impl Sidebar {
             cx.observe_global::<SettingsState>(|this, cx| {
                 this.refresh_dashboard_projects(cx);
                 cx.notify();
-            }),
-            cx.subscribe_in(&projects_search, window, |_, _, event, _, cx| {
-                if matches!(event, gpui_component::input::InputEvent::Change) {
-                    cx.notify();
-                }
             }),
             cx.subscribe_in(&history_search, window, |_, _, event, _, cx| {
                 if matches!(event, gpui_component::input::InputEvent::Change) {
@@ -781,7 +777,9 @@ impl Sidebar {
             multi_project_group_bounds: std::rc::Rc::default(),
             menu: None,
             menu_opened_by_hover: false,
+            #[cfg(test)]
             menu_focus: cx.focus_handle(),
+            #[cfg(test)]
             menu_index: 0,
             project_menu_focus: HashMap::new(),
             project_toggle_focus: HashMap::new(),
@@ -855,8 +853,6 @@ impl Sidebar {
             session_history_selected: None,
             session_history_view: None,
             history_search,
-            projects_search,
-            projects_expanded: HashSet::new(),
             history_project_filter: None,
             history_provider_filter: None,
             history_filter_popup: None,
@@ -1002,9 +998,6 @@ impl Sidebar {
             self.history_provider_filter = None;
             self.history_search
                 .update(cx, |input, cx| input.set_value("", window, cx));
-            self.projects_search
-                .update(cx, |input, cx| input.set_value("", window, cx));
-            self.projects_expanded.clear();
             self.history_filter_popup = None;
             self.history_filter_subscription = None;
             self.session_history.clear();
@@ -2074,7 +2067,6 @@ impl Sidebar {
             Action::GroupSessions(_)
                 | Action::ToggleGrid
                 | Action::OpenWorkspaces
-                | Action::ToggleProjectsDestination(_)
                 | Action::MarkReviewed(..)
                 | Action::MarkActivityDone(_)
         );
@@ -3228,12 +3220,6 @@ impl Sidebar {
                 cx.notify();
             }
             Action::AddProject => self.add_project(window, cx),
-            Action::ToggleProjectsDestination(path) => {
-                if !self.projects_expanded.insert(path.clone()) {
-                    self.projects_expanded.remove(&path);
-                }
-                cx.notify();
-            }
             #[cfg(test)]
             Action::ToggleProject(path) => {
                 if self.project_path_is_active(&path, cx) {
@@ -3283,6 +3269,7 @@ impl Sidebar {
                     cx.emit(SidebarEvent::Settings);
                 }
             }
+            #[cfg(test)]
             Action::EditProject(path) => {
                 if !self.project_path_is_active(&path, cx) {
                     return;
@@ -3303,6 +3290,7 @@ impl Sidebar {
                     panel.update(cx, |panel, cx| panel.open_scripts(add, window, cx));
                 }
             }
+            #[cfg(test)]
             Action::MoveProject(path) => {
                 if !self.project_path_is_active(&path, cx) {
                     return;
@@ -3344,6 +3332,7 @@ impl Sidebar {
                     self.focus.focus(window, cx);
                 }
             }
+            #[cfg(test)]
             Action::Menu(i) => {
                 // Masking keeps the document alive, including its native responder.
                 // GPUI focus alone cannot take keys back from that responder.
@@ -3449,6 +3438,7 @@ impl Sidebar {
                 cx.reveal_path(std::path::Path::new(&path));
                 self.close_menu(window, cx);
             }
+            #[cfg(test)]
             Action::RemoveProject(path) => {
                 if !self.project_path_is_active(&path, cx) {
                     return;
@@ -4783,6 +4773,7 @@ impl Sidebar {
         }
         result.into_any_element()
     }
+    #[cfg(test)]
     fn project_popup(&self, idx: usize, window: &Window, cx: &mut Context<Self>) -> AnyElement {
         let Some(project) = cx.global::<SettingsState>().store.projects.get(idx) else {
             return div().into_any_element();
@@ -6861,7 +6852,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn saved_project_without_sessions_opens_project_management(cx: &mut gpui::TestAppContext) {
+    fn saved_project_without_sessions_opens_contextual_checkouts(cx: &mut gpui::TestAppContext) {
         cx.update(|cx| {
             gpui_component::init(cx);
             cx.set_global(SettingsState::new(grove_core::storage::Store {
@@ -6892,8 +6883,8 @@ mod tests {
             sidebar.read_with(cx, |sidebar, _| sidebar.selection.clone()),
             Some(Selection::Project(0))
         );
-        assert!(cx.debug_bounds("projects-destination").is_some());
-        assert!(cx.debug_bounds("projects-open-0").is_some());
+        assert!(cx.debug_bounds("checkout-management").is_some());
+        assert!(cx.debug_bounds("projects-destination").is_none());
     }
 
     #[test]

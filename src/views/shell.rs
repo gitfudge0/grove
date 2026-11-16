@@ -198,7 +198,7 @@ impl Shell {
                         this.settings
                             .update(cx, |panel, cx| panel.close(window, cx));
                         this.sidebar.update(cx, |sidebar, cx| {
-                            sidebar.add_project_from_palette(window, cx)
+                            sidebar.add_project_from_palette(window, cx);
                         });
                     }
                     SettingsPanelEvent::ConnectionsChanged(provider) => this
@@ -1795,13 +1795,6 @@ impl Render for Shell {
                     });
                 }
             }))
-            .on_action(cx.listener(|this, _: &k::OpenNavigation3, window, cx| {
-                if !this.shortcut_blocked_in(window, cx) {
-                    this.sidebar.update(cx, |sidebar, cx| {
-                        sidebar.open_numbered_destination(3, window, cx);
-                    });
-                }
-            }))
             .on_action(cx.listener(|this, action: &k::SelectSession, window, cx| {
                 if !this.shortcut_blocked_in(window, cx) {
                     this.sidebar.update(cx, |sidebar, cx| {
@@ -2123,7 +2116,7 @@ mod tests {
         draw(cx);
         assert!(cx.update(|_, cx| shell.read(cx).sidebar.read(cx).is_zen()));
         assert!(cx.debug_bounds("session-grid-layout").is_none());
-        assert!(cx.debug_bounds("projects-destination").is_some());
+        assert!(cx.debug_bounds("projects-destination").is_none());
         cx.update(|window, cx| window.dispatch_action(Box::new(k::ToggleZen), cx));
         draw(cx);
         assert!(cx.update(|_, cx| shell.read(cx).sidebar.read(cx).is_grid()));

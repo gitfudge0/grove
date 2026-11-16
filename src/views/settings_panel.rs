@@ -451,7 +451,7 @@ impl SettingsPanel {
                                     super::sidebar::projects::Page::Remove(edit.clone()),
                                     window,
                                     cx,
-                                )
+                                );
                             },
                         )),
                     );
@@ -511,7 +511,7 @@ impl SettingsPanel {
                                     super::sidebar::projects::Page::Edit(edit.clone()),
                                     window,
                                     cx,
-                                )
+                                );
                             },
                         )),
                     )
@@ -530,7 +530,7 @@ impl SettingsPanel {
                                     super::sidebar::projects::Page::Move(move_path.clone()),
                                     window,
                                     cx,
-                                )
+                                );
                             },
                         )),
                     );
@@ -616,7 +616,7 @@ impl SettingsPanel {
                             .icon(gpui_component::Icon::default().path("icons/plus.svg"))
                             .on_click(cx.listener(
                                 move |_, _, _, cx| {
-                                    cx.emit(SettingsPanelEvent::NewWorktree(new_root.clone()))
+                                    cx.emit(SettingsPanelEvent::NewWorktree(new_root.clone()));
                                 },
                             )),
                         ),
@@ -693,7 +693,7 @@ impl SettingsPanel {
                                         cx.emit(SettingsPanelEvent::UseCheckout {
                                             root: root.clone(),
                                             path: path.clone(),
-                                        })
+                                        });
                                     },
                                 )),
                             ),

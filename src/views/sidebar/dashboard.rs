@@ -761,7 +761,7 @@ impl Sidebar {
                             };
                             if let Some(settings) = this.settings_panel.clone() {
                                 settings.update(cx, |settings, cx| {
-                                    settings.open_projects(path, window, cx)
+                                    settings.open_projects(path, window, cx);
                                 });
                             }
                         }
@@ -878,8 +878,7 @@ impl Sidebar {
         let selected = root
             .as_ref()
             .and_then(|root| projects.iter().find(|p| &p.2 == root))
-            .map(|p| p.0)
-            .unwrap_or(NO_PROJECT);
+            .map_or(NO_PROJECT, |p| p.0);
         let removed = old.project != NO_PROJECT && selected == NO_PROJECT;
         tray.update(cx, |tray, cx| {
             tray.projects = projects;
