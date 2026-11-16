@@ -269,11 +269,11 @@ HTML fences remain code; ordinary HTML file links open the file viewer. Existing
 conversations retain their saved legacy rendering policy. Published visuals stay
 attached to their source tool event and visible independently of collapsed work
 details. The transcript shows a compact attachment with a leading file icon, a
-title bounded to two lines, and muted HTML artifact metadata beneath the title.
+title bounded to two lines, and muted HTML artifact metadata beneath the title. The metadata shows
+“HTML artifact”, a middle dot, and the complete wrapping title.
 Open artifact is a labeled action with a leading expand icon; Open in browser
 remains a separately named icon-only action with an explanatory tooltip. Actions
 retain fixed widths and wrap together below the identity when space is limited.
-Artifact details discloses the complete title without relying on pointer hover.
 Loading keeps the identity visible with a source-owned loading label and disabled
 open actions. Both actions retain keyboard access and visible focus. The transcript
 contains no live HTML surface or automatic screenshot.

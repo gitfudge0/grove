@@ -38,6 +38,23 @@ changing provider transport. macOS and Windows were not run. No installation or
 restart was performed. The scoped fix was committed after configuring the repository author from the
 authenticated GitHub account.
 
+## Inline artifact details (November 2026)
+
+The published HTML attachment now shows its full wrapping title after
+“HTML artifact ·” instead of an Artifact details disclosure. Two GPUI attachment
+fixtures passed across presentation modes, narrow/wide widths and rem zoom,
+including open/disabled behavior; all 33 UI conformance checks, formatting and
+repository artifact policy passed. The isolated Linux native capture fixture
+passed; wide dark and narrow light/zoom screenshots were inspected from
+`.grove-artifacts/artifact-inline-metadata/` and showed wrapping metadata and
+preserved open actions.
+
+**Codex:** live provider-boundary rendering untested; shared native fixtures only.
+**Claude:** live provider-boundary rendering untested; shared native fixtures only.
+Native keyboard/hover interactions were not manually exercised for this change.
+No platform-specific code changed; macOS and Windows were not run. The installed
+application was not replaced or restarted.
+
 ## Encoded native plan destinations (November 2026)
 
 Core import/retry regressions passed 27 tests, including saved-error recovery for

@@ -1197,7 +1197,6 @@ impl Drop for SurfaceLease {
 struct HtmlArtifact {
     publication: Option<grove_core::visuals::Reference>,
     publication_failed: bool,
-    details_expanded: bool,
     version: Version,
     path: Option<PathBuf>,
     owner: EntityId,
@@ -1238,7 +1237,6 @@ impl HtmlArtifact {
         let mut artifact = Self {
             publication: None,
             publication_failed: false,
-            details_expanded: false,
             anchor,
             reveal: false,
             report: false,
@@ -1854,11 +1852,15 @@ impl Render for HtmlArtifact {
                                                 .debug_selector(|| "html-artifact-format".into())
                                                 .text_size(rpx(TEXT_MICRO))
                                                 .text_color(c::FG_DIM())
-                                                .child(if self.loading_file {
-                                                    "Loading artifact…"
-                                                } else {
-                                                    "HTML artifact"
-                                                }),
+                                                .child(format!(
+                                                    "{} · {}",
+                                                    if self.loading_file {
+                                                        "Loading artifact…"
+                                                    } else {
+                                                        "HTML artifact"
+                                                    },
+                                                    title
+                                                )),
                                         ),
                                 ),
                         )
@@ -1884,38 +1886,6 @@ impl Render for HtmlArtifact {
                                 .child(browser_action),
                         ),
                 )
-                .child(
-                    super::components::dense_disclosure_action(
-                        "html-artifact-details",
-                        "Artifact details",
-                        window,
-                        cx,
-                    )
-                    .icon(
-                        gpui_component::Icon::default()
-                            .path(if self.details_expanded {
-                                "icons/chev-down.svg"
-                            } else {
-                                "icons/chev-right.svg"
-                            })
-                            .size(rpx(ICON_SM)),
-                    )
-                    .debug_selector(|| "html-artifact-details".into())
-                    .self_start()
-                    .aria_expanded(self.details_expanded)
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.details_expanded = !this.details_expanded;
-                        cx.notify();
-                    })),
-                )
-                .when(self.details_expanded, |card| {
-                    card.child(
-                        div()
-                            .debug_selector(|| "html-artifact-full-title".into())
-                            .text_size(rpx(TEXT_SMALL))
-                            .child(title),
-                    )
-                })
                 .when_some(
                     self.error.clone().filter(|_| self.publication_failed),
                     |card, error| {
@@ -2351,7 +2321,6 @@ mod tests {
                 for (name, width, light, rem, state) in [
                     ("wide-dark",840.,false,16.,"ready"),
                     ("narrow-light-zoom",360.,true,20.,"ready"),
-                    ("details",840.,false,16.,"details"),
                     ("loading",840.,false,16.,"loading"),
                     ("failed",360.,true,16.,"failed"),
                     ("viewer",840.,false,16.,"viewer"),
@@ -2363,7 +2332,6 @@ mod tests {
                         c::sync_component_theme(cx);
                         window.set_rem_size(gpui::px(rem));
                         artifact.update(cx, |artifact, cx| {
-                            artifact.details_expanded = state == "details";
                             artifact.loading_file = state == "loading";
                             artifact.publication_failed = state == "failed";
                             artifact.error = (state == "failed").then(|| "Saved artifact is unavailable or corrupt.".into());
@@ -2384,7 +2352,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn publication_attachment_is_compact_for_every_presentation(cx: &mut gpui::TestAppContext) {
+    fn publication_attachment_metadata_for_every_presentation(cx: &mut gpui::TestAppContext) {
         use grove_core::visuals::{Presentation, PresentationOptions, Reference};
         let (fixture, cx) = link_fixture(cx);
         fixture.update(cx, |fixture, cx| {
@@ -2440,10 +2408,6 @@ mod tests {
                 });
                 draw_links(cx);
                 let bounds = cx.debug_bounds("html-publication-attachment").unwrap();
-                assert!(
-                    f32::from(bounds.size.height) < 150. * rem / 16.,
-                    "attachment grew into a preview: {bounds:?}"
-                );
                 let open = cx.debug_bounds("html-publication-open").unwrap();
                 let browser = cx.debug_bounds("html-artifact-browser").unwrap();
                 let title = cx.debug_bounds("html-artifact-title").unwrap();
@@ -2456,13 +2420,7 @@ mod tests {
                 assert!(artifact.read_with(cx, |artifact, _| artifact.surface.is_none()));
                 assert!(cx.debug_bounds("html-artifact-format").is_some());
                 assert!(cx.debug_bounds("html-artifact-full-title").is_none());
-                let details = cx.debug_bounds("html-artifact-details").unwrap();
-                cx.simulate_click(details.center(), gpui::Modifiers::default());
-                draw_links(cx);
-                assert!(cx.debug_bounds("html-artifact-full-title").is_some());
-                cx.simulate_click(details.center(), gpui::Modifiers::default());
-                draw_links(cx);
-                assert!(cx.debug_bounds("html-artifact-full-title").is_none());
+                assert!(cx.debug_bounds("html-artifact-details").is_none());
                 assert_eq!(
                     artifact.read_with(cx, |artifact, _| artifact
                         .publication
