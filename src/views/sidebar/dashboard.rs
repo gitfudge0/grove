@@ -56,7 +56,6 @@ pub(crate) enum DestinationEvent {
     Worktree(String),
     NewWorktree,
     NewProject,
-    ProjectSettings,
     ManageProjects,
     ManageCheckouts,
     Home,
@@ -249,33 +248,29 @@ impl DestinationTray {
                             create_owner.update(cx, |_, cx| cx.emit(DestinationEvent::NewProject));
                     }),
                 );
-                if selected_project != NO_PROJECT {
-                    let edit_owner = owner.clone();
-                    menu = menu.item(
-                        PopupMenuItem::new("Project settings")
-                            .icon(
-                                gpui_component::Icon::default()
-                                    .path("icons/cog.svg")
-                                    .size(rpx(ICON_SM)),
-                            )
-                            .on_click(move |_, _, cx| {
-                                let _ = edit_owner
-                                    .update(cx, |_, cx| cx.emit(DestinationEvent::ProjectSettings));
-                            }),
-                    );
-                }
                 let manage_owner = owner.clone();
                 menu = menu.item(
-                    PopupMenuItem::new("Manage projects")
-                        .icon(
-                            gpui_component::Icon::default()
-                                .path("icons/folder.svg")
-                                .size(rpx(ICON_SM)),
-                        )
-                        .on_click(move |_, _, cx| {
-                            let _ = manage_owner
-                                .update(cx, |_, cx| cx.emit(DestinationEvent::ManageProjects));
-                        }),
+                    PopupMenuItem::element(|_, _| {
+                        div()
+                            .id("destination-manage-projects")
+                            .aria_label("Manage projects")
+                            .flex()
+                            .items_center()
+                            .gap(rpx(SPACE_SM))
+                            .child(
+                                div()
+                                    .size(rpx(ICON_20))
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .child(icon("folder", ICON_SM, c::FG_DIM())),
+                            )
+                            .child("Manage projects")
+                    })
+                    .on_click(move |_, _, cx| {
+                        let _ = manage_owner
+                            .update(cx, |_, cx| cx.emit(DestinationEvent::ManageProjects));
+                    }),
                 );
             } else {
                 menu = menu.check_side(gpui_component::Side::Right);
@@ -746,22 +741,10 @@ impl Sidebar {
                 cx.subscribe_in(&tray, window, |this, _, event, window, cx| {
                     match event {
                         DestinationEvent::NewProject => this.add_project(window, cx),
-                        DestinationEvent::ManageProjects | DestinationEvent::ProjectSettings => {
-                            let path = if matches!(event, DestinationEvent::ProjectSettings) {
-                                this.dashboard.as_ref().and_then(|d| {
-                                    let tray = d.tray.read(cx);
-                                    tray.projects
-                                        .iter()
-                                        .find(|p| p.0 == tray.project)
-                                        .map(|p| p.2.clone())
-                                        .filter(|path| this.project_path_is_active(path, cx))
-                                })
-                            } else {
-                                None
-                            };
+                        DestinationEvent::ManageProjects => {
                             if let Some(settings) = this.settings_panel.clone() {
                                 settings.update(cx, |settings, cx| {
-                                    settings.open_projects(path, window, cx);
+                                    settings.open_projects(None, window, cx);
                                 });
                             }
                         }

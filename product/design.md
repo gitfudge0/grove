@@ -781,8 +781,8 @@ history headers.
 
 Projects is not a primary sidebar destination. The New session composer's existing
 project and checkout pickers remain the everyday entry points for selecting a
-folder, adding a project and creating a worktree. Project settings and Manage
-projects open Settings → Projects; the latter lists active or archived projects
+folder, adding a project and creating a worktree. The project picker omits Project settings and aligns every leading icon without
+an extra icon-column indent. Manage projects opens Settings → Projects; the latter lists active or archived projects
 within the current workspace, with inline worktree disclosures and direct
 administration. Rename,
 appearance, lifecycle and reusable scripts retain explicit Save/Cancel. Moving,

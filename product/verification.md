@@ -1,3 +1,13 @@
+## Project picker alignment (November 2026)
+
+The Dashboard project picker omits Project settings; Manage projects retains
+Settings → Projects access. All project-menu rows now render their leading glyph
+inside the row, avoiding the menu-wide empty icon column beside custom symbols.
+Native visual and interaction checks (including themes, narrow widths, zoom,
+hover/focus/selection and keyboard dismissal) remain untested: no isolated QA app
+was launched for this scoped change. This changes shared navigation, not provider
+transport; live Codex and Claude sessions were not exercised.
+
 ## Inline response script execution (November 2026)
 
 Seven snippet fixtures, two code-copy/table regressions and all 33 UI conformance
