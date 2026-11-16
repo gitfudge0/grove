@@ -336,7 +336,16 @@ impl DestinationTray {
                                 .flex()
                                 .items_center()
                                 .gap(rpx(SPACE_SM))
-                                .child(super::super::components::project_symbol(symbol, ICON_20))
+                                .child(
+                                    div()
+                                        .size(rpx(ICON_20))
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .child(super::super::components::project_symbol(
+                                            symbol, ICON_SM,
+                                        )),
+                                )
                                 .child(name.clone())
                         })
                         .checked(!scoped && idx == selected_project)
