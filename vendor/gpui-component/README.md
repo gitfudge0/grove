@@ -247,3 +247,9 @@ Applied to `ui/src` (source, not manifests):
   wrap remaining rows using native text metrics and reserve auto-grow/scroll space.
   The proposal does not enter the editable buffer, selection, clipboard or undo
   history. Explicit acceptance uses a separated undo group via `history.rs`.
+
+22. **Attach native execution beneath Markdown code.**
+    `TextView::code_block_footer` provides an opt-in source-attached footer.
+    When present, code actions occupy a normal-flow row before code instead of
+    overlaying it. Footer-bearing code stays eager so process output and controls
+    cannot reuse a stale measured extent. Other consumers retain overlay actions.

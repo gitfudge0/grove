@@ -59,6 +59,7 @@ pub struct TextViewState {
     pub(super) scrollable: bool,
     pub(super) text_view_style: TextViewStyle,
     pub(super) code_block_actions: Option<std::sync::Arc<CodeBlockActionsFn>>,
+    pub(super) code_block_footer: Option<std::sync::Arc<CodeBlockActionsFn>>,
     pub(super) markdown_extensions: Arc<MarkdownExtensions>,
 
     pub(super) is_selecting: bool,
@@ -147,6 +148,7 @@ impl TextViewState {
             list_state: ListState::new(0, gpui::ListAlignment::Top, px(1000.)).measure_all(),
             text_view_style: TextViewStyle::default(),
             code_block_actions: None,
+            code_block_footer: None,
             markdown_extensions: Arc::default(),
             is_selecting: false,
             auto_scroll: AutoScroll::default(),
@@ -319,7 +321,8 @@ impl TextViewState {
     }
 
     pub(super) fn has_code_block_actions(&self) -> bool {
-        self.code_block_actions.is_some() && self.document_code_blocks.contains_code()
+        (self.code_block_actions.is_some() || self.code_block_footer.is_some())
+            && self.document_code_blocks.contains_code()
     }
 
     pub(super) fn body_measurement_supported(&self) -> bool {
@@ -484,6 +487,7 @@ impl Render for TextViewState {
         let mut node_cx = self.parsed_content.node_cx.clone();
 
         node_cx.code_block_actions = self.code_block_actions.clone();
+        node_cx.code_block_footer = self.code_block_footer.clone();
         node_cx.markdown_extensions = self.markdown_extensions.clone();
         node_cx.style = self.text_view_style.clone();
 

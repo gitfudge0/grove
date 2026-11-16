@@ -759,22 +759,47 @@ impl CodeBlock {
                     .text_size(cx.theme().mono_font_size)
                     .relative()
                     .refine_style(&style.code_block)
+                    .when(node_cx.code_block_footer.is_some(), |this| {
+                        this.when_some(node_cx.code_block_actions.clone(), |this, actions| {
+                            this.child(
+                                div()
+                                    .flex()
+                                    .justify_end()
+                                    .mb_2()
+                                    .font_family(cx.theme().font_family.clone())
+                                    .child(actions(self, window, cx)),
+                            )
+                        })
+                    })
                     .child(Inline::new(
                         "code",
                         self.state.clone(),
                         vec![],
                         self.styles(&cx.theme().highlight_theme),
                     ))
-                    .when_some(node_cx.code_block_actions.clone(), |this, actions| {
+                    .when_some(
+                        node_cx
+                            .code_block_actions
+                            .clone()
+                            .filter(|_| node_cx.code_block_footer.is_none()),
+                        |this, actions| {
+                            this.child(
+                                div()
+                                    .id("actions")
+                                    .absolute()
+                                    .top_2()
+                                    .right_2()
+                                    .bg(cx.theme().tokens.muted)
+                                    .rounded(cx.theme().radius)
+                                    .child(actions(&self, window, cx)),
+                            )
+                        },
+                    )
+                    .when_some(node_cx.code_block_footer.clone(), |this, footer| {
                         this.child(
                             div()
-                                .id("actions")
-                                .absolute()
-                                .top_2()
-                                .right_2()
-                                .bg(cx.theme().tokens.muted)
-                                .rounded(cx.theme().radius)
-                                .child(actions(&self, window, cx)),
+                                .font_family(cx.theme().font_family.clone())
+                                .child(footer(self, window, cx)),
                         )
                     }),
             )
@@ -789,6 +814,7 @@ pub(crate) struct NodeContext {
     pub(crate) link_refs: HashMap<SharedString, LinkMark>,
     pub(crate) style: TextViewStyle,
     pub(crate) code_block_actions: Option<Arc<CodeBlockActionsFn>>,
+    pub(crate) code_block_footer: Option<Arc<CodeBlockActionsFn>>,
     pub(crate) markdown_extensions: Arc<MarkdownExtensions>,
 }
 

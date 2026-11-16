@@ -316,6 +316,10 @@ impl MeasuredTranscriptSlot {
                 key.strip_prefix(&self.owner_key)
                     .is_some_and(|tail| tail.starts_with(":code:"))
             })
+            // Retained runs and editors have source-owned controls and changing
+            // terminal geometry; do not replace their response with a cached proxy.
+            || view.snippets.keys().any(|key| key.strip_prefix(&self.owner_key)
+                .is_some_and(|tail| tail.starts_with(":code:")))
             || view.message_hover.contains(&cache.hover_key)
             || cache
                 .focus

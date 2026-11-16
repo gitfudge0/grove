@@ -32,6 +32,7 @@ pub struct TextView {
     selectable: bool,
     scrollable: bool,
     code_block_actions: Option<Arc<CodeBlockActionsFn>>,
+    code_block_footer: Option<Arc<CodeBlockActionsFn>>,
     markdown_extensions: Arc<MarkdownExtensions>,
 }
 
@@ -69,6 +70,7 @@ impl TextView {
             selectable: false,
             scrollable: false,
             code_block_actions: None,
+            code_block_footer: None,
             markdown_extensions: Arc::default(),
         }
     }
@@ -84,6 +86,7 @@ impl TextView {
             selectable: false,
             scrollable: false,
             code_block_actions: None,
+            code_block_footer: None,
             markdown_extensions: Arc::default(),
         }
     }
@@ -99,6 +102,7 @@ impl TextView {
             selectable: false,
             scrollable: false,
             code_block_actions: None,
+            code_block_footer: None,
             markdown_extensions: Arc::default(),
         }
     }
@@ -127,6 +131,19 @@ impl TextView {
     {
         self.code_block_actions = Some(Arc::new(move |code_block, window, cx| {
             f(&code_block, window, cx).into_any_element()
+        }));
+        self
+    }
+
+    /// Source-attached content below a code block. With a footer, actions occupy
+    /// their own row above the code instead of overlaying selectable source.
+    pub fn code_block_footer<F, E>(mut self, f: F) -> Self
+    where
+        F: Fn(&CodeBlock, &mut Window, &mut App) -> E + Send + Sync + 'static,
+        E: IntoElement,
+    {
+        self.code_block_footer = Some(Arc::new(move |block, window, cx| {
+            f(block, window, cx).into_any_element()
         }));
         self
     }
@@ -234,6 +251,7 @@ impl Element for TextView {
 
         state.update(cx, |state, cx| {
             state.code_block_actions = self.code_block_actions.clone();
+            state.code_block_footer = self.code_block_footer.clone();
             state.set_markdown_extensions(self.markdown_extensions.clone(), cx);
             state.selectable = self.selectable;
             state.scrollable = self.scrollable;

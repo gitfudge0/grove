@@ -1,3 +1,28 @@
+## Inline response script execution (November 2026)
+
+Seven snippet fixtures, two code-copy/table regressions and all 33 UI conformance
+checks passed, along with strict production-bin Clippy, the production build,
+focused formatting and repository artifact policy. The shared Codex and Claude
+fixtures cover real local-process command/cwd fidelity, observed exit and stop,
+duplicate-launch rejection, edited-copy isolation, source-removal cleanup,
+collapsed output, pointer and Enter/Space disclosure, and draft-only sharing.
+The test harness disables the asynchronous PTY reader: output text is fixture-fed;
+real process tests use file effects and child-exit observations.
+
+**Codex:** verified with shared native/transport-channel fixtures and isolated Linux
+X11 captures; live provider-boundary sessions remain untested.
+**Claude:** verified with the same shared fixtures and native captures; live
+provider-boundary sessions remain untested.
+
+The isolated native fixture passed after correcting its repaint and teardown.
+Grove Dark/Light, collapsed/expanded output, narrower layout and rem 16/20 captures
+were inspected. The keyboard regression found and corrected missing owner-supplied
+button activation; those checks use GPUI TestPlatform, not OS-level keyboard input.
+The real directory picker, sudo authentication, credential handling, macOS and
+Windows remain untested. Native/HTML measured parity certification was not run;
+the exploratory mock is not a certified reference. No app installation, restart,
+push or release was performed.
+
 ## Usage popup while Settings is open (November 2026)
 
 Removed the Settings-open exclusion from the usage opener. Seven usage-related

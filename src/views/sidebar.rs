@@ -2445,17 +2445,6 @@ impl Sidebar {
         });
         cx.notify();
     }
-    /// Mirror a successful launch from the shell palette into the canvas selection.
-    /// Runtime already owns the active session; keeping this local selection in sync
-    /// lets the existing canvas renderer create and focus its terminal view.
-    fn snippet_launched(&mut self, origin: SessionId, cx: &mut Context<Self>) {
-        if self.selection != Some(Selection::Session(origin)) {
-            return;
-        }
-        self.pending_canvas_focus = self.select_active_session(cx);
-        cx.notify();
-    }
-
     pub(crate) fn select_active_session(&mut self, cx: &mut Context<Self>) -> Option<SessionId> {
         let id = self.runtime.read(cx).state.read(cx).active_session()?;
         self.select(Selection::Session(id), cx);
@@ -9806,13 +9795,12 @@ for line in sys.stdin:
                         state.select_session(second_id, &snap);
                         cx.notify();
                     });
-                sidebar.snippet_launched(SessionId::from_raw(u64::MAX), cx);
                 assert_eq!(
                     sidebar.selection,
                     Some(Selection::Session(first_id)),
                     "Hidden source cannot steal canvas focus"
                 );
-                sidebar.snippet_launched(first_id, cx);
+                sidebar.pending_canvas_focus = sidebar.select_active_session(cx);
                 assert_eq!(sidebar.selection, Some(Selection::Session(second_id)));
                 assert_eq!(sidebar.pending_canvas_focus, Some(second_id));
             });

@@ -741,7 +741,6 @@ impl Sidebar {
                 CodexViewEvent::DescribeChanges(preference, source) if matches!(this.selection, Some(Selection::Session(selected) | Selection::Home(selected)) if selected == id) => {
                     this.invoke_description_skill(preference.clone(), source.clone(), cx);
                 }
-                CodexViewEvent::ScriptLaunched => this.snippet_launched(id, cx),
                 CodexViewEvent::FileOpened if matches!(this.selection, Some(Selection::Session(selected) | Selection::Home(selected)) if selected == id) => {
                     this.files_active = true;
                     this.files_owner = this.selection.clone();

@@ -42,6 +42,7 @@ mod dashboard_status;
 mod history;
 mod measured_slot;
 mod measured_tool;
+mod snippets;
 use history::TurnHistory;
 #[path = "model_picker.rs"]
 mod model_picker;
@@ -1298,7 +1299,6 @@ pub(crate) enum CodexViewEvent {
     DescribeChanges(grove_core::describe_skill::ScopePreference, FocusHandle),
     ReviewChanges(grove_core::review_skill::ScopePreference, FocusHandle),
     ForkRequested(usize, bool),
-    ScriptLaunched,
     FileOpened,
     FileClosed,
 }
@@ -1427,6 +1427,7 @@ pub struct CodexView {
     message_focus: HashMap<String, FocusHandle>,
     copied_message: Option<(String, u64)>,
     copied_code_blocks: HashMap<String, u64>,
+    snippets: HashMap<String, snippets::Snippet>,
     copy_generation: u64,
     timestamp_tick_pending: Rc<Cell<bool>>,
     stream_thread: Option<String>,
@@ -2061,6 +2062,7 @@ impl CodexView {
             message_focus: HashMap::new(),
             copied_message: None,
             copied_code_blocks: HashMap::new(),
+            snippets: HashMap::new(),
             copy_generation: 0,
             timestamp_tick_pending: Rc::new(Cell::new(false)),
             stream_thread,
@@ -2094,6 +2096,19 @@ impl CodexView {
             checkout_context: None,
             subscriptions,
         };
+        view.subscriptions
+            .push(cx.observe(&view.session, |view, _, cx| view.reconcile_snippets(cx)));
+        view.subscriptions.push(cx.on_app_quit(|view, cx| {
+            for snippet in view.snippets.values() {
+                for run in &snippet.runs {
+                    run.terminal.update(
+                        cx,
+                        crate::entities::terminal_session::TerminalSession::stop_script,
+                    );
+                }
+            }
+            async {}
+        }));
         view.sync_native_plans(window, cx);
         view
     }
@@ -4374,109 +4389,191 @@ impl CodexView {
                 row = row.child(receipt);
             } else {
                 row = row.child(
-                div()
-                    .id(format!("codex-message-body-{index}"))
-                    .debug_selector(move || format!("codex-message-body-{index}"))
-                    .child({
-                        let owner_key = format!(
-                            "{}:{}",
-                            state.saved.thread_id.as_deref().unwrap_or(""),
-                            html_message
-                        );
-                        let owner = if let Some(owner) =
-                            self.selection_views.get(&owner_key).filter(|owner| {
-                                let old = owner.read(cx);
-                                let prefix = text.starts_with(old.source().as_ref());
-                                // Keep paragraph measurement identities on an unselected
-                                // static replacement; selected/focused/dynamic bodies
-                                // retain the original new-owner invalidation path.
-                                let reusable = old.supports_layout_projection()
-                                    && !old.layout_projection_focused(window, cx)
-                                    && !window.is_a11y_active()
-                                    && !window.is_inspector_picking(cx);
-                                prefix || (reusable
-                                    && !gpui_component::text::has_active_text_selection(window, cx)
-                                    && window.text_selection_snapshot(cx).is_none())
-                            }) {
-                            owner.clone()
-                        } else {
-                            let owner = cx.new(|cx| TextViewState::markdown(&text, cx));
-                            self.subscriptions
-                                .push(cx.observe(&owner, |_, _, cx| cx.notify()));
-                            self.selection_views.insert(owner_key.clone(), owner.clone());
-                            owner
-                        };
-                        owner.update(cx, |owner, cx| owner.set_text_incremental(&text, cx));
-                        let view = TextView::new(&owner)
-                            .markdown_extensions(html_extensions)
-                            .style(markdown_style(window))
-                            .selectable(true);
-                        if kind == "agentMessage" {
-                            let owner = cx.entity().downgrade();
-                            let source = text.clone();
-                            let runtime = self.script_runtime.clone();
-                            let cwd = state.saved.cwd.clone();
-                            let finalized = (item["groveCompleted"] == true || item["status"] == "completed") && item["status"] != "inProgress" && !self.transcript_only();
-                            view.code_block_actions(move |block, window, cx| {
-                                let code = block.code().to_string();
-                                let key = format!("{owner_key}:code:{}", block.span.as_ref().map_or(0, |span| span.start));
-                                let focus = owner.update(cx, |this, cx| this.message_focus.entry(key.clone()).or_insert_with(|| cx.focus_handle()).clone()).ok();
-                                let copied = owner.upgrade().is_some_and(|owner| owner.read(cx).copied_code_blocks.contains_key(&key));
-                                let label = if copied { "Copied" } else { "Copy code" };
-                                let keyboard_owner = owner.clone();
-                                let keyboard_key = key.clone();
-                                let keyboard_code = code.clone();
-                                let click_owner = owner.clone();
-                                let click_code = code.clone();
-                                let copy = header_control_with_label_tooltip("codex-copy-code", label)
-                                    .when_some(focus, |this, focus| this.track_focus(&focus))
-                                    .debug_selector(move || if copied { "codex-code-copied".into() } else { "codex-copy-code".into() })
-                                    .tab_index(0)
-                                    .focus_visible(|style| style.bg(c::BG_HOVER()))
-                                    .child(crate::icons::icon(if copied { "check" } else { "copy" }, ICON_MD, c::FG_DIM()))
-                                    .on_key_down(move |event, _, cx| {
-                                        if action_key(event) {
-                                            let _ = keyboard_owner.update(cx, |this, cx| this.copy_code_block(keyboard_key.clone(), keyboard_code.clone(), cx));
-                                            cx.stop_propagation();
-                                        }
-                                    })
-                                    .on_click(move |_, _, cx| {
-                                        let _ = click_owner.update(cx, |this, cx| this.copy_code_block(key.clone(), click_code.clone(), cx));
+                    div()
+                        .id(format!("codex-message-body-{index}"))
+                        .debug_selector(move || format!("codex-message-body-{index}"))
+                        .child({
+                            let owner_key = format!(
+                                "{}:{}",
+                                state.saved.thread_id.as_deref().unwrap_or(""),
+                                html_message
+                            );
+                            let owner = if let Some(owner) =
+                                self.selection_views.get(&owner_key).filter(|owner| {
+                                    let old = owner.read(cx);
+                                    let prefix = text.starts_with(old.source().as_ref());
+                                    // Keep paragraph measurement identities on an unselected
+                                    // static replacement; selected/focused/dynamic bodies
+                                    // retain the original new-owner invalidation path.
+                                    let reusable = old.supports_layout_projection()
+                                        && !old.layout_projection_focused(window, cx)
+                                        && !window.is_a11y_active()
+                                        && !window.is_inspector_picking(cx);
+                                    prefix
+                                        || (reusable
+                                            && !gpui_component::text::has_active_text_selection(
+                                                window, cx,
+                                            )
+                                            && window.text_selection_snapshot(cx).is_none())
+                                }) {
+                                owner.clone()
+                            } else {
+                                let owner = cx.new(|cx| TextViewState::markdown(&text, cx));
+                                self.subscriptions
+                                    .push(cx.observe(&owner, |_, _, cx| cx.notify()));
+                                self.selection_views
+                                    .insert(owner_key.clone(), owner.clone());
+                                owner
+                            };
+                            owner.update(cx, |owner, cx| owner.set_text_incremental(&text, cx));
+                            let view = TextView::new(&owner)
+                                .markdown_extensions(html_extensions)
+                                .style(markdown_style(window))
+                                .selectable(true);
+                            if kind == "agentMessage" {
+                                let owner = cx.entity().downgrade();
+                                let source = text.clone();
+                                let footer_owner = owner.clone();
+                                let footer_key = owner_key.clone();
+                                let footer_source = text.clone();
+                                let footer_cwd = state.saved.cwd.clone();
+                                let cwd = state.saved.cwd.clone();
+                                let finalized = (item["groveCompleted"] == true
+                                    || item["status"] == "completed")
+                                    && item["status"] != "inProgress"
+                                    && !self.transcript_only();
+                                view.code_block_actions(move |block, window, cx| {
+                                    let code = block.code().to_string();
+                                    let key = snippets::key(
+                                        &owner_key,
+                                        block.span.as_ref().map_or(0, |span| span.start),
+                                        &code,
+                                        &source,
+                                    );
+                                    let focus = owner
+                                        .update(cx, |this, cx| {
+                                            this.message_focus
+                                                .entry(key.clone())
+                                                .or_insert_with(|| cx.focus_handle())
+                                                .clone()
+                                        })
+                                        .ok();
+                                    let copied = owner.upgrade().is_some_and(|owner| {
+                                        owner.read(cx).copied_code_blocks.contains_key(&key)
                                     });
-                                let mut actions = div().flex().gap(rpx(SPACE_SM)).child(copy);
-                                let language = block.lang().map(|s| s.to_string()).unwrap_or_default();
-                                let closed = block.span.as_ref().and_then(|span| source.get(span.start..span.end)).is_some_and(closed_shell_fence);
-                                if finalized && closed && !code.trim().is_empty() && snippet_shell_supported(&language) {
-                                    if let Some(runtime) = runtime.clone() {
-                                        let event_owner = owner.clone();
-                                        let cwd = cwd.clone();
-                                        let owner = grove_core::session_meta::project_owner(&cx.global::<crate::settings::SettingsState>().store.projects, &cwd).map(|p| p.path.clone());
-                                        let available = owner.is_ok();
-                                        actions = actions.child(crate::ui_reference::runtime::dense_action(crate::ui_reference::runtime::DenseActionBindings {
-                                            id: "codex-run-code".into(),
-                                            label: if available { "Run" } else { "Checkout unavailable" }.into(),
-                                            icon: Some(gpui_component::Icon::default().path("icons/play.svg").size(rpx(ICON_SM))),
-                                            disabled: !available,
-                                            loading: false,
-                                            on_activate: std::rc::Rc::new(move |_, _, cx| {
-                                                let owner = grove_core::session_meta::project_owner(&cx.global::<crate::settings::SettingsState>().store.projects, &cwd).map(|p| p.path.clone());
-                                                if let Ok(project) = owner {
-                                                    let launched = runtime.update(cx, |runtime, cx| runtime.spawn_checkout_command(&project, &cwd, &code, cx));
-                                                    if launched { let _ = event_owner.update(cx, |_,cx| cx.emit(CodexViewEvent::ScriptLaunched)); }
+                                    let label = if copied { "Copied" } else { "Copy code" };
+                                    let keyboard_owner = owner.clone();
+                                    let keyboard_key = key.clone();
+                                    let keyboard_code = code.clone();
+                                    let click_owner = owner.clone();
+                                    let click_code = code.clone();
+                                    let copy_key = key.clone();
+                                    let copy =
+                                        header_control_with_label_tooltip("codex-copy-code", label)
+                                            .when_some(focus, |this, focus| {
+                                                this.track_focus(&focus)
+                                            })
+                                            .debug_selector(move || {
+                                                if copied {
+                                                    "codex-code-copied".into()
+                                                } else {
+                                                    "codex-copy-code".into()
                                                 }
-                                            }),
-                                        }, window, cx).debug_selector(|| "codex-run-code".into()));
-                                    } else {
-                                        actions = actions.child(transcript_action("codex-run-code", "Checkout unavailable", false, window, cx).disabled(true).debug_selector(|| "codex-run-code".into()).icon(gpui_component::Icon::default().path("icons/play.svg").size(rpx(ICON_SM))));
+                                            })
+                                            .tab_index(0)
+                                            .focus_visible(|style| style.bg(c::BG_HOVER()))
+                                            .child(crate::icons::icon(
+                                                if copied { "check" } else { "copy" },
+                                                ICON_MD,
+                                                c::FG_DIM(),
+                                            ))
+                                            .on_key_down(move |event, _, cx| {
+                                                if action_key(event) {
+                                                    let _ =
+                                                        keyboard_owner.update(cx, |this, cx| {
+                                                            this.copy_code_block(
+                                                                keyboard_key.clone(),
+                                                                keyboard_code.clone(),
+                                                                cx,
+                                                            );
+                                                        });
+                                                    cx.stop_propagation();
+                                                }
+                                            })
+                                            .on_click(move |_, _, cx| {
+                                                let _ = click_owner.update(cx, |this, cx| {
+                                                    this.copy_code_block(
+                                                        copy_key.clone(),
+                                                        click_code.clone(),
+                                                        cx,
+                                                    );
+                                                });
+                                            });
+                                    let mut actions = div().flex().gap(rpx(SPACE_SM)).child(copy);
+                                    let language =
+                                        block.lang().map(|s| s.to_string()).unwrap_or_default();
+                                    let closed = block
+                                        .span
+                                        .as_ref()
+                                        .and_then(|span| source.get(span.start..span.end))
+                                        .is_some_and(closed_shell_fence);
+                                    if finalized
+                                        && closed
+                                        && !code.trim().is_empty()
+                                        && snippet_shell_supported(&language)
+                                    {
+                                        if let Ok(run_actions) = owner.update(cx, |this, cx| {
+                                            this.snippet_actions(&key, &code, &cwd, window, cx)
+                                        }) {
+                                            actions = actions.child(run_actions);
+                                        }
                                     }
-                                }
-                                actions
-                            })
-                        } else {
-                            view
-                        }
-                    }),
-            );
+                                    actions
+                                })
+                                .code_block_footer(
+                                    move |block, window, cx| {
+                                        let code = block.code().to_string();
+                                        let language =
+                                            block.lang().map(|s| s.to_string()).unwrap_or_default();
+                                        let closed = block
+                                            .span
+                                            .as_ref()
+                                            .and_then(|span| {
+                                                footer_source.get(span.start..span.end)
+                                            })
+                                            .is_some_and(closed_shell_fence);
+                                        if finalized
+                                            && closed
+                                            && !code.trim().is_empty()
+                                            && snippet_shell_supported(&language)
+                                        {
+                                            let key = snippets::key(
+                                                &footer_key,
+                                                block.span.as_ref().map_or(0, |span| span.start),
+                                                &code,
+                                                &footer_source,
+                                            );
+                                            footer_owner
+                                                .update(cx, |this, cx| {
+                                                    this.snippet_footer(
+                                                        &key,
+                                                        &code,
+                                                        &footer_cwd,
+                                                        window,
+                                                        cx,
+                                                    )
+                                                })
+                                                .unwrap_or_else(|_| div().into_any_element())
+                                        } else {
+                                            div().into_any_element()
+                                        }
+                                    },
+                                )
+                            } else {
+                                view
+                            }
+                        }),
+                );
             }
             let html_entity = self.html.clone();
             let linked = html_entity.update(cx, |html, cx| html.linked(&html_message, window, cx));
@@ -28428,7 +28525,7 @@ mod tests {
 
     #[gpui::test]
     #[cfg(unix)]
-    fn codex_and_claude_snippet_run_selects_owned_terminal_and_preserves_draft(
+    fn codex_and_claude_snippet_run_stays_inline_and_preserves_draft(
         cx: &mut gpui::TestAppContext,
     ) {
         for provider in [codex::Provider::Codex, codex::Provider::Claude] {
@@ -28463,6 +28560,12 @@ mod tests {
                     },
                 ));
                 cx.set_global(crate::zoom::CurrentPtyDims::default());
+                cx.set_global(crate::zoom::ZoomState::new(1.));
+                cx.set_global(c::ThemeState::new(
+                    false,
+                    "grove-dark".into(),
+                    "grove-light".into(),
+                ));
                 let runtime = cx.new(crate::runtime::Runtime::new);
                 view.update(cx, |view, cx| {
                     view.set_script_runtime(runtime.clone(), cx);
@@ -28510,12 +28613,17 @@ mod tests {
             cx.update(|_, cx| {
                 let registry = runtime.read(cx).registry.read(cx);
                 let sessions = registry.all();
-                assert_eq!(sessions.len(), 1);
-                assert_eq!(sessions[0].wt_path, path);
-                assert_eq!(sessions[0].agent, grove_core::agent::Agent::Terminal);
+                assert!(
+                    sessions.is_empty(),
+                    "Inline scripts must not navigate to a new session"
+                );
+                assert!(runtime.read(cx).state.read(cx).active_session().is_none());
+                let snippet = view.read(cx).snippets.values().next().unwrap();
+                assert_eq!(snippet.runs.len(), 1);
+                assert!(!snippet.runs[0].expanded);
                 assert_eq!(
-                    runtime.read(cx).state.read(cx).active_session(),
-                    Some(sessions[0].id)
+                    snippet.runs[0].terminal.read(cx).initial_cwd(),
+                    Some(path.as_str())
                 );
                 assert_eq!(
                     view.read(cx).input.read(cx).value().as_ref(),
@@ -28540,19 +28648,51 @@ mod tests {
                     .trim(),
                 path
             );
-            cx.update(|_, cx| {
-                let registry = runtime.read(cx).registry.clone();
-                let ids = registry
-                    .read(cx)
-                    .all()
-                    .iter()
-                    .map(|meta| meta.id)
-                    .collect::<Vec<_>>();
-                registry.update(cx, |registry, _| {
-                    for id in ids {
-                        registry.remove(id);
-                    }
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            loop {
+                cx.run_until_parked();
+                let exited = cx.update(|_, cx| {
+                    let terminal = view.read(cx).snippets.values().next().unwrap().runs[0]
+                        .terminal
+                        .clone();
+                    terminal.update(cx, |terminal, cx| {
+                        let alive = terminal.alive();
+                        cx.notify();
+                        !alive
+                    })
                 });
+                if exited {
+                    break;
+                }
+                assert!(std::time::Instant::now() < deadline);
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            draw(cx);
+            assert!(
+                cx.debug_bounds("snippet-terminal-0").is_none(),
+                "Output starts collapsed"
+            );
+            let show = cx.debug_bounds("snippet-output-0").unwrap();
+            let share = cx.debug_bounds("snippet-share-0").unwrap();
+            assert_eq!(show.top(), share.top(), "Share belongs beside Show output");
+            cx.simulate_click(show.center(), gpui::Modifiers::default());
+            draw(cx);
+            assert!(cx.debug_bounds("snippet-terminal-0").is_some());
+            cx.simulate_keystrokes("space");
+            draw(cx);
+            assert!(cx.debug_bounds("snippet-terminal-0").is_none());
+            cx.simulate_keystrokes("enter");
+            draw(cx);
+            assert!(cx.debug_bounds("snippet-terminal-0").is_some());
+            let share = cx.debug_bounds("snippet-share-0").unwrap();
+            cx.simulate_click(share.center(), gpui::Modifiers::default());
+            draw(cx);
+            cx.update(|_, cx| {
+                let draft = view.read(cx).input.read(cx).value().to_string();
+                assert!(draft.starts_with("unsent draft\n\nScript run in "));
+                assert!(draft.contains(&path));
+                assert!(draft.contains(code));
+                assert!(draft.contains("exit 0"));
             });
             fs_err::remove_dir_all(root).unwrap();
         }
@@ -28608,7 +28748,14 @@ mod tests {
             .advance_clock(std::time::Duration::from_millis(40));
         draw(cx);
         cx.update(|window, cx| {
-            let focus = view.read(cx).message_focus["thread-ui:keyboard:code:0"].clone();
+            let focus = view
+                .read(cx)
+                .message_focus
+                .iter()
+                .find(|(key, _)| key.starts_with("thread-ui:keyboard:code:"))
+                .unwrap()
+                .1
+                .clone();
             focus.focus(window, cx);
         });
         draw(cx);
