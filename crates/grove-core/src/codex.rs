@@ -369,6 +369,13 @@ struct StopTracking {
     settled_at: Option<Instant>,
     deadline: Option<Instant>,
 }
+/// A fresh queue request authorizes resumption only after this manual compaction.
+/// Never persisted: reconnect and interrupted delivery still require explicit recovery.
+#[derive(Default)]
+struct CompactionQueue {
+    turn: Option<String>,
+    submissions: Vec<u64>,
+}
 struct Actor {
     side_chat: bool,
     side_mcp_servers: Vec<String>,
@@ -387,6 +394,7 @@ struct Actor {
     interrupt_retry: Option<(Instant, u8, String)>,
     queue_ready: bool,
     queue_paused: bool,
+    compaction_queue: Option<CompactionQueue>,
     configured_turn: Value,
     developer_instructions: String,
     reset_configuration: bool,
@@ -427,6 +435,7 @@ impl Actor {
             interrupt_retry: None,
             queue_ready: false,
             queue_paused: false,
+            compaction_queue: None,
             configured_turn: json!({}),
             developer_instructions: String::new(),
             reset_configuration,
@@ -512,6 +521,7 @@ impl Actor {
         Ok(())
     }
     fn start(&mut self) -> Result<(), String> {
+        self.compaction_queue = None;
         if self.stopping.load(Ordering::SeqCst) {
             return Err("Codex session is closing".into());
         }
@@ -1095,10 +1105,22 @@ impl Actor {
                 self.state.queued_prompts.push(draft.clone());
                 self.state.queue_sending.push(id);
                 self.state.queue_steering.push(id);
-                self.request("turn/steer", json!({"threadId":self.state.saved.thread_id,"expectedTurnId":turn,"input":input}), Pending::Steer { submission: id, turn, draft, from_queue: false }).inspect_err(|_| { self.queue_paused = true; self.queue_ready = false; self.state.mark_queue_uncertain(); })?;
+                self.request("turn/steer", json!({"threadId":self.state.saved.thread_id,"expectedTurnId":turn,"input":input}), Pending::Steer { submission: id, turn, draft, from_queue: false }).inspect_err(|_| { self.compaction_queue = None; self.queue_paused = true; self.queue_ready = false; self.state.mark_queue_uncertain(); })?;
                 self.state.clear_error();
             }
             SubmissionMode::Queue => {
+                if let Some(compaction) = &mut self.compaction_queue {
+                    if self.state.queue_uncertain.is_empty()
+                        && self.state.queue_sending.is_empty()
+                        && self
+                            .state
+                            .queued_prompts
+                            .iter()
+                            .all(|p| compaction.submissions.contains(&p.id))
+                    {
+                        compaction.submissions.push(id);
+                    }
+                }
                 self.state.saved.clear_submitted_draft(&text, &images);
                 self.state
                     .queued_prompts
@@ -1109,6 +1131,7 @@ impl Actor {
                     self.queue_ready = true;
                     if let Err(error) = self.dispatch_queue() {
                         self.queue_ready = false;
+                        self.compaction_queue = None;
                         self.queue_paused = true;
                         self.state.error = Some(error);
                     }
@@ -1154,6 +1177,7 @@ impl Actor {
             json!({ "threadId": thread }),
             Pending::Compact,
         )?;
+        self.compaction_queue = Some(CompactionQueue::default());
         self.state.compact_requested = true;
         self.state.clear_error();
         Ok(())
@@ -1164,6 +1188,8 @@ impl Actor {
         }
         if !self.queue_ready
             || self.queue_paused
+            || self.state.compact_requested
+            || self.state.compacting
             || !self.state.queue_sending.is_empty()
             || self.state.turn_id.is_some()
             || self.state.status.busy()
@@ -1244,6 +1270,7 @@ impl Actor {
         self.interrupt_retry = None;
         self.queue_ready = false;
         self.queue_paused = false;
+        self.compaction_queue = None;
         self.initial = None;
         self.args = args;
         let cleared = self.state.cleared_conversations + 1;
@@ -1620,6 +1647,7 @@ impl Actor {
             }
             Action::DismissUncertainQueued(id) => {
                 self.state.dismiss_uncertain_queued(id)?;
+                self.compaction_queue = None;
                 self.queue_paused = true;
                 self.queue_ready = false;
             }
@@ -1682,7 +1710,7 @@ impl Actor {
                 }
                 self.state.queue_sending.push(id);
                 self.state.queue_steering.push(id);
-                self.request("turn/steer", json!({"threadId":self.state.saved.thread_id,"expectedTurnId":turn,"input":input}), Pending::Steer { submission: id, turn, draft, from_queue: true }).inspect_err(|_| { self.queue_paused = true; self.queue_ready = false; self.state.mark_queue_uncertain(); })?;
+                self.request("turn/steer", json!({"threadId":self.state.saved.thread_id,"expectedTurnId":turn,"input":input}), Pending::Steer { submission: id, turn, draft, from_queue: true }).inspect_err(|_| { self.compaction_queue = None; self.queue_paused = true; self.queue_ready = false; self.state.mark_queue_uncertain(); })?;
                 self.state.clear_error();
             }
             Action::ActivityPrompt {
@@ -1752,6 +1780,7 @@ impl Actor {
                 done,
                 archive_outcome,
             } => {
+                self.compaction_queue = None;
                 self.pid.store(0, Ordering::SeqCst);
                 self.process = None;
                 let outcome = if forget && !self.side_chat {
@@ -1851,6 +1880,7 @@ impl Actor {
                 self.state.saved.roots = roots;
             }
             Action::Interrupt => {
+                self.compaction_queue = None;
                 self.queue_paused = true;
                 self.queue_ready = false;
                 let turn = self
@@ -1994,6 +2024,7 @@ impl Actor {
                     }
                 }
                 if choice == "cancel" && !child {
+                    self.compaction_queue = None;
                     self.queue_paused = true;
                     self.queue_ready = false;
                     self.state.approvals.clear();
@@ -2538,6 +2569,17 @@ impl Actor {
                     return Ok(());
                 }
                 self.state.apply(&m);
+                if m["method"] == "turn/started"
+                    && m["params"]["threadId"].as_str() == self.state.saved.thread_id.as_deref()
+                    && m["params"]["turn"]["id"].as_str() == self.state.turn_id.as_deref()
+                {
+                    if let Some(compaction) = &mut self.compaction_queue {
+                        // Bind once; an unrelated or stale turn cannot replace the owner.
+                        if compaction.turn.is_none() {
+                            compaction.turn.clone_from(&self.state.turn_id);
+                        }
+                    }
+                }
                 if self.stop_tracking.stopping {
                     if let Some(error) = &self.stop_tracking.error {
                         self.state.error = Some(error.clone());
@@ -2548,13 +2590,30 @@ impl Actor {
                     crate::rich_plan::import_completed(&mut self.state.saved);
                 }
                 if completed {
+                    if let Some(compaction) = self.compaction_queue.take() {
+                        if compaction.turn.as_deref() == active.as_deref()
+                            && m["params"]["turn"]["status"] == "completed"
+                            && !self.state.queued_prompts.is_empty()
+                            && self
+                                .state
+                                .queued_prompts
+                                .iter()
+                                .all(|p| compaction.submissions.contains(&p.id))
+                            && self.state.queue_uncertain.is_empty()
+                            && self.state.queue_sending.is_empty()
+                        {
+                            self.queue_paused = false;
+                        }
+                    }
                     self.queue_ready = m["params"]["turn"]["status"] == "completed";
                     if !self.queue_ready {
+                        self.compaction_queue = None;
                         self.queue_paused = true;
                     }
                     self.dispatch_queue()?;
                 }
                 if self.state.status == Status::Failed {
+                    self.compaction_queue = None;
                     self.queue_paused = true;
                     self.queue_ready = false;
                 }
@@ -2649,6 +2708,9 @@ impl Actor {
                 self.state.rejected_submission = Some(*id);
             }
             if matches!(request.kind, Pending::Compact) {
+                self.compaction_queue = None;
+                self.queue_paused = true;
+                self.queue_ready = false;
                 self.state.compact_requested = false;
                 self.state.error = Some(
                     error["message"]
@@ -2682,6 +2744,7 @@ impl Actor {
                 if !from_queue {
                     self.state.queued_prompts.retain(|p| p.id != submission);
                 }
+                self.compaction_queue = None;
                 self.queue_paused = true;
                 self.queue_ready = false;
                 self.state.rejected_submission = Some(submission);
@@ -2703,6 +2766,7 @@ impl Actor {
                 self.state.status = Status::Waiting;
                 return Ok(());
             }
+            self.compaction_queue = None;
             self.queue_paused = true;
             self.queue_ready = false;
             let message = error["message"]
@@ -3164,6 +3228,7 @@ impl Actor {
             } => {
                 if result["turnId"].as_str() != Some(turn.as_str()) {
                     self.state.mark_queue_uncertain();
+                    self.compaction_queue = None;
                     self.queue_paused = true;
                     self.queue_ready = false;
                     self.state.rejected_submission = Some(submission);
@@ -3185,6 +3250,7 @@ impl Actor {
             Pending::QueuedTurn { id } => {
                 self.bind_edit_checkpoint(result);
                 let Some(turn) = result["turn"]["id"].as_str().filter(|id| !id.is_empty()) else {
+                    self.compaction_queue = None;
                     self.queue_paused = true;
                     self.queue_ready = false;
                     self.state.mark_queue_uncertain();
@@ -3201,6 +3267,7 @@ impl Actor {
                     .as_deref()
                     .is_some_and(|active| active != turn)
                 {
+                    self.compaction_queue = None;
                     self.queue_paused = true;
                     self.queue_ready = false;
                     self.state.mark_queue_uncertain();
@@ -3392,6 +3459,7 @@ impl Actor {
     }
     fn reject_pending_submission(&mut self) {
         self.state.mark_queue_uncertain();
+        self.compaction_queue = None;
         self.queue_paused = true;
         self.queue_ready = false;
         if let Some(id) = self
@@ -3500,6 +3568,7 @@ impl Actor {
                     ..
                 }) = self.pending.remove(&id)
                 {
+                    self.compaction_queue = None;
                     self.queue_paused = true;
                     self.queue_ready = false;
                     self.state.rejected_submission = Some(submission);
@@ -8379,6 +8448,155 @@ mod tests {
             100
         );
     }
+    #[test]
+    #[cfg(unix)]
+    fn manual_compaction_preserves_recovery_and_edit_guards() {
+        for guard in [
+            "old_head",
+            "uncertain",
+            "failed",
+            "interrupted",
+            "stop",
+            "reconnect",
+            "rejected",
+            "editing",
+        ] {
+            let (mut actor, mut reader) = idle_actor();
+            actor.queue_paused = true;
+            if guard == "old_head" {
+                actor.state.queued_prompts.push(QueuedPrompt {
+                    id: 40,
+                    text: "held".into(),
+                    images: vec![],
+                });
+            }
+            actor.action(Action::Compact).unwrap();
+            assert_eq!(read_line(&mut reader)["method"], "thread/compact/start");
+            actor.message(json!({"id":1,"result":{}})).unwrap();
+            actor.message(json!({"method":"turn/started","params":{"threadId":"thread-1","turn":{"id":"compact-turn","status":"inProgress"}}})).unwrap();
+            actor
+                .submit_mode(41, "fresh".into(), vec![], SubmissionMode::Queue)
+                .unwrap();
+            // Unrelated completions cannot release this compaction's inputs.
+            actor.message(json!({"method":"turn/completed","params":{"threadId":"other","turn":{"id":"compact-turn","status":"completed"}}})).unwrap();
+            actor.message(json!({"method":"turn/completed","params":{"threadId":"thread-1","turn":{"id":"old-turn","status":"completed"}}})).unwrap();
+            assert!(actor.state.queue_sending.is_empty());
+            match guard {
+                "uncertain" => actor.state.queue_uncertain.push(41),
+                "stop" => {
+                    actor.action(Action::Interrupt).unwrap();
+                    let _ = read_line(&mut reader);
+                }
+                "reconnect" => {
+                    // Exercise startup revocation without launching an external CLI.
+                    actor.stopping.store(true, Ordering::SeqCst);
+                    assert!(actor.start().is_err());
+                }
+                "rejected" => {
+                    actor.pending.insert(
+                        99,
+                        Request {
+                            kind: Pending::Compact,
+                            deadline: Instant::now(),
+                        },
+                    );
+                    actor
+                        .message(json!({"id":99,"error":{"message":"rejected"}}))
+                        .unwrap();
+                }
+                "editing" => {
+                    actor.action(Action::BeginQueuedEdit(41)).unwrap();
+                }
+                _ => {}
+            }
+            let status = if matches!(guard, "failed" | "interrupted") {
+                guard
+            } else {
+                "completed"
+            };
+            actor.message(json!({"method":"turn/completed","params":{"threadId":"thread-1","turn":{"id":"compact-turn","status":status}}})).unwrap();
+            assert!(actor.state.queue_sending.is_empty(), "guard={guard}");
+            assert!(actor.state.queued_prompts.iter().any(|p| p.id == 41));
+            if guard == "editing" {
+                actor.action(Action::CancelQueuedEdit(41)).unwrap();
+                assert_eq!(actor.state.queue_sending, vec![41]);
+                assert_eq!(read_line(&mut reader)["method"], "turn/start");
+            } else {
+                assert!(actor.queue_paused, "guard={guard}");
+            }
+        }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn manual_compaction_resumes_fresh_queue_after_old_pause() {
+        for paused in [false, true] {
+            for early_queue in [false, true] {
+                for late_ack in [false, true] {
+                    let (mut actor, mut reader) = idle_actor();
+                    actor.queue_paused = paused;
+                    actor.action(Action::Compact).unwrap();
+                    assert_eq!(read_line(&mut reader)["method"], "thread/compact/start");
+                    if !late_ack {
+                        actor.message(json!({"id":1,"result":{}})).unwrap();
+                    }
+                    if early_queue {
+                        actor
+                            .submit_mode(41, "first".into(), vec![], SubmissionMode::Queue)
+                            .unwrap();
+                    }
+                    actor.message(json!({"method":"turn/started","params":{"threadId":"thread-1","turn":{"id":"compact-turn","status":"inProgress"}}})).unwrap();
+                    actor.message(json!({"method":"item/started","params":{"threadId":"thread-1","turnId":"compact-turn","item":{"id":"c1","type":"contextCompaction"}}})).unwrap();
+                    if !early_queue {
+                        actor
+                            .submit_mode(41, "first".into(), vec![], SubmissionMode::Queue)
+                            .unwrap();
+                    }
+                    actor
+                        .submit_mode(42, "second".into(), vec![], SubmissionMode::Queue)
+                        .unwrap();
+                    actor.message(json!({"method":"item/completed","params":{"threadId":"thread-1","turnId":"compact-turn","item":{"id":"c1","type":"contextCompaction"}}})).unwrap();
+                    assert!(
+                        actor.state.queue_sending.is_empty(),
+                        "item completion must not dispatch"
+                    );
+                    actor.message(json!({"method":"turn/completed","params":{"threadId":"thread-1","turn":{"id":"compact-turn","status":"completed"}}})).unwrap();
+                    if late_ack {
+                        assert!(actor.state.queue_sending.is_empty());
+                        actor.message(json!({"id":1,"result":{}})).unwrap();
+                    }
+                    assert_eq!(
+                        actor.state.queue_sending,
+                        vec![41],
+                        "paused={paused}, early_queue={early_queue}, late_ack={late_ack}"
+                    );
+                    let start = read_line(&mut reader);
+                    assert_eq!(start["method"], "turn/start");
+                    assert_eq!(start["params"]["input"][0]["text"], "first");
+                    assert_eq!(
+                        actor.state.queued_prompts.len(),
+                        2,
+                        "retain rows until acknowledgment"
+                    );
+                    actor
+                        .message(json!({"id":2,"result":{"turn":{"id":"next"}}}))
+                        .unwrap();
+                    actor.message(json!({"method":"turn/completed","params":{"threadId":"thread-1","turn":{"id":"compact-turn","status":"completed"}}})).unwrap();
+                    assert!(
+                        actor.state.queue_sending.is_empty(),
+                        "duplicate completion cannot dispatch second input"
+                    );
+                    actor.message(json!({"method":"turn/completed","params":{"threadId":"thread-1","turn":{"id":"next","status":"completed"}}})).unwrap();
+                    assert_eq!(actor.state.queue_sending, vec![42]);
+                    assert_eq!(
+                        read_line(&mut reader)["params"]["input"][0]["text"],
+                        "second"
+                    );
+                }
+            }
+        }
+    }
+
     #[test]
     #[cfg(unix)]
     fn manual_compaction_requests_thread_compact_and_normalizes_its_divider() {

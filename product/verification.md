@@ -2070,3 +2070,31 @@ untested. macOS and Windows remain untested. Full measured HTML/native reference
 certification is unsupported on this Linux host (the author command rejected
 the platform); no selected-mock raster parity or certificate is claimed. No app
 installation, user-app restart, push or release is part of this delivery.
+
+## Queued messages after manual compaction (November 2026)
+
+Codex actor fixtures reproduce and cover an old empty-queue pause, the compact
+acknowledgment/turn-start gap, both acknowledgment orderings, FIFO delivery,
+duplicate and unrelated completions, failed/interrupted compaction, stop,
+startup revocation, uncertain delivery, held older input and queue-head editing.
+The full core suite passed: 989 unit tests, 15 integration tests; 18 existing
+opt-in tests were ignored. Five focused native compaction/input fixtures, the
+busy queue/steer shortcut fixture, 33 UI conformance checks, formatting, core
+production/all-target Clippy and repository artifact policy passed.
+
+**Codex:** verified live on Linux through the production Rust adapter in disposable
+configuration and working directories. Clean and interrupted histories each
+queued during observed manual compaction, then produced exactly one input echo
+and a matching response automatically after completion.
+**Claude:** compact protocol/queue fixture and shared native Enter-key fixture
+verified. Live verification remains blocked: the installed CLI rejected the seed
+prompt with “Not logged in · Please run /login”. Its production adapter is unchanged.
+
+Native X11 screenshots of queued, completed and dispatched snapshots were
+captured with each provider selected; queued and dispatched states were inspected.
+The first changing-state capture sampled stale frames; final captures initialize
+each phase in a separate fixture process. These are rendered snapshot checks,
+not live-provider UI interaction evidence. A live end-to-end native UI run remains
+untested, as do Wayland, macOS and Windows execution; no platform-specific code
+changed. Rerun `compaction_queue_smoke claude EMPTY_CWD` with disposable
+`GROVE_CONFIG_DIR` after CLI authentication to close the live Claude gap.

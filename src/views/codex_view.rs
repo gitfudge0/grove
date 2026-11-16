@@ -5155,7 +5155,7 @@ impl CodexView {
         if self.draft_action_pending(cx) {
             return;
         }
-        let mode = if self.session.read(cx).state.status.busy()
+        let mode = if self.session.read(cx).state.provider_work_active()
             && !self.session.read(cx).dashboard_submission_ready()
         {
             SubmissionMode::Queue
@@ -21749,6 +21749,51 @@ mod tests {
     }
 
     #[gpui::test]
+    fn enter_during_compaction_queues_and_waits_for_acceptance(cx: &mut gpui::TestAppContext) {
+        let (view, cx, actions, _) = fixture(cx);
+        for provider in [codex::Provider::Codex, codex::Provider::Claude] {
+            cx.update(|window, cx| {
+                view.update(cx, |view, cx| {
+                    view.session.update(cx, |session, cx| {
+                        session.state.saved.provider = provider;
+                        session.state.status = Status::Done;
+                        session.state.compacting = true;
+                        cx.notify();
+                    });
+                    view.input
+                        .update(cx, |input, cx| input.set_value("after compact", window, cx));
+                    view.input.focus_handle(cx).focus(window, cx);
+                })
+            });
+            draw(cx);
+            cx.simulate_keystrokes("enter");
+            draw(cx);
+            let id = view.read_with(cx, |view, _| view.submitted_ack.unwrap());
+            assert!(actions.try_iter().any(|action| matches!(action, Action::SubmitWithMode {id:sent, mode:SubmissionMode::Queue, ..} if sent==id)));
+            assert_eq!(
+                view.read_with(cx, |view, cx| view.input.read(cx).value().trim().to_owned()),
+                "after compact"
+            );
+            cx.update(|_, cx| {
+                view.update(cx, |view, cx| {
+                    view.session.update(cx, |session, cx| {
+                        session.state.accept_submission(id);
+                        session.state.queued_prompts.push(codex::QueuedPrompt {
+                            id,
+                            text: "after compact".into(),
+                            images: vec![],
+                        });
+                        cx.notify();
+                    })
+                })
+            });
+            draw(cx);
+            assert!(view.read_with(cx, |view, cx| view.input.read(cx).value().is_empty()));
+            assert!(cx.debug_bounds("codex-queued-prompts").is_some());
+        }
+    }
+
+    #[gpui::test]
     fn busy_shortcuts_queue_and_steer_preserve_acknowledged_draft(cx: &mut gpui::TestAppContext) {
         let (view, cx, actions, _) = fixture(cx);
         cx.update(|window, cx| {
@@ -22933,6 +22978,16 @@ mod tests {
                 state.compacting = std::env::var_os("GROVE_FOCUS_COMPACTING").is_some();
                 state.status = if state.compacting { Status::Working } else { Status::Done };
                 state.saved.items = vec![json!({"id":"answer","type":"agentMessage","text":"Ready for your next instruction."})].into();
+                if let Ok(phase) = std::env::var("GROVE_FOCUS_QUEUE_PHASE") {
+                    assert!(matches!(phase.as_str(), "queued" | "completed" | "dispatched"));
+                    state.compacting = phase == "queued";
+                    state.status = if phase == "completed" {Status::Done} else {Status::Working};
+                    if phase == "dispatched" {
+                        state.saved.items.push(json!({"id":"queued-input","type":"userMessage","content":[{"type":"text","text":"Run this after compaction"}]}));
+                    } else {
+                        state.queued_prompts.push(codex::QueuedPrompt {id:41,text:"Run this after compaction".into(),images:vec![]});
+                    }
+                }
                 if dashboard { state.saved.items = vec![].into(); }
                 let session = cx.new(|cx| CodexSession::from_connection(state, Connection { handle, updates: receive.into() }, cx));
                 let chat = cx.new(|cx| CodexView::new(session, window, cx));
@@ -22951,7 +23006,8 @@ mod tests {
             cx.spawn(async move |cx| {
                 let _transport = (actions, updates);
                 for provider in [codex::Provider::Codex, codex::Provider::Claude] {
-                    for (theme, width, rem) in [("grove-dark",900.,16.),("grove-light",900.,16.),("tokyo-night",900.,16.),("grove-dark",540.,20.)] {
+                    let cases = if std::env::var_os("GROVE_FOCUS_QUEUE_PHASE").is_some() {vec![("grove-dark",900.,16.)]} else {vec![("grove-dark",900.,16.),("grove-light",900.,16.),("tokyo-night",900.,16.),("grove-dark",540.,20.)]};
+                    for (theme, width, rem) in cases {
                         cx.update(|cx| { grove_core::theme::set_by_name(theme); c::sync_component_theme(cx); gpui_component::Theme::global_mut(cx).font_size = gpui::px(rem); });
                         for focused in [true, false] {
                             cx.update_window(window.into(), |_, window, cx| {

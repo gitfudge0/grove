@@ -8144,6 +8144,18 @@ mod tests {
         }
         assert!(actor.state.compacting);
         assert_eq!(actor.state.status, Status::Working);
+        actor
+            .action(Action::SubmitWithMode {
+                id: 41,
+                text: "after compact".into(),
+                images: vec![],
+                mode: SubmissionMode::Queue,
+            })
+            .unwrap();
+        assert!(
+            !actor.drain_queue(),
+            "compaction must retain the queued input"
+        );
         for frame in [
             json!({"type":"system","subtype":"status","status":null,"compact_result":"success","session_id":"session"}),
             json!({"type":"system","subtype":"init","model":"claude-opus-5-5","permissionMode":"auto","session_id":"session"}),
@@ -8183,6 +8195,24 @@ mod tests {
             "Context compacted \u{b7} manual \u{b7} 26k \u{2192} 23k"
         );
         assert_eq!(actor.state.saved.context.unwrap().used, 23_327);
+        assert!(
+            actor.drain_queue(),
+            "idle after compaction must drain the queue"
+        );
+        let queued = read(&mut reader);
+        assert_eq!(queued["type"], "user");
+        assert_eq!(
+            queued["message"]["content"][0],
+            json!({"type":"text","text":"after compact"})
+        );
+        assert!(
+            !actor.drain_queue(),
+            "the same queued input must not be sent twice"
+        );
+        assert_eq!(
+            actor.state.queued_prompts[0].id, 41,
+            "retain until provider echo"
+        );
     }
     #[test]
     fn automatic_boundary_fills_after_from_next_usage_and_probe_errors_are_harmless() {

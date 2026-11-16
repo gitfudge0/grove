@@ -212,3 +212,27 @@ credential-file reads, inferred prompt counts, automatic retries or provider
 switches. A percentage never becomes a rejection without provider status.
 `provider_connections_smoke PROVIDER EMPTY_CWD usage` exercises the production
 read-only service and prints sanitized account state and reported quota windows.
+
+## Messages queued during manual compaction
+
+An explicit message queued during Codex manual compaction is eligible to run after
+that same turn completes successfully, including when an earlier interruption left
+an empty queue paused. Authorization belongs to the live compaction request and
+its observed turn; it is never restored from disk. The compact request-pending
+interval also blocks queue dispatch, even before the turn-start notification.
+Item completion alone does not release inputs, and a pending compact acknowledgment
+continues to block the existing dispatcher.
+
+Older held inputs, uncertain delivery, queue-head editing, and in-flight inputs
+retain their existing recovery and FIFO rules. Stop, failure, rejection, reconnect,
+and conversation reset revoke compaction authorization. A stale or duplicate turn
+completion cannot resume another operation. Claude uses its native compact command
+and authoritative idle boundary; its compact protocol fixture checks queued delivery
+without changing its production adapter.
+
+`compaction_queue_smoke codex|claude EMPTY_CWD` requires an absolute disposable
+`GROVE_CONFIG_DIR` and an empty disposable working directory. It uses the installed
+CLI authentication and performs clean-history and interrupted-history checks. Each
+check queues during observed compaction and requires one input echo plus a matching
+response after automatic dispatch. It does not answer provider interactions or edit
+repository files. Fixture, native UI, and live provider evidence remain separate.
