@@ -173,6 +173,21 @@ impl ProjectService {
         workspace: u64,
         cx: &mut Context<Self>,
     ) -> Result<usize, String> {
+        self.register_project_with_appearance(name, path, workspace, None, cx)
+    }
+
+    pub(crate) fn register_project_with_appearance(
+        &mut self,
+        name: String,
+        path: String,
+        workspace: u64,
+        appearance: Option<storage::identity::ProjectAppearance>,
+        cx: &mut Context<Self>,
+    ) -> Result<usize, String> {
+        if appearance.is_some_and(|a| !a.automatic.valid() || a.custom.is_some_and(|m| !m.valid()))
+        {
+            return Err("Choose a valid project appearance.".into());
+        }
         let store = &cx.global::<SettingsState>().store;
         let project = validated_registration(store, &name, &path, workspace)?;
         if self.is_worktree_removing(&project.path) {
@@ -199,6 +214,11 @@ impl ProjectService {
             store
                 .project_workspaces
                 .insert(project.path.clone(), workspace);
+            if let Some(appearance) = appearance {
+                store
+                    .project_appearances
+                    .insert(project.path.clone(), appearance);
+            }
             store.projects.push(project);
         });
         saved.map_err(|error| format!("Could not save project: {error}"))?;

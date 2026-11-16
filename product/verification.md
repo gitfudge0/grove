@@ -1,3 +1,17 @@
+## Add project icon choices (November 2026)
+
+The Project details form places symbol and color options below the full-width
+name field, replacing the adjacent symbol preview. Choices remain draft and are
+saved in the same checked settings update as registration. The five project setup
+GPUI fixtures passed, including selected symbol/color registration and existing
+narrow-layout, keyboard, validation and draft-preservation checks.
+
+Native desktop appearance, pointer/keyboard activation of the new choices, theme
+and zoom variants remain unverified; no isolated QA app was launched. Live Codex
+and Claude provider sessions were not exercised; this is project setup UI and
+registration behavior without provider transport changes. No installation or
+restart was performed.
+
 ## Project picker alignment (November 2026)
 
 The Dashboard project picker omits Project settings; Manage projects retains

@@ -760,8 +760,9 @@ assignments without requiring setup. Symbols are recognition cues, not inferred
 repository categories. Names and paths distinguish repeated identities when the
 finite library is exhausted.
 
-Project setup shows the assigned symbol beside the name without appearance
-prompts or new steps. The editor’s Project icon section shows every symbol by
+Project setup shows directly selectable symbol and color options below the name,
+with an automatic initial assignment and no separate preview beside the name.
+Choices remain draft until the project is added. The editor’s Project icon section shows every symbol by
 default in a compact Symbol row and marks the current selection with a neutral
 fill and border; unselected symbols have no visible tile border. A Color row
 shows six directly selectable swatches with accessible names and a visible

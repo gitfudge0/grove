@@ -24,6 +24,11 @@ use gpui_component::{
     Disableable,
 };
 
+use grove_core::storage::identity::{ProjectAppearance, ProjectIdentity, COLOR_COUNT, SYMBOLS};
+
+const ICON_CHOICE_SIZE: f32 = 28.;
+const COLOR_SWATCH_SIZE: f32 = 12.;
+
 const HEADER_H: f32 = 36.;
 const SUGGESTION_PATH_MAX_W: f32 = 210.;
 const SUGGESTION_H: f32 = 38.;
@@ -58,6 +63,8 @@ pub(super) struct ProjectSetup {
     suggestions_dismissed: bool,
     focus: FocusHandle,
     busy: bool,
+    appearance: Option<ProjectAppearance>,
+    appearance_focus: Vec<FocusHandle>,
     _subscriptions: Vec<Subscription>,
 }
 impl EventEmitter<ProjectSetupEvent> for ProjectSetup {}
@@ -137,10 +144,156 @@ impl ProjectSetup {
             suggestions_dismissed: false,
             focus: cx.focus_handle(),
             busy: false,
+            appearance: None,
+            appearance_focus: (0..SYMBOLS.len() + usize::from(COLOR_COUNT))
+                .map(|_| cx.focus_handle())
+                .collect(),
             _subscriptions: subscriptions,
         };
         result.refresh_suggestions();
         result
+    }
+    fn render_icon_choices(&self, _window: &Window, cx: &mut Context<Self>) -> gpui::Div {
+        let current = self
+            .appearance
+            .expect("details appearance initialized")
+            .current();
+        let mut section = div()
+            .w_full()
+            .min_w_0()
+            .flex()
+            .flex_col()
+            .gap(rpx(SPACE_LG));
+        for (is_color, label) in [(false, "Symbol"), (true, "Color")] {
+            let mut row = div()
+                .w_full()
+                .min_w_0()
+                .flex()
+                .items_center()
+                .flex_wrap()
+                .gap(rpx(SPACE_SM))
+                .child(
+                    div()
+                        .text_size(rpx(TEXT_SMALL))
+                        .text_color(c::FG_DIM())
+                        .child(label),
+                );
+            let count = if is_color {
+                usize::from(COLOR_COUNT)
+            } else {
+                SYMBOLS.len()
+            };
+            for index in 0..count {
+                let names = ["Teal", "Copper", "Slate", "Rose", "Olive", "Neutral"];
+                let name = if is_color {
+                    names[index]
+                } else {
+                    SYMBOLS[index].1
+                };
+                let selected = index
+                    == usize::from(if is_color {
+                        current.color
+                    } else {
+                        current.symbol
+                    });
+                let focus_index = if is_color {
+                    SYMBOLS.len() + index
+                } else {
+                    index
+                };
+                row = row.child(
+                    crate::views::components::settings_control(
+                        (
+                            if is_color {
+                                "setup-color"
+                            } else {
+                                "setup-symbol"
+                            },
+                            index,
+                        ),
+                        name,
+                        selected,
+                        !self.busy,
+                    )
+                    .p_0()
+                    .size(rpx(ICON_CHOICE_SIZE))
+                    .justify_center()
+                    .bg(if selected {
+                        c::BG_HOVER()
+                    } else {
+                        gpui::transparent_black()
+                    })
+                    .border_color(if selected {
+                        c::BORDER_STRONG()
+                    } else {
+                        gpui::transparent_black()
+                    })
+                    .focus_visible(|style| style.border_color(c::FG_DIM()))
+                    .track_focus(&self.appearance_focus[focus_index])
+                    .tooltip(move |window, cx| {
+                        crate::views::components::tooltip(name, window).build(window, cx)
+                    })
+                    .child(if is_color {
+                        div()
+                            .size(rpx(COLOR_SWATCH_SIZE))
+                            .rounded_full()
+                            .bg(c::PROJECT_IDENTITY(index as u8))
+                            .into_any_element()
+                    } else {
+                        icon(
+                            SYMBOLS[index].0,
+                            ICON_SM,
+                            c::PROJECT_IDENTITY(current.color),
+                        )
+                        .into_any_element()
+                    })
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        if this.busy {
+                            return;
+                        }
+                        this.appearance_focus[focus_index].focus(window, cx);
+                        this.select_appearance(is_color, index, cx);
+                    }))
+                    .on_key_down(cx.listener(
+                        move |this, event: &gpui::KeyDownEvent, window, cx| {
+                            if !this.busy
+                                && !event.is_held
+                                && matches!(event.keystroke.key.as_str(), "enter" | "space")
+                            {
+                                this.select_appearance(is_color, index, cx);
+                                window.prevent_default();
+                                cx.stop_propagation();
+                            }
+                        },
+                    )),
+                );
+            }
+            if is_color {
+                row = row.child(
+                    div()
+                        .text_size(rpx(TEXT_SMALL))
+                        .text_color(c::FG_DIM())
+                        .child(
+                            ["Teal", "Copper", "Slate", "Rose", "Olive", "Neutral"]
+                                [usize::from(current.color)],
+                        ),
+                );
+            }
+            section = section.child(row);
+        }
+        section
+    }
+    fn select_appearance(&mut self, color: bool, index: usize, cx: &mut Context<Self>) {
+        if let Some(appearance) = &mut self.appearance {
+            let mut current = appearance.current();
+            if color {
+                current.color = index as u8;
+            } else {
+                current.symbol = index as u8;
+            }
+            appearance.custom = Some(current);
+        }
+        cx.notify();
     }
     fn refresh_suggestions(&mut self) {
         self.suggestions = if self.state.path.trim().is_empty() {
@@ -306,7 +459,13 @@ impl ProjectSetup {
                     return;
                 }
                 let result = this.service.update(cx, |service, cx| {
-                    service.register_project_in_workspace(name, path.clone(), this.workspace, cx)
+                    service.register_project_with_appearance(
+                        name,
+                        path.clone(),
+                        this.workspace,
+                        this.appearance,
+                        cx,
+                    )
                 });
                 match result {
                     Ok(_) => cx.emit(ProjectSetupEvent::Completed {
@@ -487,30 +646,29 @@ impl Render for ProjectSetup {
                 );
             }
         } else {
-            let store = &cx.global::<SettingsState>().store;
-            let occupied = store
-                .projects
-                .iter()
-                .filter(|p| store.project_workspace_id(&p.path) == self.workspace)
-                .map(|p| store.project_appearance(&p.path).current())
-                .collect::<Vec<_>>();
-            let symbol =
-                grove_core::storage::identity::ProjectIdentity::assign(&self.state.path, &occupied);
-            fields = fields.child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(rpx(SPACE_2XL))
-                    .child(crate::views::components::project_symbol(symbol, ICON_20))
-                    .child(div().flex_1().min_w_0().child(project_form_field(
-                        "setup-name",
-                        "Project name",
-                        &self.name_input,
-                        error.as_deref(),
-                        window,
-                        cx,
-                    ))),
-            );
+            if self.appearance.is_none() {
+                let store = &cx.global::<SettingsState>().store;
+                let occupied = store
+                    .projects
+                    .iter()
+                    .filter(|p| store.project_workspace_id(&p.path) == self.workspace)
+                    .map(|p| store.project_appearance(&p.path).current())
+                    .collect::<Vec<_>>();
+                self.appearance = Some(ProjectAppearance {
+                    automatic: ProjectIdentity::assign(&self.state.path, &occupied),
+                    custom: None,
+                });
+            }
+            fields = fields
+                .child(project_form_field(
+                    "setup-name",
+                    "Project name",
+                    &self.name_input,
+                    error.as_deref(),
+                    window,
+                    cx,
+                ))
+                .child(self.render_icon_choices(window, cx));
             fields = fields.child(
                 div()
                     .w_full()
@@ -832,6 +990,12 @@ mod tests {
                 });
                 setup.choose(window, cx);
                 setup.state.init_git = false;
+                setup.appearance = Some(ProjectAppearance {
+                    automatic: ProjectIdentity::for_path(&canonical),
+                    custom: None,
+                });
+                setup.select_appearance(false, 2, cx);
+                setup.select_appearance(true, 3, cx);
                 setup.name_input.update(cx, |input, cx| {
                     input.set_value("Captured project", window, cx);
                 });
@@ -845,6 +1009,13 @@ mod tests {
             assert_eq!(store.projects.len(), 1);
             assert_eq!(store.projects[0].path, canonical);
             assert_eq!(store.project_workspace_id(&canonical), 1);
+            assert_eq!(
+                store.project_appearance(&canonical).current(),
+                ProjectIdentity {
+                    symbol: 2,
+                    color: 3
+                }
+            );
             assert!(!setup.read(cx).busy);
             assert!(setup.read(cx).state.note.is_none());
         });
