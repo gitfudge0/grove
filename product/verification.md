@@ -2338,3 +2338,12 @@ workflow, app installation or release publication was started for this change.
 Local manifest fixtures establish rejection behavior, not GitHub service behavior
 or measured build-time savings. Existing unrelated Clippy, spelling and standalone
 Windows-probe failures were observed in the earlier cancelled-release investigation.
+
+
+## Dashboard cross-worktree scope
+
+Across worktrees in the project dropdown opens a grouped native selection modal. Linux Grove Dark QA exercised entry, branch selection, keyboard navigation, cancellation, working-directory selection and applied scope. The final rebuilt app was inspected with names-only worktree rows and three selected roots: the composer retained only its worktree-count control, with no right-hand starting-directory control. The installed app was not replaced.
+
+Codex and Claude are verified with deferred/channel fixtures for draft, attachment and provider-option retention, explicit cwd independent of selection order, per-worktree saved roots (including two worktrees in one project), additional-directory arguments, missing-root rejection and fresh-draft adoption. No live provider send or resume was performed for this change. Light appearance, native narrow-window captures and other platforms remain unverified; normal/narrow native geometry checks cover right-hand control visibility.
+
+The final scoped Dashboard run passed 28 tests with one GPU capture fixture ignored. The two excluded layout assertions were reproduced from exact unchanged revision aa4d236: dashboard_position_uses_its_own_inset_viewport reports 148px versus 100px; dashboard_adoption_keeps_composer_anchored_on_first_frame reports 752px versus 800px. All 33 UI conformance checks and six core multi-root checks passed. The application build, all-target check, formatting, diff and repository-artifact checks passed; the final presentation refinement was rebuilt and covered by the scoped tests.

@@ -4,6 +4,11 @@ use crate::entities::codex_session::CodexSession;
 use crate::views::codex_view::{CodexView, CodexViewEvent, CHAT_MAX_W};
 use gpui_component::menu::{PopupMenu, PopupMenuItem};
 
+#[cfg(test)]
+mod scope_tests;
+mod worktree_scope;
+use worktree_scope::{ScopePicker, ScopePickerEvent, ScopeTarget};
+
 const NO_PROJECT: usize = usize::MAX;
 const WORKTREE_CACHE_FRESHNESS: std::time::Duration = std::time::Duration::from_secs(10);
 
@@ -33,6 +38,64 @@ fn dashboard_home_dir() -> String {
 
 const DASHBOARD_COMPOSER_TOP_FRACTION: f32 = 0.31;
 
+fn scope_roots(scope: &[ScopeTarget]) -> Vec<grove_core::session_meta::ContextRoot> {
+    scope
+        .iter()
+        .map(|root| grove_core::session_meta::ContextRoot {
+            project: root.project_name.clone(),
+            wt_path: root.path.clone(),
+        })
+        .collect()
+}
+
+fn validate_scope(
+    scope: &[ScopeTarget],
+    cwd: &str,
+    projects: &[(usize, String, String)],
+) -> Result<(), String> {
+    if !scope.iter().any(|target| target.path == cwd) {
+        return Err("Choose a working directory from the selected worktrees.".into());
+    }
+    let mut paths = std::collections::HashSet::new();
+    for target in scope {
+        if !projects
+            .iter()
+            .any(|(idx, _, path)| *idx == target.project && *path == target.project_path)
+            || !std::path::Path::new(&target.path).is_dir()
+            || !paths.insert(crate::paths::normalize_wt_path(&target.path))
+        {
+            return Err(format!(
+                "{} is no longer available. Review the selected worktrees.",
+                target.path
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn dashboard_launch_args(
+    provider: grove_core::codex::Provider,
+    scope: &[ScopeTarget],
+    cwd: &str,
+    cx: &App,
+) -> Vec<String> {
+    let store = &cx.global::<SettingsState>().store;
+    let extras = scope
+        .iter()
+        .filter(|root| root.path != cwd)
+        .map(|root| root.path.clone())
+        .collect::<Vec<_>>();
+    provider
+        .agent()
+        .multi_root_launch_args_for_backend(
+            true,
+            store.yolo_enabled,
+            store.chrome_enabled.unwrap_or(false),
+            &extras,
+        )
+        .unwrap_or_default()
+}
+
 /// Preferences for a fresh dashboard draft after adopting the previous one.
 struct DashboardDefaults {
     project: usize,
@@ -42,6 +105,7 @@ struct DashboardDefaults {
     config_args: Vec<String>,
     worktrees: Option<Vec<(String, String)>>,
     handoffs: Vec<Entity<CodexSession>>,
+    scope: Vec<ScopeTarget>,
     viewport_height: gpui::Pixels,
 }
 pub(super) struct Dashboard {
@@ -60,9 +124,14 @@ pub(crate) enum DestinationEvent {
     ManageCheckouts,
     Home,
     RefreshWorktrees,
+    AcrossWorktrees,
+    ScopeChanged,
 }
 pub(crate) struct DestinationTray {
     projects: Vec<(usize, String, String)>,
+    scope: Vec<ScopeTarget>,
+    scope_picker: Option<Entity<ScopePicker>>,
+    scope_events: Option<gpui::Subscription>,
     worktrees: Vec<(String, String)>,
     loading: bool,
     generation: u64,
@@ -112,6 +181,9 @@ impl DestinationTray {
     fn new(projects: Vec<(usize, String, String)>, project: usize, path: String) -> Self {
         Self {
             projects,
+            scope: Vec::new(),
+            scope_picker: None,
+            scope_events: None,
             project,
             path,
             worktrees: Vec::new(),
@@ -131,6 +203,52 @@ impl DestinationTray {
             bounds: std::array::from_fn(|_| std::rc::Rc::default()),
         }
     }
+    fn open_scope(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(picker) = &self.scope_picker {
+            picker.focus_handle(cx).focus(window, cx);
+            return;
+        }
+        self.close_popup(cx);
+        let selected = if self.scope.is_empty() {
+            if self.project == NO_PROJECT {
+                Vec::new()
+            } else {
+                vec![self.path.clone()]
+            }
+        } else {
+            self.scope.iter().map(|root| root.path.clone()).collect()
+        };
+        let projects = self.projects.clone();
+        let cwd = self.path.clone();
+        let return_focus = window.focused(cx);
+        let picker = cx.new(|cx| ScopePicker::new(projects, selected, cwd, window, cx));
+        self.scope_events =
+            Some(
+                cx.subscribe_in(&picker, window, move |this, _, event, window, cx| {
+                    if let ScopePickerEvent::Applied(targets, cwd) = event {
+                        if let Some(primary) = targets.iter().find(|root| &root.path == cwd) {
+                            this.project = primary.project;
+                            this.path = cwd.clone();
+                            this.scope = targets.clone();
+                            this.generation = this.generation.wrapping_add(1);
+                            this.loading = false;
+                            this.error = None;
+                            cx.emit(DestinationEvent::ScopeChanged);
+                        }
+                    }
+                    this.scope_picker = None;
+                    this.scope_events = None;
+                    if let Some(focus) = &return_focus {
+                        focus.focus(window, cx);
+                    }
+                    cx.notify();
+                }),
+            );
+        picker.focus_handle(cx).focus(window, cx);
+        self.scope_picker = Some(picker);
+        cx.notify();
+    }
+
     fn close_popup(&mut self, cx: &mut Context<Self>) {
         self.popup_generation = self.popup_generation.wrapping_add(1);
         self.closing_popup = None;
@@ -165,6 +283,7 @@ impl DestinationTray {
         let projects = self.projects.clone();
         let worktrees = self.worktrees.clone();
         let selected_project = self.project;
+        let scoped = !self.scope.is_empty();
         let selected_path = self.path.clone();
         let focus = window.focused(cx);
         let popup = PopupMenu::build(window, cx, move |mut menu, window, cx| {
@@ -192,7 +311,7 @@ impl DestinationTray {
                                 )
                                 .child("No project")
                         })
-                        .checked(selected_project == NO_PROJECT)
+                        .checked(!scoped && selected_project == NO_PROJECT)
                         .on_click(move |_, _, cx| {
                             let _ = home_owner.update(cx, |_, cx| cx.emit(DestinationEvent::Home));
                         }),
@@ -216,7 +335,7 @@ impl DestinationTray {
                                 .child(super::super::components::project_symbol(symbol, ICON_20))
                                 .child(name.clone())
                         })
-                        .checked(idx == selected_project)
+                        .checked(!scoped && idx == selected_project)
                         .on_click(move |_, _, cx| {
                             let _ = owner.update(cx, |_, cx| {
                                 cx.emit(DestinationEvent::Project(idx, path.clone()));
@@ -224,6 +343,32 @@ impl DestinationTray {
                         }),
                     );
                 }
+                let scope_owner = owner.clone();
+                menu = menu.separator().item(
+                    PopupMenuItem::element(|_, _| {
+                        div()
+                            .id("destination-across-worktrees")
+                            .debug_selector(|| "destination-across-worktrees".into())
+                            .aria_label("Across worktrees")
+                            .flex()
+                            .items_center()
+                            .gap(rpx(SPACE_SM))
+                            .child(
+                                div()
+                                    .size(rpx(ICON_20))
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .child(icon("workspaces", ICON_SM, c::FG_DIM())),
+                            )
+                            .child("Across worktrees…")
+                    })
+                    .checked(scoped)
+                    .on_click(move |_, _, cx| {
+                        let _ = scope_owner
+                            .update(cx, |_, cx| cx.emit(DestinationEvent::AcrossWorktrees));
+                    }),
+                );
                 let create_owner = owner.clone();
                 menu = menu.separator().item(
                     PopupMenuItem::element(|_, _| {
@@ -354,6 +499,35 @@ impl Render for DestinationTray {
             .iter()
             .find(|p| p.0 == self.path)
             .map_or_else(|| "Select worktree".into(), |p| p.1.clone());
+        let scoped = !self.scope.is_empty();
+        let project = if scoped {
+            format!(
+                "{} worktree{}",
+                self.scope.len(),
+                if self.scope.len() == 1 { "" } else { "s" }
+            )
+        } else {
+            project
+        };
+        let worktree = if scoped {
+            self.scope
+                .iter()
+                .find(|target| target.path == self.path)
+                .map(|target| {
+                    format!(
+                        "Starts in {} / {}",
+                        target.project_name,
+                        if target.branch.is_empty() {
+                            crate::paths::path_basename(&target.path)
+                        } else {
+                            target.branch.clone()
+                        }
+                    )
+                })
+                .unwrap_or_else(|| "Review worktrees".into())
+        } else {
+            worktree
+        };
         let mut tray = div()
             .id("dashboard-destination")
             .debug_selector(|| "dashboard-destination".into())
@@ -373,12 +547,14 @@ impl Render for DestinationTray {
             .flex()
             .flex_wrap()
             .gap(rpx(SPACE_SM));
-        for (idx, (is_project, label, glyph)) in
-            [(true, project, "folder"), (false, worktree, "git-branch")]
-                .into_iter()
-                .enumerate()
+        for (idx, (is_project, label, glyph)) in [
+            (true, project, if scoped { "workspaces" } else { "folder" }),
+            (false, worktree, "git-branch"),
+        ]
+        .into_iter()
+        .enumerate()
         {
-            if !is_project && self.project == NO_PROJECT {
+            if !is_project && (self.project == NO_PROJECT || self.scope.len() > 1) {
                 continue;
             }
             let bounds = self.bounds[idx].clone();
@@ -390,6 +566,13 @@ impl Render for DestinationTray {
             tray = tray.child(
                 div()
                     .id(("dashboard-destination-hover", idx))
+                    .debug_selector(move || {
+                        if is_project {
+                            "dashboard-project-selector".into()
+                        } else {
+                            "dashboard-worktree-selector".into()
+                        }
+                    })
                     .on_hover(cx.listener(move |this, hovered, _, cx| {
                         if this.hovered[idx] != *hovered {
                             this.hovered[idx] = *hovered;
@@ -420,21 +603,28 @@ impl Render for DestinationTray {
                         })
                         .icon_only()
                         .max_w(rpx(MODAL_W_SM))
-                        .when(!is_project || self.project == NO_PROJECT, |button| {
-                            button.icon(
-                                gpui_component::Icon::default().path(format!("icons/{glyph}.svg")),
-                            )
-                        })
-                        .when(is_project && self.project != NO_PROJECT, |button| {
-                            let path = self
-                                .projects
-                                .iter()
-                                .find(|p| p.0 == self.project)
-                                .map_or("", |p| p.2.as_str());
-                            button.child(super::super::components::project_symbol_for_path(
-                                path, ICON_SM, cx,
-                            ))
-                        })
+                        .when(
+                            !is_project || self.project == NO_PROJECT || scoped,
+                            |button| {
+                                button.icon(
+                                    gpui_component::Icon::default()
+                                        .path(format!("icons/{glyph}.svg")),
+                                )
+                            },
+                        )
+                        .when(
+                            is_project && self.project != NO_PROJECT && !scoped,
+                            |button| {
+                                let path = self
+                                    .projects
+                                    .iter()
+                                    .find(|p| p.0 == self.project)
+                                    .map_or("", |p| p.2.as_str());
+                                button.child(super::super::components::project_symbol_for_path(
+                                    path, ICON_SM, cx,
+                                ))
+                            },
+                        )
                         .child(
                             div()
                                 .min_w_0()
@@ -445,7 +635,11 @@ impl Render for DestinationTray {
                         .child(icon("chev-down", ICON_SM, foreground))
                         .on_click(cx.listener(
                             move |this, _, window, cx| {
-                                this.open(is_project, window, cx);
+                                if !is_project && !this.scope.is_empty() {
+                                    this.open_scope(window, cx);
+                                } else {
+                                    this.open(is_project, window, cx);
+                                }
                             },
                         )),
                     ),
@@ -497,6 +691,9 @@ impl Render for DestinationTray {
                     ),
             ));
         }
+        if let Some(picker) = &self.scope_picker {
+            tray = tray.child(gpui::deferred(picker.clone()));
+        }
         tray
     }
 }
@@ -546,6 +743,7 @@ impl Sidebar {
             .map(|dashboard| dashboard.tray.clone())
         {
             tray.update(cx, |tray, cx| {
+                tray.scope.clear();
                 tray.project = project;
                 tray.path = if checkout_path == expected_path {
                     path
@@ -654,7 +852,10 @@ impl Sidebar {
                 label: provider.label().into(),
                 title: None,
                 title_generation: None,
-                roots: Vec::new(),
+                roots: defaults
+                    .as_ref()
+                    .map(|d| scope_roots(&d.scope))
+                    .unwrap_or_default(),
                 thread_id: None,
                 items: Vec::new().into(),
                 work_periods: Vec::new(),
@@ -668,20 +869,16 @@ impl Sidebar {
                 native_config_version: 1,
                 activity_reporting: false,
             };
-            let session = cx.new(|cx| {
-                CodexSession::draft(
-                    saved,
-                    provider.agent().launch_args_for_backend(
-                        true,
-                        cx.global::<SettingsState>().store.yolo_enabled,
-                        cx.global::<SettingsState>()
-                            .store
-                            .chrome_enabled
-                            .unwrap_or(false),
-                    ),
-                    cx,
-                )
-            });
+            let args = dashboard_launch_args(
+                provider,
+                &defaults
+                    .as_ref()
+                    .map(|d| d.scope.clone())
+                    .unwrap_or_default(),
+                &saved.cwd,
+                cx,
+            );
+            let session = cx.new(|cx| CodexSession::draft(saved, args, cx));
             let tray = cx.new(|_| {
                 let mut tray = DestinationTray::new(projects, idx, checkout);
                 if let Some(worktrees) = defaults
@@ -692,6 +889,10 @@ impl Sidebar {
                     tray.worktrees = worktrees;
                     tray.preserve_on_refresh = true;
                 }
+                tray.scope = defaults
+                    .as_ref()
+                    .map(|d| d.scope.clone())
+                    .unwrap_or_default();
                 tray
             });
             let view = cx.new(|cx| CodexView::new(session.clone(), window, cx));
@@ -740,6 +941,20 @@ impl Sidebar {
                 }),
                 cx.subscribe_in(&tray, window, |this, _, event, window, cx| {
                     match event {
+                        DestinationEvent::AcrossWorktrees => {
+                            cx.defer_in(window, |this, window, cx| {
+                                if let Some(d) = &this.dashboard {
+                                    d.tray.update(cx, |tray, cx| tray.open_scope(window, cx));
+                                }
+                            });
+                        }
+                        DestinationEvent::ScopeChanged => {
+                            this.refresh_dashboard_worktrees(cx);
+                            this.refresh_dashboard_catalog(cx);
+                            if let Some(dashboard) = &this.dashboard {
+                                dashboard.view.focus_handle(cx).focus(window, cx);
+                            }
+                        }
                         DestinationEvent::NewProject => this.add_project(window, cx),
                         DestinationEvent::ManageProjects => {
                             if let Some(settings) = this.settings_panel.clone() {
@@ -763,6 +978,7 @@ impl Sidebar {
                         DestinationEvent::Home => {
                             if let Some(d) = &this.dashboard {
                                 d.tray.update(cx, |t, cx| {
+                                    t.scope.clear();
                                     t.project = NO_PROJECT;
                                     t.path = dashboard_home_dir();
                                     t.generation = t.generation.wrapping_add(1);
@@ -786,6 +1002,7 @@ impl Sidebar {
                             };
                             if let Some(d) = &this.dashboard {
                                 d.tray.update(cx, |t, cx| {
+                                    t.scope.clear();
                                     t.project = *idx;
                                     t.path = path;
                                     cx.notify();
@@ -797,6 +1014,7 @@ impl Sidebar {
                         DestinationEvent::Worktree(path) => {
                             if let Some(d) = &this.dashboard {
                                 d.tray.update(cx, |t, cx| {
+                                    t.scope.clear();
                                     t.path.clone_from(path);
                                     cx.notify();
                                 });
@@ -865,8 +1083,18 @@ impl Sidebar {
         let removed = old.project != NO_PROJECT && selected == NO_PROJECT;
         tray.update(cx, |tray, cx| {
             tray.projects = projects;
+            for target in &mut tray.scope {
+                if let Some((idx, name, _)) = tray
+                    .projects
+                    .iter()
+                    .find(|(_, _, path)| *path == target.project_path)
+                {
+                    target.project = *idx;
+                    target.project_name.clone_from(name);
+                }
+            }
             tray.project = selected;
-            if removed {
+            if removed && tray.scope.is_empty() {
                 tray.path = dashboard_home_dir();
                 tray.generation = tray.generation.wrapping_add(1);
                 tray.worktrees.clear();
@@ -883,11 +1111,35 @@ impl Sidebar {
         let Some(d) = &self.dashboard else {
             return;
         };
-        let (idx, path) = {
+        let (idx, path, scope) = {
             let t = d.tray.read(cx);
-            (t.project, t.path.clone())
+            (t.project, t.path.clone(), t.scope.clone())
         };
         let provider = d.session.read(cx).state.saved.provider;
+        if !scope.is_empty() {
+            let projects = cx
+                .global::<SettingsState>()
+                .store
+                .workspace_projects(self.active_workspace)
+                .map(|(idx, project)| (idx, project.name.clone(), project.path.clone()))
+                .collect::<Vec<_>>();
+            if let Err(error) = validate_scope(&scope, &path, &projects) {
+                self.content_error = Some(error);
+                cx.notify();
+                return;
+            }
+            let service = self.runtime.read(cx).projects.read(cx);
+            if scope.iter().any(|root| {
+                service.is_removing(&root.project_path) || service.is_worktree_removing(&root.path)
+            }) {
+                self.content_error = Some(
+                    "Wait for project or worktree removal to finish before starting this session."
+                        .into(),
+                );
+                cx.notify();
+                return;
+            }
+        }
         let Some((name, path, _)) = (if idx == NO_PROJECT {
             let home = dashboard_home_dir();
             (path == home && std::path::Path::new(&home).is_dir()).then_some((
@@ -916,21 +1168,14 @@ impl Sidebar {
             cx.notify();
             return;
         }
-        let args = provider.agent().launch_args_for_backend(
-            true,
-            cx.global::<SettingsState>().store.yolo_enabled,
-            cx.global::<SettingsState>()
-                .store
-                .chrome_enabled
-                .unwrap_or(false),
-        );
+        let args = dashboard_launch_args(provider, &scope, &path, cx);
         let Some(d) = self.dashboard.as_ref() else {
             return;
         };
-        if let Err(error) = d
-            .session
-            .update(cx, |s, cx| s.activate(name, path, args, cx))
-        {
+        if let Err(error) = d.session.update(cx, |s, cx| {
+            s.state.saved.roots = scope_roots(&scope);
+            s.activate(name, path, args, cx)
+        }) {
             self.content_error = Some(error);
             cx.notify();
             return;
@@ -965,6 +1210,11 @@ impl Sidebar {
                 composer: saved.composer.clone(),
                 config_args: saved.config_args.clone(),
                 worktrees,
+                scope: self
+                    .dashboard
+                    .as_ref()
+                    .map(|d| d.tray.read(cx).scope.clone())
+                    .unwrap_or_default(),
                 handoffs: {
                     let mut handoffs = view.read(cx).dashboard_handoff_sessions(cx);
                     handoffs.push(session.clone());
@@ -1000,6 +1250,7 @@ impl Sidebar {
         };
         let path = d.tray.read(cx).path.clone();
         let idx = d.tray.read(cx).project;
+        let scope = d.tray.read(cx).scope.clone();
         let name = cx
             .global::<SettingsState>()
             .store
@@ -1008,17 +1259,11 @@ impl Sidebar {
             .map(|p| p.name.clone())
             .unwrap_or_default();
         let provider = d.session.read(cx).state.saved.provider;
-        let args = provider.agent().launch_args_for_backend(
-            true,
-            cx.global::<SettingsState>().store.yolo_enabled,
-            cx.global::<SettingsState>()
-                .store
-                .chrome_enabled
-                .unwrap_or(false),
-        );
+        let args = dashboard_launch_args(provider, &scope, &path, cx);
         d.session.update(cx, |s, cx| {
             s.state.saved.cwd.clone_from(&path);
             s.state.saved.project = name;
+            s.state.saved.roots = scope_roots(&scope);
             s.refresh_catalog(path, args, cx);
             cx.notify();
         });
@@ -1348,8 +1593,16 @@ impl Sidebar {
                                 sidebar_worktree_name(&worktree.name, worktree.is_main).to_owned()
                             },
                         );
+                        let worktree = if meta.context_roots.len() > 1 {
+                            super::multi_project::worktree_names(&meta, &self.snapshot)
+                        } else {
+                            worktree
+                        };
                         let metadata = super::dashboard_timeline::RowMetadata {
-                            project: if meta.project.is_empty() {
+                            project: if let Some(names) = super::multi_project::project_names(&meta)
+                            {
+                                names
+                            } else if meta.project.is_empty() {
                                 "No project".into()
                             } else {
                                 meta.project.clone()
