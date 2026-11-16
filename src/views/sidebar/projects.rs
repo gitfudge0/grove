@@ -220,7 +220,7 @@ impl ProjectPanel {
                 .map(|_| cx.focus_handle())
                 .collect(),
             appearance_color_focus: (0..grove_core::storage::identity::COLOR_COUNT)
-                .map(|_| cx.focus_handle())
+                .map(|_| cx.focus_handle().tab_stop(true))
                 .collect(),
             error: None,
             destination: None,

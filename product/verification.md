@@ -2072,3 +2072,34 @@ Codex and Claude retained-draft/checkout behavior passed local native fixtures;
 neither provider's live transport was exercised. Native Light appearance, the
 complete pointer/focus matrix, measured visual parity, and macOS/Windows runtime
 remain unverified. This endpoint refreshes only the isolated QA app.
+
+### Compact project icon rows (2026-11-16)
+
+Implemented selected exploratory variant A in the native project editor: Symbol
+and Color rows, six swatches with the selected color name, and Shuffle/Reset in
+the header. Removed the standalone preview and borders on unselected symbols.
+Existing draft, atomic Save and Reset-to-original behavior remain in place.
+
+- Built with `CARGO_TARGET_DIR=/home/gitfudge/Projects/grove/target cargo build
+  --profile local -q -p grove`. Formatting, diff whitespace and repository
+  artifact-policy checks passed. No app installation, replacement or release.
+- The final test binary passed 64 focused checks: 7 project editor/appearance,
+  24 Settings and 33 UI conformance checks. Six opt-in capture tests were ignored.
+  The existing appearance test now checks all symbol bounds, the selected-color
+  label, pointer selection, and long-name preservation at widths 768/360 and rem
+  16/24 in Grove Dark and Light. Persistence/save-failure tests passed.
+- Native Linux/X11 gallery fixtures used separate configuration, process and app
+  identity. Inspected both theme layouts. Observed Leaf/Rose pointer selection;
+  in the final Light fixture, pointer selection followed by Tab/Enter selected
+  Olive, and Reset restored the original Flower/Teal assignment. Native inspection
+  exposed missing color Tab stops; the focused regression initially failed and
+  passed after explicit Tab stops and pointer-focus ownership were added.
+- Final Dark layout was inspected; its OS keyboard attempt did not produce a
+  confirmed changed capture. Both-theme layout/pointer checks and additional
+  keyboard checks used GPUI TestPlatform, not live provider sessions. Codex and
+  Claude live transports
+  remain untested; this picker does not alter their boundaries.
+- Native fixtures were stopped after inspection. Captures and logs remain in
+  ignored task artifacts. Measured HTML/native parity certification is unsupported
+  on Linux (the tool requires macOS Metal); the exploratory mock is not a measured
+  reference. Windows/macOS runtime and participant usability remain unverified.

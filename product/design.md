@@ -760,8 +760,14 @@ finite library is exhausted.
 
 Project setup shows the assigned symbol beside the name without appearance
 prompts or new steps. The editor’s Project icon section shows every symbol by
-default and marks the current selection. Color choices remain available without a disclosure. Shuffle
-previews a different symbol and color without saving; Reset icon restores the
+default in a compact Symbol row and marks the current selection with a neutral
+fill and border; unselected symbols have no visible tile border. A Color row
+shows six directly selectable swatches with accessible names and a visible
+selected-color name. Clicking a symbol or swatch establishes keyboard focus;
+Tab continues through the choices, and Enter/Space selects without saving. Both
+rows wrap within the form at narrow widths. Shuffle
+and Reset share the section header; there is no separate icon preview. Shuffle
+previews a different symbol and color without saving; Reset restores the
 saved original assignment. No automatic, randomized or custom status label is
 shown. Save changes applies name, scripts and appearance
 atomically; Cancel discards edits, and a failed save retains the drafts and the
