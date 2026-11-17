@@ -436,6 +436,8 @@ fn effective_rail_width(preferred: f32, logical_width: f32) -> f32 {
     }
 }
 
+type SessionGroups = Vec<(&'static str, Vec<SessionId>)>;
+
 pub struct Sidebar {
     worktree_branch_edited: bool,
     worktree_source_generation: u64,
@@ -479,6 +481,8 @@ pub struct Sidebar {
     saved: HashMap<u64, Navigation>,
     scroll: ScrollHandle,
     terminal_owners: HashMap<SessionId, u64>,
+    rendered_terminal_ids: HashSet<SessionId>,
+    cached_terminal_ids: HashSet<SessionId>,
     project_flyout: Option<SidebarContext>,
     project_flyout_hover_open: bool,
     project_flyout_hover_blocked: bool,
@@ -521,6 +525,7 @@ pub struct Sidebar {
     worktree_delete_focus: HashMap<String, FocusHandle>,
     worktree_removal_return_focus: Option<FocusHandle>,
     pending_new_worktree: Option<usize>,
+    pub(super) worktree_creating: bool,
     worktree_name: Entity<InputState>,
     worktree_errors: [Option<String>; 3],
     worktree_return_focus: Option<FocusHandle>,
@@ -573,6 +578,10 @@ pub struct Sidebar {
     session_history_selected: Option<session_history::HistorySelection>,
     session_history_view: Option<Entity<super::codex_view::CodexView>>,
     history_search: Entity<InputState>,
+    history_search_query: String,
+    history_search_results: HashMap<String, String>,
+    history_search_task: Option<gpui::Task<()>>,
+    history_load_generation: u64,
     history_project_filter: Option<String>,
     history_provider_filter: Option<Agent>,
     history_filter_popup: Option<Entity<gpui_component::menu::PopupMenu>>,
@@ -582,6 +591,12 @@ pub struct Sidebar {
     home_terminal_views: HashMap<SessionId, Entity<TerminalView>>,
     available: [bool; 4],
     project_paths: HashMap<usize, String>,
+    sync_dirty: bool,
+    registry_sync_revision: u64,
+    pub(super) window_active: bool,
+    list_groups_cache: std::cell::RefCell<Option<SessionGroups>>,
+    git_paths: Vec<String>,
+    git_refresh_timer: Option<gpui::Task<()>>,
     collapsed_projects: HashSet<String>,
     worktree_focus: HashMap<String, FocusHandle>,
     worktree_diff_focus: HashMap<String, FocusHandle>,
@@ -682,15 +697,30 @@ impl Sidebar {
         let history_search =
             cx.new(|cx| InputState::new(window, cx).placeholder("Search sessions and transcripts"));
         let mut observers = vec![
-            cx.observe(&runtime, |_, _, cx| cx.notify()),
-            cx.observe(&registry, |_, _, cx| cx.notify()),
-            cx.observe(&activity, |_, _, cx| cx.notify()),
+            cx.observe(&runtime, |this, _, cx| {
+                this.sync_dirty = true;
+                this.list_groups_cache.borrow_mut().take();
+                cx.notify();
+            }),
+            cx.observe(&registry, |this, _, cx| {
+                this.sync_dirty = true;
+                this.list_groups_cache.borrow_mut().take();
+                cx.notify();
+            }),
+            cx.observe(&activity, |this, _, cx| {
+                this.list_groups_cache.borrow_mut().take();
+                cx.notify();
+            }),
             cx.observe(&upgrade, |_, _, cx| cx.notify()),
             cx.observe(&shell_environment, |this, _, cx| {
                 this.available = WORKTREE_LAUNCH_AGENTS.map(Agent::available);
                 cx.notify();
             }),
-            cx.observe(&tree, |_, _, cx| cx.notify()),
+            cx.observe(&tree, |this, _, cx| {
+                this.sync_dirty = true;
+                this.list_groups_cache.borrow_mut().take();
+                cx.notify();
+            }),
             cx.subscribe(&projects, |this, _, event, cx| {
                 if let ProjectEvent::WorktreeRemovalChanged { path } = event {
                     this.worktree_removal_changed(path, cx);
@@ -698,10 +728,12 @@ impl Sidebar {
             }),
             cx.observe_global::<SettingsState>(|this, cx| {
                 this.refresh_dashboard_projects(cx);
+                this.sync_dirty = true;
                 cx.notify();
             }),
-            cx.subscribe_in(&history_search, window, |_, _, event, _, cx| {
+            cx.subscribe_in(&history_search, window, |this, _, event, _, cx| {
                 if matches!(event, gpui_component::input::InputEvent::Change) {
+                    this.schedule_history_search(cx);
                     cx.notify();
                 }
             }),
@@ -760,6 +792,8 @@ impl Sidebar {
             saved: HashMap::new(),
             scroll: ScrollHandle::new(),
             terminal_owners: HashMap::new(),
+            rendered_terminal_ids: HashSet::new(),
+            cached_terminal_ids: HashSet::new(),
             project_flyout: None,
             project_flyout_hover_open: false,
             project_flyout_hover_blocked: false,
@@ -801,6 +835,7 @@ impl Sidebar {
             worktree_delete_focus: HashMap::new(),
             worktree_removal_return_focus: None,
             pending_new_worktree: None,
+            worktree_creating: false,
             worktree_name,
             worktree_errors: [None, None, None],
             worktree_return_focus: None,
@@ -853,6 +888,10 @@ impl Sidebar {
             session_history_selected: None,
             session_history_view: None,
             history_search,
+            history_search_query: String::new(),
+            history_search_results: HashMap::new(),
+            history_search_task: None,
+            history_load_generation: 0,
             history_project_filter: None,
             history_provider_filter: None,
             history_filter_popup: None,
@@ -862,6 +901,12 @@ impl Sidebar {
             home_terminal_views: HashMap::new(),
             available: WORKTREE_LAUNCH_AGENTS.map(Agent::available),
             project_paths: HashMap::new(),
+            sync_dirty: true,
+            registry_sync_revision: 0,
+            window_active: true,
+            list_groups_cache: std::cell::RefCell::default(),
+            git_paths: Vec::new(),
+            git_refresh_timer: None,
             collapsed_projects: HashSet::new(),
             worktree_focus: HashMap::new(),
             worktree_diff_focus: HashMap::new(),
@@ -930,6 +975,28 @@ impl Sidebar {
         .detach();
     }
     fn sync(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.sync_dirty = false;
+        self.registry_sync_revision = self.runtime.read(cx).registry.read(cx).revision();
+        self.list_groups_cache.borrow_mut().take();
+        if self.git_refresh_timer.is_none() {
+            self.git_refresh_timer = Some(cx.spawn_in(window, async move |this, cx| loop {
+                cx.background_executor().timer(Duration::from_secs(5)).await;
+                if this
+                    .update_in(cx, |this, window, cx| {
+                        if this.git_paths.is_empty() {
+                            return;
+                        }
+                        let paths = this.git_paths.clone();
+                        this.runtime.read(cx).tree.clone().update(cx, |tree, cx| {
+                            tree.maybe_poll_git_state(paths, window.is_window_active(), cx);
+                        });
+                    })
+                    .is_err()
+                {
+                    break;
+                }
+            }));
+        }
         if self.mode != ViewMode::Grid || self.is_zen() || !self.navigation_available() {
             self.grid_session_drag = None;
         }
@@ -941,15 +1008,11 @@ impl Sidebar {
             .enumerate()
             .map(|(idx, p)| (idx, p.path.clone()))
             .collect();
+        let new_indices: HashMap<_, _> = paths.iter().map(|(index, path)| (path, *index)).collect();
         let mut mapping: HashMap<usize, usize> = self
             .project_paths
             .iter()
-            .filter_map(|(old, path)| {
-                paths
-                    .iter()
-                    .find(|(_, p)| *p == path)
-                    .map(|(new, _)| (*old, *new))
-            })
+            .filter_map(|(old, path)| new_indices.get(path).map(|new| (*old, *new)))
             .collect();
         for idx in paths.keys() {
             if !self.project_paths.contains_key(idx) {
@@ -1050,7 +1113,6 @@ impl Sidebar {
         }
         let rt = self.runtime.read(cx);
         let tree = rt.tree.clone();
-        let proj = rt.state.read(cx).proj_idx();
         let ids: Vec<_> = cx
             .global::<SettingsState>()
             .store
@@ -1058,12 +1120,18 @@ impl Sidebar {
             .map(|(i, _)| i)
             .collect();
         let generation = tree.read(cx).generation();
+        let active_project = rt.state.read(cx).proj_idx();
+        let warm_active = self.cache_warm.is_none()
+            && !tree
+                .read(cx)
+                .worktrees_for_project(active_project, active_project)
+                .is_empty();
         if self.cache_warm != Some((active, generation)) {
             let targets = cx
                 .global::<SettingsState>()
                 .store
                 .workspace_projects(active)
-                .filter(|(i, _)| *i != proj)
+                .filter(|(index, _)| !warm_active || *index != active_project)
                 .map(|(i, p)| (i, p.path.clone()))
                 .collect();
             tree.update(cx, |tree, cx| tree.sweep_wt_cache(targets, cx));
@@ -1104,7 +1172,7 @@ impl Sidebar {
                 self.focus.focus(window, cx);
             }
         }
-        let git_paths = {
+        self.git_paths = {
             let registry = self.runtime.read(cx).registry.read(cx);
             let mut seen = HashSet::new();
             self.snapshot
@@ -1117,7 +1185,7 @@ impl Sidebar {
                 .collect::<Vec<_>>()
         };
         tree.update(cx, |tree, cx| {
-            tree.maybe_poll_git_state(git_paths, window.is_window_active(), cx);
+            tree.maybe_poll_git_state(self.git_paths.clone(), window.is_window_active(), cx);
         });
         for project in &self.snapshot.projects {
             self.project_menu_bounds.entry(project.idx).or_default();
@@ -1396,13 +1464,40 @@ impl Sidebar {
                 .any(|project| !project.sessions.is_empty())
     }
 
+    fn age_refresh_delay(&self, cx: &App) -> Duration {
+        if !self.window_active {
+            return Duration::from_mins(1);
+        }
+        let runtime = self.runtime.read(cx);
+        let registry = runtime.registry.read(cx);
+        let activity = runtime.activity.read(cx);
+        let now = Instant::now();
+        registry
+            .all()
+            .iter()
+            .map(|meta| {
+                let since = activity.since_of(meta.id).unwrap_or(meta.spawned_at);
+                let age = now.saturating_duration_since(since);
+                if age < Duration::from_mins(1) {
+                    SESSION_AGE_REFRESH
+                } else {
+                    Duration::from_secs(60 - age.as_secs() % 60)
+                }
+            })
+            .min()
+            .unwrap_or(Duration::from_mins(1))
+    }
+
     fn sync_age_timer(&mut self, cx: &mut Context<Self>) {
         if !self.age_visible() {
             self.age_timer = None;
         } else if self.age_timer.is_none() {
             self.age_timer = Some(
                 cx.spawn(async move |this: gpui::WeakEntity<Self>, cx| loop {
-                    cx.background_executor().timer(SESSION_AGE_REFRESH).await;
+                    let delay = this
+                        .update(cx, |this, cx| this.age_refresh_delay(cx))
+                        .unwrap_or(Duration::from_mins(1));
+                    cx.background_executor().timer(delay).await;
                     let visible = this
                         .update(cx, |this, cx| {
                             if this.age_visible() {
@@ -2477,19 +2572,23 @@ impl Sidebar {
     }
 
     fn list_session_groups(&self, cx: &App) -> Vec<(&'static str, Vec<SessionId>)> {
+        if self.registry_sync_revision == self.runtime.read(cx).registry.read(cx).revision() {
+            if let Some(groups) = self.list_groups_cache.borrow().as_ref() {
+                return groups.clone();
+            }
+        }
+        let visible: HashSet<_> = self
+            .snapshot
+            .projects
+            .iter()
+            .flat_map(|project| project.sessions.iter().copied())
+            .collect();
         let registry = self.runtime.read(cx).registry.read(cx);
         let activity = self.runtime.read(cx).activity.read(cx);
         let entries: Vec<_> = registry
             .all()
             .iter()
-            .filter(|meta| {
-                meta.project.is_empty()
-                    || self
-                        .snapshot
-                        .projects
-                        .iter()
-                        .any(|project| project.sessions.contains(&meta.id))
-            })
+            .filter(|meta| meta.project.is_empty() || visible.contains(&meta.id))
             .map(|meta| SessionListEntry {
                 id: meta.id,
                 state: activity.state_of(meta.id),
@@ -2500,14 +2599,16 @@ impl Sidebar {
                 active: activity.active_of(meta.id),
             })
             .collect();
-        group_sessions_for_list(&entries, Instant::now())
+        let groups: Vec<_> = group_sessions_for_list(&entries, Instant::now())
             .into_iter()
             .map(|(heading, indices)| {
                 let mut ids: Vec<_> = indices.into_iter().map(|index| entries[index].id).collect();
                 self.session_placement.sort(&mut ids);
                 (heading, ids)
             })
-            .collect()
+            .collect();
+        *self.list_groups_cache.borrow_mut() = Some(groups.clone());
+        groups
     }
 
     fn visible_session_order(&self, cx: &App) -> Vec<SessionId> {
@@ -3176,16 +3277,7 @@ impl Sidebar {
                 cx.notify();
             }
             Action::PreviewSessionHistory(key) => {
-                if let Some(saved) = self.session_history.iter().find(|s| s.key == key).cloned() {
-                    let session = cx
-                        .new(|cx| crate::entities::codex_session::CodexSession::history(saved, cx));
-                    self.session_history_view = Some(
-                        cx.new(|cx| super::codex_view::CodexView::history(session, window, cx)),
-                    );
-                    self.session_history_selected =
-                        Some(session_history::HistorySelection::Native(key));
-                }
-                cx.notify();
+                self.hydrate_history_session(&key, false, window, cx);
             }
             Action::PreviewCliHistory(key) => {
                 if self.cli_session_history.iter().any(|s| s.key == key) {
@@ -4339,9 +4431,12 @@ impl Sidebar {
                 .unwrap_or(meta.spawned_at);
             let age = session_age_label(since, Instant::now());
             let roots = session_root_inventory(meta, &self.snapshot);
-            let git = self.runtime.read(cx).tree.read(cx).git_states();
-            let diff = git
-                .get(crate::paths::normalize_wt_path(&meta.wt_path))
+            let diff = self
+                .runtime
+                .read(cx)
+                .tree
+                .read(cx)
+                .git_state(crate::paths::normalize_wt_path(&meta.wt_path))
                 .map_or_else(
                     || ("Git status unavailable".into(), false),
                     session_diff_status,
@@ -5211,16 +5306,21 @@ impl Sidebar {
                         .child(icon("trash", ICON_SM, c::FG_DIM())),
                     );
                 }
-                let git = self.runtime.read(cx).tree.read(cx).git_states();
-                let diff = git.get(crate::paths::normalize_wt_path(&path));
-                let diff_label = match diff {
+                let diff = self
+                    .runtime
+                    .read(cx)
+                    .tree
+                    .read(cx)
+                    .git_state(crate::paths::normalize_wt_path(&path))
+                    .copied();
+                let diff_label = match &diff {
                     Some(state) if state.dirty || state.added > 0 || state.removed > 0 => {
                         format!("Worktree changes: +{} −{}", state.added, state.removed)
                     }
                     Some(_) => "Worktree clean".into(),
                     None => "Git status unavailable".into(),
                 };
-                let diff_element = match diff {
+                let diff_element = match &diff {
                     Some(state) if state.dirty || state.added > 0 || state.removed > 0 => self
                         .control(
                             SharedString::from(format!("worktree-diff-{path}")),
@@ -5605,8 +5705,16 @@ impl Focusable for Sidebar {
 
 impl Render for Sidebar {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if self.mode != ViewMode::Grid || self.is_zen() || !self.navigation_available() {
+            self.grid_session_drag = None;
+        }
+        self.window_active = window.is_window_active();
+        self.sync_dirty |=
+            self.registry_sync_revision != self.runtime.read(cx).registry.read(cx).revision();
         super::inline_html::exclude_native_html(None, cx);
-        self.sync(window, cx);
+        if self.sync_dirty {
+            self.sync(window, cx);
+        }
         if self.history.is_some() && self.history_selection != self.selection {
             self.history_hover = branch_history::HistoryHover::default();
             self.history = None;
@@ -5664,7 +5772,16 @@ impl Render for Sidebar {
             }
         }
         let global_rail = self.global_rail(window, cx);
+        self.rendered_terminal_ids.clear();
         let content = self.render_content(window, cx);
+        if self.rendered_terminal_ids != self.cached_terminal_ids {
+            let registry = self.runtime.read(cx).registry.clone();
+            registry.update(cx, |registry, cx| {
+                registry.release_hidden_scenes(&self.rendered_terminal_ids, cx);
+            });
+            self.cached_terminal_ids
+                .clone_from(&self.rendered_terminal_ids);
+        }
         let navigation_close_confirmation = self.navigation_close_confirmation(window, cx);
         let confirming = self.project_decision
             || self.pending_close.is_some()
@@ -8711,7 +8828,10 @@ for line in sys.stdin:
                             cx,
                         )
                     });
-                    assert!(!did_spawn);
+                    assert!(
+                        did_spawn,
+                        "the session is registered before asynchronous startup resolves"
+                    );
                     let id = runtime
                         .read(cx)
                         .state
@@ -8736,6 +8856,34 @@ for line in sys.stdin:
                     .focus_handle(cx)
                     .is_focused(window));
             });
+            let terminal = sidebar.read_with(cx, |sidebar, cx| {
+                sidebar
+                    .runtime
+                    .read(cx)
+                    .registry
+                    .read(cx)
+                    .session(id)
+                    .unwrap()
+                    .clone()
+            });
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while terminal.read_with(cx, |terminal, _| terminal.spawn_error().is_none()) {
+                cx.run_until_parked();
+                assert!(
+                    Instant::now() < deadline,
+                    "startup failure must arrive without replacing the registered session"
+                );
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            assert_eq!(
+                sidebar.read_with(cx, |sidebar, cx| sidebar
+                    .runtime
+                    .read(cx)
+                    .state
+                    .read(cx)
+                    .active_session()),
+                Some(id)
+            );
         }
     }
 
@@ -10721,7 +10869,7 @@ for line in sys.stdin:
                         "recent preview loads only five commits"
                     );
                     cache.data.update(cx, |data, cx| {
-                        data.snapshot = Some(recent.clone());
+                        data.snapshot = Some(recent.clone().into());
                         data.loading = false;
                         cx.notify();
                     });
@@ -10836,7 +10984,7 @@ for line in sys.stdin:
                         let selection = sidebar.selection.clone();
                         sidebar.act(Action::OpenHistory(path.clone()), window, cx);
                         sidebar.history.as_ref().unwrap().update(cx, |history, cx| {
-                            history.snapshot = Some(snapshot.clone());
+                            history.snapshot = Some(snapshot.clone().into());
                             history.loading = false;
                             cx.notify();
                         });
@@ -11100,7 +11248,7 @@ for line in sys.stdin:
                     sidebar.update(cx, |sidebar, cx| {
                         sidebar.act(Action::RefreshHistory, window, cx);
                         sidebar.history.as_ref().unwrap().update(cx, |data, cx| {
-                            data.snapshot = Some(snapshot.clone());
+                            data.snapshot = Some(snapshot.clone().into());
                             data.loading = false;
                             cx.notify();
                         });
@@ -11129,7 +11277,7 @@ for line in sys.stdin:
                 cx.update(|window, cx| {
                     sidebar.update(cx, |sidebar, cx| {
                         sidebar.history.as_ref().unwrap().update(cx, |data, cx| {
-                            data.snapshot = Some(snapshot.clone());
+                            data.snapshot = Some(snapshot.clone().into());
                             data.loading = false;
                             cx.notify();
                         });
@@ -11148,7 +11296,7 @@ for line in sys.stdin:
                     sidebar.update(cx, |sidebar, cx| {
                         sidebar.act(Action::OpenHistory(path.clone()), window, cx);
                         sidebar.history.as_ref().unwrap().update(cx, |data, cx| {
-                            data.snapshot = Some(snapshot.clone());
+                            data.snapshot = Some(snapshot.clone().into());
                             data.loading = false;
                             cx.notify();
                         });
@@ -11172,7 +11320,7 @@ for line in sys.stdin:
                         view.focus_handle(cx).focus(window, cx);
                         sidebar.act(Action::OpenHistory(path.clone()), window, cx);
                         sidebar.history.as_ref().unwrap().update(cx, |data, cx| {
-                            data.snapshot = Some(snapshot.clone());
+                            data.snapshot = Some(snapshot.clone().into());
                             data.loading = false;
                             cx.notify();
                         });
@@ -11186,7 +11334,7 @@ for line in sys.stdin:
                             cx,
                         );
                         sidebar.history.as_ref().unwrap().update(cx, |history, cx| {
-                            history.details = Some(latest_details.clone());
+                            history.details = Some(latest_details.clone().into());
                             history.detail_loading = false;
                             cx.notify();
                         });
@@ -11209,7 +11357,7 @@ for line in sys.stdin:
                                 Some("model.txt"),
                                 "opening a commit selects its first changed file for {provider:?}"
                             );
-                            history.patch = Some(latest_patch.clone());
+                            history.install_patch(latest_patch.clone());
                             history.patch_loading = false;
                             cx.notify();
                         });

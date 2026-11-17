@@ -6,8 +6,9 @@ use std::{
     io::{Read, Seek, SeekFrom},
     path::Path,
     process::{Command, Stdio},
-    time::{Duration, Instant},
+    time::Duration,
 };
+use wait_timeout::ChildExt as _;
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -255,53 +256,47 @@ pub(crate) fn gh(path: &Path, args: &[&str]) -> Result<String, String> {
     let mut child = command.spawn().map_err(|_| {
         "Could not start GitHub CLI. Check the checkout folder and executable permissions"
     })?;
-    let start = Instant::now();
-    loop {
-        match child.try_wait() {
-            Ok(Some(status)) => {
-                if !status.success() {
-                    let _ = err.seek(SeekFrom::Start(0));
-                    let mut detail = String::new();
-                    let _ = err.take(8192).read_to_string(&mut detail);
-                    let detail = detail.to_ascii_lowercase();
-                    return Err(if detail.contains("auth login")
-                        || detail.contains("authentication")
-                        || detail.contains("401")
-                    {
-                        "Sign in with gh auth login to see pull requests"
-                    } else if detail.contains("no git remotes")
-                        || detail.contains("not a github")
-                        || detail.contains("resolve to a github")
-                    {
-                        "Configure a GitHub remote to use pull requests"
-                    } else {
-                        "GitHub status unavailable. Check network and repository access"
-                    }
-                    .into());
+    match child.wait_timeout(Duration::from_secs(20)) {
+        Ok(Some(status)) => {
+            if !status.success() {
+                let _ = err.seek(SeekFrom::Start(0));
+                let mut detail = String::new();
+                let _ = err.take(8192).read_to_string(&mut detail);
+                let detail = detail.to_ascii_lowercase();
+                return Err(if detail.contains("auth login")
+                    || detail.contains("authentication")
+                    || detail.contains("401")
+                {
+                    "Sign in with gh auth login to see pull requests"
+                } else if detail.contains("no git remotes")
+                    || detail.contains("not a github")
+                    || detail.contains("resolve to a github")
+                {
+                    "Configure a GitHub remote to use pull requests"
+                } else {
+                    "GitHub status unavailable. Check network and repository access"
                 }
-                out.seek(SeekFrom::Start(0))
-                    .map_err(|_| "Could not read GitHub status")?;
-                let mut text = String::new();
-                out.take(1_048_577)
-                    .read_to_string(&mut text)
-                    .map_err(|_| "Could not read GitHub status")?;
-                if text.len() > 1_048_576 {
-                    return Err("GitHub status exceeded the response limit".into());
-                }
-                return Ok(text);
+                .into());
             }
-            Ok(None) if start.elapsed() < Duration::from_secs(20) => {
-                std::thread::sleep(Duration::from_millis(25));
+            out.seek(SeekFrom::Start(0))
+                .map_err(|_| "Could not read GitHub status")?;
+            let mut text = String::new();
+            out.take(1_048_577)
+                .read_to_string(&mut text)
+                .map_err(|_| "Could not read GitHub status")?;
+            if text.len() > 1_048_576 {
+                return Err("GitHub status exceeded the response limit".into());
             }
-            _ => {
-                #[cfg(unix)]
-                unsafe {
-                    libc::kill(-(child.id() as i32), libc::SIGKILL);
-                }
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err("GitHub status timed out. Check network and retry".into());
+            Ok(text)
+        }
+        _ => {
+            #[cfg(unix)]
+            unsafe {
+                libc::kill(-(child.id() as i32), libc::SIGKILL);
             }
+            let _ = child.kill();
+            let _ = child.wait();
+            Err("GitHub status timed out. Check network and retry".into())
         }
     }
 }
@@ -311,7 +306,7 @@ pub fn inspect(path: &Path, state: &CheckoutGitState) -> Result<Option<PullReque
     if state.remotes.is_empty() {
         return Err("Configure a GitHub remote to use pull requests".into());
     }
-    let repository = repository(path, state)?;
+    let repository = repository(path, state, true)?;
     let repository_url = repository["url"]
         .as_str()
         .ok_or("Repository URL unavailable")?;
@@ -356,7 +351,7 @@ pub fn merge(
     if current.target_identity() != expected.target_identity() || !expected_pr.can_merge(&current) {
         return Err("Checkout changed or is not ready. Refresh before merging".into());
     }
-    let repo = repository(path, &current)?;
+    let repo = repository(path, &current, false)?;
     let repo_url = safe_url(repo["url"].as_str().ok_or("Repository URL unavailable")?)?;
     let expected_url = safe_url(&expected_pr.url)?;
     if expected_url.host_str() != repo_url.host_str()
@@ -571,7 +566,14 @@ fn remote_branch(path: &Path, state: &CheckoutGitState) -> Result<String, String
 
 // Resolve the checkout's actual tracking remote instead of gh's potentially different
 // default repository. Fork and split push destinations remain explicitly unsupported.
-fn repository(path: &Path, state: &CheckoutGitState) -> Result<serde_json::Value, String> {
+fn repository(
+    path: &Path,
+    state: &CheckoutGitState,
+    cached: bool,
+) -> Result<serde_json::Value, String> {
+    type Entry = (std::time::Instant, serde_json::Value);
+    static CACHE: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, Entry>>> =
+        std::sync::OnceLock::new();
     use crate::checkout_git::git;
     let branch = state.branch.as_deref().ok_or("A branch is required")?;
     let remote = git(
@@ -601,6 +603,17 @@ fn repository(path: &Path, state: &CheckoutGitState) -> Result<serde_json::Value
     if remote_url(&push)? != canonical {
         return Err("Pull requests with separate push URLs are not supported yet".into());
     }
+    let cache = CACHE.get_or_init(Default::default);
+    if cached {
+        if let Some((_, repo)) = cache
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&canonical)
+            .filter(|(at, _)| at.elapsed() < Duration::from_mins(5))
+        {
+            return Ok(repo.clone());
+        }
+    }
     let repo: serde_json::Value = serde_json::from_str(&gh(
         path,
         &[
@@ -615,6 +628,13 @@ fn repository(path: &Path, state: &CheckoutGitState) -> Result<serde_json::Value
     if repo["isFork"] == true {
         return Err("Fork pull requests are not supported in this card yet. Open GitHub to create or view them".into());
     }
+    let mut cache = cache
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if cache.len() >= 64 {
+        cache.clear();
+    }
+    cache.insert(canonical, (std::time::Instant::now(), repo.clone()));
     Ok(repo)
 }
 fn remote_url(value: &str) -> Result<String, String> {
@@ -676,7 +696,7 @@ pub fn compose_url(path: &Path, expected: &CheckoutGitState) -> Result<String, S
     if current.upstream.is_none() || current.ahead != Some(0) {
         return Err("Publish or push the branch before creating a pull request".into());
     }
-    let repo = repository(path, &current)?;
+    let repo = repository(path, &current, false)?;
     let base = repo["defaultBranchRef"]["name"]
         .as_str()
         .ok_or("Repository has no default branch")?;

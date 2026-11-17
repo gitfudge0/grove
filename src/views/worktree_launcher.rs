@@ -66,6 +66,7 @@ pub struct WorktreeLauncher {
     agent_touched: bool,
     agent_focus: bool,
     selected_worktrees: WorktreeSelection,
+    selection_paths: HashMap<String, String>,
     loading_worktrees: bool,
     load_seq: u64,
     /// Test-only capture after the real palette validation, before the live PTY dispatch.
@@ -112,6 +113,7 @@ impl WorktreeLauncher {
             agent_touched: false,
             agent_focus: false,
             selected_worktrees: WorktreeSelection::default(),
+            selection_paths: HashMap::new(),
             loading_worktrees: false,
             load_seq: 0,
             #[cfg(test)]
@@ -181,6 +183,7 @@ impl WorktreeLauncher {
         self.agent_touched = false;
         self.agent_focus = false;
         self.selected_worktrees.clear();
+        self.selection_paths.clear();
         self.error = None;
         self.scroll.set_offset(gpui::Point::default());
         self.input.update(cx, |input, cx| {
@@ -546,6 +549,28 @@ impl WorktreeLauncher {
         rows.get(idx).cloned()
     }
 
+    /// Palette membership uses the tree inventory; Runtime performs fresh validation off-thread
+    /// before creating a session. Filesystem resolution happens on activation, never in render.
+    fn valid_cached_worktree(&self, project: usize, target: &str, cx: &App) -> bool {
+        let store = &cx.global::<SettingsState>().store;
+        let Some(project_path) = store.projects.get(project).map(|project| &project.path) else {
+            return false;
+        };
+        let Ok(target) = fs_err::canonicalize(target) else {
+            return false;
+        };
+        if fs_err::canonicalize(project_path).is_ok_and(|path| path == target) {
+            return true;
+        }
+        let runtime = self.runtime.read(cx);
+        runtime
+            .tree
+            .read(cx)
+            .worktrees_for_project(project, runtime.state.read(cx).proj_idx())
+            .iter()
+            .any(|worktree| fs_err::canonicalize(&worktree.path).is_ok_and(|path| path == target))
+    }
+
     fn launch(
         &mut self,
         identity: RowIdentity,
@@ -560,7 +585,7 @@ impl WorktreeLauncher {
         let project = store
             .workspace_projects(store.workspaces.active)
             .find(|(i, _)| *i == proj);
-        let Some((_, project)) = project else {
+        let Some((_, _)) = project else {
             self.error = Some("Project is no longer in this workspace.".into());
             cx.notify();
             return;
@@ -569,7 +594,7 @@ impl WorktreeLauncher {
             self.show_launch_error(missing_agent_message(agent), cx);
             return;
         }
-        if !valid_worktree(&project.path, &wt_path) {
+        if !self.valid_cached_worktree(proj, &wt_path, cx) {
             self.error = Some("Worktree is no longer available.".into());
             cx.notify();
             return;
@@ -596,12 +621,13 @@ impl WorktreeLauncher {
         let store = &cx.global::<SettingsState>().store;
         let projects: Vec<_> = store
             .workspace_projects(store.workspaces.active)
-            .map(|(_, project)| project.path.clone())
+            .map(|(index, _)| index)
             .collect();
-        if paths
-            .iter()
-            .any(|path| !projects.iter().any(|project| valid_worktree(project, path)))
-        {
+        if paths.iter().any(|path| {
+            !projects
+                .iter()
+                .any(|project| self.valid_cached_worktree(*project, path, cx))
+        }) {
             self.error =
                 Some("A selected worktree is no longer available in this workspace.".into());
             cx.notify();
@@ -798,13 +824,15 @@ impl WorktreeLauncher {
         let store = &cx.global::<SettingsState>().store;
         let valid = store
             .workspace_projects(store.workspaces.active)
-            .any(|(_, project)| valid_worktree(&project.path, &wt_path));
+            .any(|(index, _)| self.valid_cached_worktree(index, &wt_path, cx));
         if !valid {
             self.error = Some("Worktree is no longer available in this workspace.".into());
             cx.notify();
             return;
         }
-        self.selected_worktrees.toggle(&path.to_string_lossy());
+        let canonical = path.to_string_lossy().into_owned();
+        self.selected_worktrees.toggle(&canonical);
+        self.selection_paths.insert(wt_path, canonical);
         self.error = None;
         cx.notify();
     }
@@ -1112,8 +1140,8 @@ impl Render for WorktreeLauncher {
                                     PaletteRow::Recent { .. } | PaletteRow::Combo { .. }
                                 );
                                 let checked = self.mode == PaletteMode::Multi && match &row {
-                                    PaletteRow::Recent { wt_path, .. } | PaletteRow::Combo { wt_path, .. } => fs_err::canonicalize(wt_path)
-                                        .ok().is_some_and(|path| self.selected_worktrees.contains(&path.to_string_lossy())),
+                                    PaletteRow::Recent { wt_path, .. } | PaletteRow::Combo { wt_path, .. } => self.selected_worktrees.contains(wt_path)
+                                        || self.selection_paths.get(wt_path).is_some_and(|path| self.selected_worktrees.contains(path)),
                                     _ => false,
                                 };
                                 div()
@@ -1321,15 +1349,6 @@ fn worktree_name(path: &str) -> &str {
         .file_name()
         .and_then(|part| part.to_str())
         .unwrap_or(path)
-}
-
-fn valid_worktree(project_path: &str, target_path: &str) -> bool {
-    let Ok(target) = fs_err::canonicalize(target_path) else {
-        return false;
-    };
-    grove_core::git::list_worktrees(project_path)
-        .iter()
-        .any(|wt| fs_err::canonicalize(&wt.path).is_ok_and(|path| path == target))
 }
 
 #[cfg(test)]
@@ -2201,7 +2220,7 @@ mod tests {
                 cx.new(|cx| super::super::sidebar::Sidebar::new(runtime.clone(), window, cx));
             WorktreeLauncher::new(runtime, sidebar, window, cx)
         });
-        cx.update(|window, cx| {
+        let terminal = cx.update(|window, cx| {
             launcher.update(cx, |launcher, cx| {
                 let prior_focus = cx.focus_handle();
                 prior_focus.focus(window, cx);
@@ -2220,22 +2239,23 @@ mod tests {
                         cx,
                     )
                 });
-                assert!(!did_spawn);
+                assert!(
+                    did_spawn,
+                    "launch is accepted before asynchronous startup resolves"
+                );
                 let failed_id = runtime
                     .read(cx)
                     .state
                     .read(cx)
                     .active_session()
                     .expect("failed session is registered");
-                assert!(runtime
+                let terminal = runtime
                     .read(cx)
                     .registry
                     .read(cx)
                     .session(failed_id)
-                    .expect("failed session terminal")
-                    .read(cx)
-                    .spawn_error()
-                    .is_some());
+                    .unwrap()
+                    .clone();
                 launcher.finish_launch(did_spawn, before, window, cx);
                 assert!(!launcher.is_open());
                 assert_eq!(
@@ -2243,8 +2263,20 @@ mod tests {
                     Some(failed_id)
                 );
                 assert!(launcher.sidebar.focus_handle(cx).is_focused(window));
-            });
+                terminal
+            })
         });
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while terminal.read_with(cx, |terminal, _| terminal.is_starting())
+            && std::time::Instant::now() < deadline
+        {
+            cx.run_until_parked();
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(
+            terminal.read_with(cx, |terminal, _| terminal.spawn_error().is_some()),
+            "failed asynchronous startup remains available for retry"
+        );
     }
 
     #[gpui::test]

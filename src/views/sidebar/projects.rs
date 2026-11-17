@@ -2783,6 +2783,34 @@ mod tests {
                 panel.delete_worktrees = false;
                 panel.remove(cx);
                 assert!(panel.started);
+            });
+        });
+        let wait_for_removal = |cx: &mut gpui::VisualTestContext| {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            loop {
+                cx.run_until_parked();
+                if panel.read_with(cx, |panel, cx| {
+                    panel
+                        .service
+                        .read(cx)
+                        .removal_status(&path)
+                        .unwrap()
+                        .finished
+                }) {
+                    break;
+                }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "project removal did not finish"
+                );
+                cx.executor()
+                    .advance_clock(std::time::Duration::from_millis(20));
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+        };
+        wait_for_removal(cx);
+        cx.update(|_, cx| {
+            panel.update(cx, |panel, cx| {
                 let status = panel.service.read(cx).removal_status(&path).unwrap();
                 assert!(status.finished && status.unregistered);
                 assert!(status.errors.is_empty());
@@ -2817,6 +2845,7 @@ mod tests {
                 assert!(panel.started);
             });
         });
+        wait_for_removal(cx);
         draw(cx);
         panel.read_with(cx, |panel, cx| {
             let status = panel.service.read(cx).removal_status(&path).unwrap();

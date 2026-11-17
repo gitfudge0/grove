@@ -432,6 +432,103 @@ pub(crate) fn validate(
 pub fn is_current(path: &Path, description: &Description) -> Result<bool, String> {
     snapshot_is_current(path, &description.snapshot)
 }
+/// Lightweight UI freshness probe. Destructive/publication guards deliberately
+/// continue to call `snapshot_is_current`, which always hashes current bytes.
+pub fn snapshot_is_current_for_poll(path: &Path, snapshot: &Snapshot) -> Result<bool, String> {
+    type Probe = (String, Instant, bool);
+    static CACHE: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashMap<(std::path::PathBuf, String), Probe>>,
+    > = std::sync::OnceLock::new();
+    if !matches!(snapshot.scope, Scope::Local) {
+        return snapshot_is_current(path, snapshot);
+    }
+    let checkout = fs_err::canonicalize(path).map_err(|_| "Checkout is unavailable")?;
+    if checkout.to_string_lossy() != snapshot.checkout {
+        return Ok(false);
+    }
+    let read = Capture {
+        path: &checkout,
+        control: None,
+    };
+    let names = git_files(&read)?;
+    let mut signature = Vec::new();
+    signature.extend_from_slice(
+        read.git(&["rev-parse", "--verify", "HEAD"], 1024)
+            .unwrap_or_default()
+            .as_bytes(),
+    );
+    signature.extend_from_slice(
+        read.git(&["ls-files", "--stage", "-z"], COMMAND_LIMIT)?
+            .as_bytes(),
+    );
+    for name in names {
+        contained(&checkout, &name)?;
+        signature.extend_from_slice(name.as_bytes());
+        signature.push(0);
+        match fs_err::symlink_metadata(checkout.join(&name)) {
+            Ok(meta) => {
+                // Submodule state is not described by directory timestamps.
+                if !meta.is_file() && !meta.file_type().is_symlink() {
+                    return snapshot_is_current(path, snapshot);
+                }
+                signature.extend_from_slice(&meta.len().to_le_bytes());
+                let modified = meta
+                    .modified()
+                    .map_err(|_| "Could not inspect changed file timestamp")?;
+                let modified = modified
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default();
+                signature.extend_from_slice(&modified.as_nanos().to_le_bytes());
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::MetadataExt as _;
+                    signature.extend_from_slice(&meta.mode().to_le_bytes());
+                    signature.extend_from_slice(&meta.ino().to_le_bytes());
+                    signature.extend_from_slice(&meta.ctime().to_le_bytes());
+                    signature.extend_from_slice(&meta.ctime_nsec().to_le_bytes());
+                }
+                if meta.file_type().is_symlink() {
+                    signature.extend_from_slice(
+                        fs_err::read_link(checkout.join(&name))
+                            .map_err(|_| "Could not inspect changed symlink")?
+                            .as_os_str()
+                            .as_encoded_bytes(),
+                    );
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                signature.extend_from_slice(b"deleted");
+            }
+            Err(_) => return Err("Could not inspect changed file".into()),
+        }
+        signature.push(0);
+    }
+    let signature = digest(&signature);
+    let key = (checkout, snapshot.fingerprint.clone());
+    let cache = CACHE.get_or_init(Default::default);
+    if let Some((_, _, current)) = cache
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .get(&key)
+        .filter(|(previous, at, _)| *previous == signature && at.elapsed() < Duration::from_mins(1))
+    {
+        return Ok(*current);
+    }
+    let current = snapshot_is_current(path, snapshot)?;
+    let mut cache = cache
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if cache.len() >= 64 {
+        cache.clear();
+    }
+    cache.insert(key, (signature, Instant::now(), current));
+    Ok(current)
+}
+
+pub fn is_current_for_poll(path: &Path, description: &Description) -> Result<bool, String> {
+    snapshot_is_current_for_poll(path, &description.snapshot)
+}
+
 /// Check captured freshness without requiring a generated description.
 pub fn snapshot_is_current(path: &Path, snapshot: &Snapshot) -> Result<bool, String> {
     let checkout = fs_err::canonicalize(path).map_err(|_| "Checkout is unavailable")?;
@@ -553,6 +650,16 @@ fn command_with_control(
     limit: u64,
     control: Option<&CommitControl>,
 ) -> Result<String, String> {
+    command_with_input(path, program, args, limit, control, None)
+}
+fn command_with_input(
+    path: &Path,
+    program: &str,
+    args: &[&str],
+    limit: u64,
+    control: Option<&CommitControl>,
+    input: Option<std::fs::File>,
+) -> Result<String, String> {
     check_control(control)?;
     let mut output = tempfile::tempfile().map_err(|_| "Could not prepare change snapshot")?;
     let errors = tempfile::tempfile().map_err(|_| "Could not prepare change snapshot")?;
@@ -564,6 +671,7 @@ fn command_with_control(
         command.envs(environment.iter().cloned());
     }
     if program == "git" {
+        command.env("GIT_OPTIONAL_LOCKS", "0");
         command.args(["-c", "core.fsmonitor=false", "-c", "core.quotePath=false"]);
     }
     command
@@ -571,7 +679,7 @@ fn command_with_control(
         .env("GIT_TERMINAL_PROMPT", "0")
         .env("GH_PROMPT_DISABLED", "1")
         .env("GH_PAGER", "cat")
-        .stdin(Stdio::null())
+        .stdin(input.map_or_else(Stdio::null, Stdio::from))
         .stdout(Stdio::from(
             output
                 .try_clone()
@@ -708,6 +816,31 @@ fn local_identity(read: &Capture<'_>, names: &[String], head: &str) -> Result<St
     );
     for name in names {
         contained(path, name)?;
+    }
+    let regular: Vec<String> = names
+        .iter()
+        .filter(|name| fs_err::symlink_metadata(path.join(name)).is_ok_and(|meta| meta.is_file()))
+        .cloned()
+        .collect();
+    let hashes = if regular.is_empty() {
+        String::new()
+    } else {
+        command_with_input(
+            path,
+            "git",
+            &["hash-object", "--no-filters", "--stdin-paths"],
+            COMMAND_LIMIT,
+            read.control,
+            Some(crate::checkout_git::hash_input(&regular)?),
+        )?
+    };
+    let hashes: std::collections::HashMap<_, _> = regular
+        .iter()
+        .zip(hashes.lines())
+        .map(|(name, hash)| (name.as_str(), hash))
+        .collect();
+    for name in names {
+        contained(path, name)?;
         bytes.extend_from_slice(name.as_bytes());
         bytes.push(0);
         match fs_err::symlink_metadata(path.join(name)) {
@@ -728,7 +861,9 @@ fn local_identity(read: &Capture<'_>, names: &[String], head: &str) -> Result<St
                     bytes.extend_from_slice(&metadata.permissions().mode().to_le_bytes());
                 }
                 bytes.extend_from_slice(
-                    read.git(&["hash-object", "--no-filters", "--", name], 1024)?
+                    hashes
+                        .get(name.as_str())
+                        .ok_or("Changed files changed while hashing; retry")?
                         .as_bytes(),
                 );
             }

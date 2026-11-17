@@ -15,8 +15,8 @@ use crate::settings::SettingsState;
 /// Exists so the first frame is up before the network round-trip; do not shorten it (`src/gui/mod.rs:56-63`).
 pub const LAUNCH_CHECK_DELAY: Duration = Duration::from_secs(3);
 
-/// The check itself is 24h (`check_due`); this is only how often that question gets asked (recorded ambiguity 2).
-pub const PERIODIC_TICK: Duration = Duration::from_secs(1);
+/// Retry the due predicate only while a check/install owns the state.
+const BUSY_RECHECK: Duration = Duration::from_mins(1);
 
 /// How many releases the changelog fetches (`src/gui/update/upgrade.rs:227`).
 pub const CHANGELOG_LIMIT: usize = 10;
@@ -40,7 +40,23 @@ impl Upgrade {
             let _ = this.update(cx, |this, cx| this.check(false, cx));
         });
         let periodic = cx.spawn(async move |this, cx| loop {
-            cx.background_executor().timer(PERIODIC_TICK).await;
+            let Ok(delay) = this.read_with(cx, |this, cx| {
+                let last = cx.global::<SettingsState>().store.last_update_check;
+                if !begin_check(&this.state) {
+                    return BUSY_RECHECK;
+                }
+                let remaining = last.map_or(
+                    crate::entities::upgrade_state::CHECK_INTERVAL_SECS,
+                    |last| {
+                        crate::entities::upgrade_state::CHECK_INTERVAL_SECS
+                            .saturating_sub(now_unix().saturating_sub(last))
+                    },
+                );
+                Duration::from_secs(remaining.max(1).try_into().unwrap_or(86_400))
+            }) else {
+                return;
+            };
+            cx.background_executor().timer(delay).await;
             if this.update(cx, Self::check_if_due).is_err() {
                 return;
             }
@@ -516,7 +532,7 @@ mod tests {
     fn the_ported_constants_match_the_oracle() {
         assert_eq!(LAUNCH_CHECK_DELAY, Duration::from_secs(3));
         assert_eq!(CHANGELOG_LIMIT, 10);
-        assert_eq!(PERIODIC_TICK, Duration::from_secs(1));
+        assert_eq!(BUSY_RECHECK, Duration::from_mins(1));
     }
 
     #[test]

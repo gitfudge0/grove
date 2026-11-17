@@ -1,3 +1,125 @@
+## Performance audit — issue 44 (November 2026)
+
+Motion is preserved, including the focused-composer pulse. Decorative animations
+have leaf owners and repeated transcript/sidebar preparation is cached. The pinned
+GPUI `Window::mark_view_dirty` invalidates every ancestor, so a leaf animation can
+still render Shell, Sidebar and CodexView each frame. The user accepted this engine
+limitation; strict no-whole-window-render acceptance is **unsupported** by this
+application-only change. Cached view hosts were removed after freshness/layout
+regressions; data caches and offscreen layout projection remain.
+
+Recovery uses small atomic heads and committed append-only transcript journals,
+including child/chat/plan payload patches. Legacy inline sessions migrate on save.
+Draft/routine saves coalesce on a worker every two seconds; turn/stop/rewind
+boundaries wait for durable completion. Interval commits still sync journal,
+head and directory, preserving power-loss semantics rather than adopting the
+suggested boundary-only fsync policy. See [provider guidance](providers.md) for
+reader, backup and downgrade requirements.
+
+A debug-build synthetic 14 MB/1001-item storage workload measured five-save means
+of 455.070 ms for full durable JSON replacement, 0.128 ms for journal draft heads
+and 0.105 ms for journal appends; five appends added 445 journal bytes and recovered
+identically. A separate 294,912-byte/4096-delta accumulation test measured three
+in-place samples at 0.083–0.128 ms versus 14–36 ms for concatenate/replace. These
+are isolated CPU/storage measurements, not provider throughput or displayed FPS.
+
+Native text/CPU scene samples used matching 1000×900 popup viewports, two
+alternating runs and 36 samples per side at `af97459` and the integrated transcript
+candidate. Median samples were:
+
+| Workload | Baseline | Candidate |
+|---|---:|---:|
+| One 300-line code fence | 9.160 ms | 6.812 ms |
+| 200 short transcript items | 36.679 ms | 35.790 ms |
+| 200 items with 150 code/file-link answers | 251.485 ms | 225.511 ms |
+
+All 216 scene samples completed their item/history checks, but **all twelve runs
+failed GPUI InputState leak assertions at teardown**, including the baseline.
+These samples are qualified workload observations, not passing native tests or
+proof of smooth scrolling. Normal-window comparison attempts also had an
+intermittent teardown assertion and a stalled run that was stopped. The rendering
+source was frozen for measurement; subsequent fixes affect diff viewers, startup
+safety and worktree operations rather than this transcript workload.
+
+Matched isolated Linux production startup with a three-second shell fixture
+mapped its X11 window in 0.153 s versus 3.396 s at `af97459`. This measures window
+creation, **not first paint**. One five-second idle sample observed 32 voluntary
+main-thread context switches versus 569 at baseline; it does not establish zero
+sub-second wakeups or a general CPU/battery reduction. External GSettings scale
+changes and a WebKit HTML capture exercised the native GLib readiness bridge.
+
+The foreground capture/update polling loops were replaced with wakeups; idle
+classifier/poller work is gated and other polls back off with focus. Skill checks
+share one cancellable cadence; activated hidden actors retain their loaded state
+and a one-second actor deadline fallback. Startup-restored sessions stay dormant
+until used, and hidden terminal scenes are released. This is not full suspension
+or unhydration of every previously visited session.
+
+Launch validation checks fresh Git ownership on workers before process creation;
+script and multi-root launches remain bound to their selected project. Removal
+retains ownership while checking, cancels startup, and waits for provider/PTY
+cleanup before teardown, Git deletion and unregistering. Terminal EOF alone is
+not an exit acknowledgment. Main sessions, home terminals and hidden worktree
+shells share the cleanup barrier and visibility-aware scene-cache release.
+
+The final process-isolated workspace run executed 2,418 nonignored cases:
+2,405 passed and 13 failed, with 60 ignored tests excluded. Eleven failures were
+reproduced at `af97459` (existing Checkout/Dashboard/sidebar geometry and navigation
+fixtures). The other two removal fixtures needed test-clock advancement for the
+new cleanup barrier; their repaired focused rerun passed. All 13 final focused
+regressions passed, including pending startup retained by a view, a real Linux
+child paused before adoption, EOF with a live stoppable child, hidden scene
+release in all terminal stores, project removal, and offscreen commit Tab/Enter
+and diff horizontal extents. All 1,015 core unit cases passed in the broad run,
+including migration, interrupted journal commits and both-provider startup guards.
+Tests run one case per process, matching CI isolation rather than a shared-global
+parallel libtest run. No new failure remains in the exercised cases; this is not
+a claim that the baseline failures or all manual acceptance checks passed.
+
+The production build, workspace test build, all-target Clippy with the repository's test
+`unwrap_used`/`expect_used` allowances, formatting and artifact policy passed.
+The separate stricter production Clippy command failed on the unchanged
+`expect` in `project_setup.rs` (also present at `af97459`); it was not silently
+waived or attributed to this patch. Source review found and corrected ownership,
+cancellation, teardown EOF and executor-wait defects before the final reruns.
+
+**Codex: verified live on Linux** with the rebuilt independent rewind test:
+streamed turn, file retention/restoration, restored prompt, independent draft,
+no implicit new turn, reconnect, explicit resend and repeated rewind passed.
+Shared native fixtures cover selection, dormant activation, stable command
+identity, drafts and offscreen controls. The live core test does not establish
+the native UI-to-provider activation boundary or the full visual/input matrix.
+**Claude: untested live** because its independent final attempt returned
+`authentication_failed` before completing the turn. Its shared actor/persistence
+and native fixtures passed; those do not establish signed-in provider parity.
+
+The final isolated native diff capture retained a 20,001-row patch in both states.
+Dark and narrow light captures were inspected, with requested rem 16/20 and
+1000×700/700×500 component bounds inside the window-manager-sized window. Earlier
+blank captures and a light capture whose fixture refreshed its nonexistent
+checkout were rejected; captured fixtures now disable live polling. Pointer,
+OS-level keyboard and screen-reader interaction for these variants remain
+unverified; keyboard reach was exercised through GPUI TestPlatform.
+
+Some foreground boundaries deliberately remain: explicit history reopen still
+checks and commits durable recovery ownership synchronously, and TreeSnapshot's
+expiring repository-detection cache can still run a Git probe. The former
+preserves the existing recovery transaction; neither path has a measured
+worst-case UI-latency result. Ordinary launch recovery scans and startup restore
+use background work; previously visited provider actors remain loaded/parked.
+
+Verification limits: the complete idle/focused/streaming/diff profiler matrix,
+compositor FPS and input-to-present latency remain unverified. Popup CPU harnesses
+emitted samples but failed GPUI InputState leak assertions during teardown;
+debugger sampling also encountered that teardown failure. Early native timing
+runs used mismatched viewports or overlapped other checks and are not valid
+before/after performance evidence. OS popup captures were blank. Native normal
+window captures and fixture coverage establish only their observed surfaces and
+states; they do not certify the complete transcript/composer interaction matrix.
+macOS and Windows runtime behavior remain untested, including platform-specific
+startup/environment and terminal paths. No application installation, replacement,
+restart, push or release was performed.
+
 ## Plugin fingerprint feedback loop — issue 43 (November 2026)
 
 An isolated source snapshot containing only the issue 43 changes passed all 19

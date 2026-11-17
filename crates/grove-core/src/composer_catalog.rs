@@ -370,7 +370,7 @@ pub fn cached(saved: &SavedSession, args: &[String]) -> Option<Snapshot> {
     }
     let mut snapshot = cache().peek(&Scope::new(saved, args))?;
     if let Some(models) = crate::model_catalog::cached(saved, args) {
-        snapshot.models = models;
+        snapshot.models = models.into();
     }
     Some(snapshot)
 }
@@ -403,7 +403,7 @@ pub fn discover_models(
     {
         return Ok(models);
     }
-    discover(saved, args).map(|snapshot| snapshot.models)
+    discover(saved, args).map(|snapshot| snapshot.models.to_vec())
 }
 
 /// Background callers join one metadata handshake per scope. Failures remain retryable.
@@ -458,7 +458,7 @@ fn discover_with_policy(
         codex::discover_composer(saved, args)
     })?;
     if let Some(models) = model_key.as_ref().and_then(crate::model_catalog::load) {
-        snapshot.models = models;
+        snapshot.models = models.into();
     }
     Ok(snapshot)
 }
@@ -764,7 +764,7 @@ mod tests {
         let mut state = Snapshot::new(saved());
         state.models = vec![
             serde_json::json!({"model":"advertised", "supportedReasoningEfforts":[{"reasoningEffort":"high"}]}),
-        ];
+        ].into();
         state
     }
 
@@ -811,7 +811,8 @@ mod tests {
         cache.fingerprint(&[root.clone(), root.join("other-checkout")]);
         assert_eq!(cache.0.lock().unwrap().len(), 2);
         let entry = cache.0.lock().unwrap()[&root].clone();
-        entry.lock().unwrap().as_mut().unwrap().0 = Instant::now() - REVISION_INTERVAL;
+        entry.lock().unwrap().as_mut().unwrap().0 =
+            Instant::now().checked_sub(REVISION_INTERVAL).unwrap();
         assert_ne!(before, cache.fingerprint(&roots));
         fs_err::remove_file(root.join("command.md")).unwrap();
         cache.clear();
@@ -866,7 +867,8 @@ mod tests {
             .is_err());
         assert!(cache.peek(&scope).is_some());
         if let Some(entry) = cache.0.lock().unwrap().get_mut(&scope) {
-            Arc::get_mut(entry).unwrap().started = Instant::now() - Duration::from_secs(61);
+            Arc::get_mut(entry).unwrap().started =
+                Instant::now().checked_sub(Duration::from_secs(61)).unwrap();
         }
         cache
             .discover_at_policy(scope.clone(), 2, true, || Ok(result()))
@@ -1070,7 +1072,7 @@ mod tests {
             fs_err::create_dir_all(definition.parent().unwrap()).unwrap();
             fs_err::write(&definition, "---\nname: new-skill\n---\nFirst").unwrap();
             let mut changed = result();
-            changed.skills = vec![serde_json::json!({"name":"new-skill"})];
+            changed.skills = vec![serde_json::json!({"name":"new-skill"})].into();
             assert_eq!(
                 cache
                     .discover(scope.clone(), || Ok(changed))
@@ -1081,7 +1083,7 @@ mod tests {
             );
             fs_err::write(&definition, "---\nname: renamed-skill\n---\nSecond").unwrap();
             let mut changed = result();
-            changed.skills = vec![serde_json::json!({"name":"renamed-skill"})];
+            changed.skills = vec![serde_json::json!({"name":"renamed-skill"})].into();
             assert_eq!(
                 cache
                     .discover(scope.clone(), || Ok(changed))
@@ -1230,8 +1232,9 @@ mod tests {
             state.models = vec![serde_json::json!({
                 "model":provider.label(),
                 "supportedReasoningEfforts":[{"reasoningEffort":"high"}]
-            })];
-            crate::model_catalog::seed_memory(&request, &args, state.models.clone());
+            })]
+            .into();
+            crate::model_catalog::seed_memory(&request, &args, state.models.to_vec());
             cache()
                 .discover(Scope::new(&request, &args), || Ok(state))
                 .unwrap();

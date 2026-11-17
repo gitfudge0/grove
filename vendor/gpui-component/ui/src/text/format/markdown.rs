@@ -366,11 +366,21 @@ fn ast_to_node(source: &str, value: mdast::Node, cx: &mut NodeContext) -> BlockN
             html: false,
             span: new_span(val.position, cx),
         },
-        Node::Code(raw) => BlockNode::CodeBlock(CodeBlock::new(
-            raw.value.into(),
-            raw.lang.map(|s| s.into()),
-            new_span(raw.position, cx),
-        )),
+        Node::Code(raw) => {
+            let open = raw
+                .position
+                .as_ref()
+                .and_then(|position| source.get(position.start.offset..position.end.offset))
+                .is_some_and(open_code_fence);
+            BlockNode::CodeBlock(
+                CodeBlock::new(
+                    raw.value.into(),
+                    raw.lang.map(|s| s.into()),
+                    new_span(raw.position, cx),
+                )
+                .defer_highlighting(open),
+            )
+        }
         Node::Heading(val) => {
             let mut paragraph = Paragraph::default();
             val.children.iter().for_each(|c| {
@@ -683,4 +693,36 @@ mod tests {
             })
         );
     }
+}
+
+// An unfinished fence can change its entire syntax tree on every streamed byte.
+// Keep its code readable immediately and highlight once the closing fence arrives.
+fn open_code_fence(source: &str) -> bool {
+    let mut lines = source.lines();
+    let Some(first) = lines.next() else {
+        return false;
+    };
+    let first = first.trim_start();
+    let Some(marker @ ('`' | '~')) = first.chars().next() else {
+        return false;
+    };
+    let count = first.chars().take_while(|c| *c == marker).count();
+    if count < 3 {
+        return false;
+    }
+    let Some(last) = lines.last() else {
+        return true;
+    };
+    let last = last.trim();
+    !(last.len() >= count && last.chars().all(|c| c == marker))
+}
+
+#[cfg(test)]
+#[test]
+fn streaming_fence_highlighting_waits_for_a_matching_close() {
+    assert!(open_code_fence("```rust\nlet value = 1;"));
+    assert!(open_code_fence("~~~~rust\nvalue\n~~~"));
+    assert!(!open_code_fence("```rust\nlet value = 1;\n```"));
+    assert!(!open_code_fence("  ~~~~rust\nvalue\n~~~~~  "));
+    assert!(!open_code_fence("ordinary prose"));
 }

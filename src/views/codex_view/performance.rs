@@ -49,7 +49,8 @@ mod performance {
         if workload == "real" {
             let path = std::env::var("GROVE_PERF_SESSION")
                 .expect("real workload needs GROVE_PERF_SESSION");
-            let saved: SavedSession = serde_json::from_slice(&fs_err::read(path).unwrap()).unwrap();
+            let saved =
+                grove_core::provider::load_saved_session(std::path::Path::new(&path)).unwrap();
             state = Snapshot::new(saved);
             state.status = Status::Idle;
         } else if let Some(count) = workload.strip_prefix("many-") {

@@ -32,6 +32,7 @@ pub struct TextView {
     selectable: bool,
     scrollable: bool,
     code_block_actions: Option<Arc<CodeBlockActionsFn>>,
+    code_block_layout_projection: bool,
     code_block_footer: Option<Arc<CodeBlockActionsFn>>,
     markdown_extensions: Arc<MarkdownExtensions>,
 }
@@ -70,6 +71,7 @@ impl TextView {
             selectable: false,
             scrollable: false,
             code_block_actions: None,
+            code_block_layout_projection: false,
             code_block_footer: None,
             markdown_extensions: Arc::default(),
         }
@@ -86,6 +88,7 @@ impl TextView {
             selectable: false,
             scrollable: false,
             code_block_actions: None,
+            code_block_layout_projection: false,
             code_block_footer: None,
             markdown_extensions: Arc::default(),
         }
@@ -102,6 +105,7 @@ impl TextView {
             selectable: false,
             scrollable: false,
             code_block_actions: None,
+            code_block_layout_projection: false,
             code_block_footer: None,
             markdown_extensions: Arc::default(),
         }
@@ -124,6 +128,13 @@ impl TextView {
     }
 
     /// The closure receives the [`CodeBlock`] and returns an element to display.
+    /// Allow an outer owner to reuse code-body extents. The owner must retain
+    /// every offscreen action's keyboard routing and keep dynamic footers eager.
+    pub fn code_block_layout_projection(mut self, enabled: bool) -> Self {
+        self.code_block_layout_projection = enabled;
+        self
+    }
+
     pub fn code_block_actions<F, E>(mut self, f: F) -> Self
     where
         F: Fn(&CodeBlock, &mut Window, &mut App) -> E + Send + Sync + 'static,
@@ -251,6 +262,7 @@ impl Element for TextView {
 
         state.update(cx, |state, cx| {
             state.code_block_actions = self.code_block_actions.clone();
+            state.code_block_layout_projection = self.code_block_layout_projection;
             state.code_block_footer = self.code_block_footer.clone();
             state.set_markdown_extensions(self.markdown_extensions.clone(), cx);
             state.selectable = self.selectable;

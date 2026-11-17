@@ -5,13 +5,12 @@
 //! (`classify`, `Tracker`, timing constants) live in [`crate::activity`].
 //!
 //! Runs as a plain `Timer::after(480ms)` loop, deliberately not coupled to
-//! [`crate::entities::animation_clock::AnimationClock`] — gpui gives each
+//! the terminal animation cadence — gpui gives each
 //! concern its own task, unlike iced's single `tick % 8 == 0` timer.
 //!
-//! Runs on the foreground executor (reads/writes entities, calls
-//! `cx.notify()`); the blocking work is already off-thread in grove-core, and
-//! moving it to a background task would reorder signals against the snapshot
-//! they were captured with.
+//! Classification reads entity signals on the foreground. Hook-file scans and
+//! acknowledgments run in background jobs; a completed scan is applied before
+//! that pass classifies sessions. Empty registries stop the timer entirely.
 //!
 //! The pulse is `with_animation`-free: that helper animates an element being
 //! rendered, but this is a scalar read by six call sites. [`pulse_at`]
@@ -22,7 +21,7 @@
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
-use gpui::{Context, Entity, Task};
+use gpui::{AppContext as _, Context, Entity, Task};
 use grove_core::agent::Agent;
 use grove_core::attention::{self, AttentionState};
 use grove_core::claude_agents::{NativeStatus, Poller};
@@ -155,6 +154,7 @@ impl NativeAttention {
 
 pub struct ActivityStore {
     trackers: HashMap<SessionId, Tracker>,
+    hook_states: HashMap<std::path::PathBuf, Option<attention::Observation>>,
     native_attention: HashMap<SessionId, NativeAttention>,
     terminal_reviews: HashMap<SessionId, Instant>,
     /// Waiting sessions in `visible_session_order`, resolved once per pass.
@@ -167,7 +167,7 @@ pub struct ActivityStore {
     /// Held for the process lifetime, exactly as `Grove::claude_poller` is.
     poller: Option<Poller>,
     wiring: Option<Wiring>,
-    _task: Task<()>,
+    task: Task<()>,
     _observers: Vec<gpui::Subscription>,
 }
 
@@ -188,6 +188,7 @@ impl ActivityStore {
     pub fn new() -> Self {
         Self {
             trackers: HashMap::new(),
+            hook_states: HashMap::new(),
             native_attention: HashMap::new(),
             terminal_reviews: HashMap::new(),
             waiting: Vec::new(),
@@ -196,7 +197,7 @@ impl ActivityStore {
             window_focused: true,
             poller: None,
             wiring: None,
-            _task: Task::ready(()),
+            task: Task::ready(()),
             _observers: Vec::new(),
         }
     }
@@ -208,8 +209,13 @@ impl ActivityStore {
     ) -> Self {
         // Acknowledgment is *not* on the 480ms clock: `WorkspaceState` only records the id and notifies.
         let observer = cx.observe(&state, |this: &mut Self, _, cx| this.drain_acks(cx));
+        let registry_observer = cx.observe(&registry, |this: &mut Self, _, cx| {
+            this.pass(cx);
+            this.task = Self::spawn_pass(cx);
+        });
         Self {
             trackers: HashMap::new(),
+            hook_states: HashMap::new(),
             native_attention: HashMap::new(),
             terminal_reviews: HashMap::new(),
             waiting: Vec::new(),
@@ -218,8 +224,8 @@ impl ActivityStore {
             window_focused: true,
             poller: Some(Poller::new()),
             wiring: Some(Wiring { state, registry }),
-            _task: Self::spawn_pass(cx),
-            _observers: vec![observer],
+            task: Self::spawn_pass(cx),
+            _observers: vec![observer, registry_observer],
         }
     }
 
@@ -326,8 +332,10 @@ impl ActivityStore {
         }
         if let Some(wiring) = self.wiring.as_ref() {
             if let Some(files) = wiring.registry.read(cx).attention_files(id) {
-                if attention::read_state(&files.state_file) != Some(AttentionState::NeedsYou) {
-                    attention::acknowledge(&files.state_file);
+                if let Some(observed) = self.hook_states.get(&files.state_file).cloned().flatten() {
+                    if observed.state != Some(AttentionState::NeedsYou) {
+                        attention::acknowledge_observation(&files.state_file, &observed);
+                    }
                 }
             }
         }
@@ -352,9 +360,63 @@ impl ActivityStore {
 
     fn spawn_pass(cx: &mut Context<Self>) -> Task<()> {
         cx.spawn(async move |this: gpui::WeakEntity<Self>, cx| loop {
-            cx.background_executor().timer(CLASSIFY_PERIOD).await;
+            let Ok(period) = this.read_with(cx, |this, cx| {
+                let wiring = this.wiring.as_ref()?;
+                if wiring.registry.read(cx).all().is_empty() {
+                    return None;
+                }
+                Some(
+                    if this.window_focused
+                        || this
+                            .trackers
+                            .values()
+                            .any(|tracker| tracker.state == ActivityState::Working)
+                    {
+                        CLASSIFY_PERIOD
+                    } else {
+                        Duration::from_secs(5)
+                    },
+                )
+            }) else {
+                break;
+            };
+            let Some(period) = period else {
+                break;
+            };
+            cx.background_executor().timer(period).await;
+            let Ok(paths) = this.read_with(cx, |this, cx| {
+                this.wiring.as_ref().map_or_else(Vec::new, |wiring| {
+                    wiring
+                        .registry
+                        .read(cx)
+                        .all()
+                        .iter()
+                        .filter_map(|meta| {
+                            meta.attention
+                                .as_ref()
+                                .map(|files| files.state_file.clone())
+                        })
+                        .collect::<Vec<_>>()
+                })
+            }) else {
+                break;
+            };
+            let states = cx
+                .background_spawn(async move {
+                    paths
+                        .into_iter()
+                        .map(|path| {
+                            let state = attention::observe(&path);
+                            (path, state)
+                        })
+                        .collect()
+                })
+                .await;
             if this
-                .update(cx, |this: &mut Self, cx| this.pass(cx))
+                .update(cx, |this: &mut Self, cx| {
+                    this.hook_states = states;
+                    this.pass(cx);
+                })
                 .is_err()
             {
                 break;
@@ -491,7 +553,12 @@ impl ActivityStore {
             } else {
                 // A dead process short-circuits to `classify` before the hook file, so a stale `working` reads `Exited`.
                 let hook = if alive {
-                    state_file.as_deref().and_then(attention::read_state)
+                    state_file.as_ref().and_then(|path| {
+                        self.hook_states
+                            .get(path)
+                            .and_then(|observed| observed.as_ref())
+                            .and_then(|observed| observed.state)
+                    })
                 } else {
                     None
                 };
@@ -531,7 +598,16 @@ impl ActivityStore {
                 // A result finishing in view is seen, but still requires explicit review.
                 tracker.acknowledge();
                 if let Some(path) = state_file {
-                    attention::acknowledge(path);
+                    if let Some(observed) = self
+                        .hook_states
+                        .get(path)
+                        .cloned()
+                        .flatten()
+                        .filter(|observed| observed.state == Some(AttentionState::Done))
+                    {
+                        attention::acknowledge_observation(path, &observed);
+                        self.hook_states.insert(path.clone(), None);
+                    }
                 }
             }
         }
@@ -577,8 +653,8 @@ impl ActivityStore {
             dock::request_attention();
         }
 
-        // An all-`Idle` pass on a quiet app must not cost a frame; an active pulse always repaints — that's the animation.
-        if changed || self.pulse_since.is_some() {
+        // Waiting indicators are static; classification only repaints changed state.
+        if changed {
             cx.notify();
         }
     }
@@ -587,7 +663,6 @@ impl ActivityStore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gpui::AppContext as _;
 
     #[gpui::test]
     fn terminal_review_survives_focus_and_rejects_stale_acknowledgment(

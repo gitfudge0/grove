@@ -1,4 +1,5 @@
 //! UI observable projection of the background Codex actor.
+mod skill_clock;
 use futures::StreamExt as _;
 use gpui::{AppContext as _, Context, Task};
 use grove_core::codex::{self, Action, Handle, SavedSession, Snapshot};
@@ -57,13 +58,23 @@ enum DashboardLaunch {
     Submitted,
 }
 
+struct DormantRestore {
+    connection: codex::DeferredConnection,
+    args: Vec<String>,
+    loading: bool,
+    draft_changed: bool,
+}
+
 pub struct CodexSession {
     has_transport: bool,
+    skill_startup_ready: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+    restored: Option<DormantRestore>,
+    restore_load: Option<Task<()>>,
     pub state: SessionSnapshot,
     pub catalog_loading: bool,
     pub catalog_error: Option<String>,
     pub handle: Handle,
-    _poll: Task<()>,
+    updates_task: Task<()>,
     skill_watch: Option<Task<()>>,
     refreshed_skills: Option<Vec<serde_json::Value>>,
     deferred: Option<std::sync::mpsc::Receiver<Action>>,
@@ -87,9 +98,12 @@ impl CodexSession {
         state.status = codex::Status::Done;
         Self {
             has_transport: false,
+            skill_startup_ready: None,
+            restored: None,
+            restore_load: None,
             state: state.into(),
             handle,
-            _poll: Task::ready(()),
+            updates_task: Task::ready(()),
             skill_watch: None,
             refreshed_skills: None,
             deferred: None,
@@ -101,6 +115,135 @@ impl CodexSession {
             dashboard_title_waiting: None,
             dashboard_launch: None,
         }
+    }
+
+    /// A restored registration retains its command identity and metadata but
+    /// starts neither a provider process nor transcript hydration while hidden.
+    pub fn restored(saved: SavedSession, args: Vec<String>, cx: &mut Context<Self>) -> Self {
+        let (wake, mut wakes) = futures::channel::mpsc::channel(1);
+        let wake = std::sync::Mutex::new(wake);
+        let connection = codex::deferred_connection(std::sync::Arc::new(move || {
+            let _ = wake
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .try_send(());
+        }));
+        let mut session = Self::history(saved, cx);
+        session.state.status = codex::Status::Idle;
+        session.handle = connection.handle.clone();
+        session.restored = Some(DormantRestore {
+            connection,
+            args,
+            loading: false,
+            draft_changed: false,
+        });
+        session.updates_task = cx.spawn(async move |this, cx| {
+            while wakes.next().await.is_some() {
+                if this.update(cx, Self::ensure_connected).is_err() {
+                    break;
+                }
+            }
+        });
+        session
+    }
+
+    pub fn ensure_connected(&mut self, cx: &mut Context<Self>) {
+        let Some(restore) = self.restored.as_mut() else {
+            return;
+        };
+        if restore.loading {
+            return;
+        }
+        restore.loading = true;
+        self.state.status = codex::Status::Starting;
+        let key = self.state.saved.key.clone();
+        let load = cx.background_spawn(async move { codex::load_active_session(&key) });
+        self.restore_load = Some(cx.spawn(async move |this, cx| {
+            let loaded = load.await;
+            let _ = this.update(cx, |this, cx| {
+                match loaded {
+                    Ok(mut saved) => {
+                        let Some(restore) = this.restored.take() else {
+                            return;
+                        };
+                        // Startup migration may have repaired ownership after the
+                        // persisted head was written; retain the current mapping.
+                        saved.project.clone_from(&this.state.saved.project);
+                        saved.roots.clone_from(&this.state.saved.roots);
+                        if restore.draft_changed {
+                            saved.draft.clone_from(&this.state.saved.draft);
+                            saved
+                                .draft_images
+                                .clone_from(&this.state.saved.draft_images);
+                            saved
+                                .draft_reference
+                                .clone_from(&this.state.saved.draft_reference);
+                        }
+                        let connection = codex::connect_deferred(
+                            saved.clone(),
+                            restore.args.clone(),
+                            restore.connection,
+                        );
+                        let replacement =
+                            Self::from_connection(Snapshot::new(saved), connection, cx);
+                        this.replace_restored(replacement);
+                        this.start_skill_watch(restore.args, cx);
+                    }
+                    Err(error) => this.restore_failed(error),
+                }
+                cx.notify();
+            });
+        }));
+        cx.notify();
+    }
+
+    fn replace_restored(&mut self, replacement: Self) {
+        // The replacement intentionally owns the same command identity. Drop
+        // the old view's subscriptions/tasks without stopping its new actor.
+        let (inert, receiver) = Handle::channel();
+        drop(receiver);
+        self.handle = inert;
+        *self = replacement;
+    }
+
+    fn restore_failed(&mut self, error: String) {
+        let Some(restore) = self.restored.as_mut() else {
+            return;
+        };
+        restore.loading = false;
+        for action in restore.connection.take_pending_actions() {
+            match action {
+                Action::Draft(text) => {
+                    self.state.saved.draft = text;
+                    restore.draft_changed = true;
+                }
+                Action::DraftImages(images) => {
+                    self.state.saved.draft_images = images;
+                    restore.draft_changed = true;
+                }
+                Action::DraftReference(reference) => {
+                    self.state.saved.draft_reference = reference;
+                    restore.draft_changed = true;
+                }
+                Action::Submit { id, .. }
+                | Action::SubmitWithMode { id, .. }
+                | Action::ProjectPrompt { id, .. }
+                | Action::ActivityPrompt { id, .. } => self.state.rejected_submission = Some(id),
+                Action::Stop {
+                    done,
+                    archive_outcome,
+                    ..
+                } => {
+                    if let Some(outcome) = archive_outcome {
+                        let _ = outcome.send(Err(error.clone()));
+                    }
+                    let _ = done.send(());
+                }
+                _ => {}
+            }
+        }
+        self.state.status = codex::Status::Failed;
+        self.state.error = Some(format!("Could not restore this session: {error}. Queued requests were not sent; try again after resolving recovery."));
     }
 
     /// A composer-owned draft with no conversation, persistence, or registry entry.
@@ -127,9 +270,12 @@ impl CodexSession {
         });
         let mut session = Self {
             has_transport: false,
+            skill_startup_ready: None,
+            restored: None,
+            restore_load: None,
             state: state.into(),
             handle,
-            _poll: poll,
+            updates_task: poll,
             skill_watch: None,
             refreshed_skills: None,
             deferred: Some(receiver),
@@ -217,7 +363,7 @@ impl CodexSession {
     }
     /// Model refresh changes advertised capabilities without reconfiguring the conversation.
     pub fn update_models(&mut self, models: Vec<serde_json::Value>, cx: &mut Context<Self>) {
-        self.state.models.clone_from(&models);
+        self.state.models = models.clone().into();
         if self.has_transport {
             let _ = self.handle.send(Action::UpdateModels(models));
         } else if self.catalog_selection_error {
@@ -396,12 +542,16 @@ impl CodexSession {
                     .map(|root| root.wt_path.clone().into()),
             )
             .collect::<Vec<_>>();
-        if let Some(error) = workspace_restore_error(&paths, None) {
-            return Err(error);
-        }
-        if !std::path::Path::new(&cwd).is_dir() {
-            return Err("The selected checkout is no longer available.".into());
-        }
+        let validation_cwd = cwd.clone();
+        let validation = std::sync::Arc::new(move || {
+            if let Some(error) = workspace_restore_error(&paths, None) {
+                return Err(error);
+            }
+            if !std::path::Path::new(&validation_cwd).is_dir() {
+                return Err("The selected checkout is no longer available.".into());
+            }
+            Ok(())
+        });
         self.drain_deferred(cx);
         self.validate_draft_catalog()?;
         let mut saved = self.state.saved.clone();
@@ -413,9 +563,7 @@ impl CodexSession {
             .map(str::trim)
             .find(|line| !line.is_empty())
             .map(|line| line.chars().take(80).collect::<String>());
-        let connection = codex::connect(saved.clone(), args.clone());
-        *self = Self::from_connection(Snapshot::new(saved), connection, cx);
-        self.start_skill_watch(args, cx);
+        *self = Self::new_checked(saved, args, validation, cx);
         self.dashboard_launch = Some(DashboardLaunch::Starting);
         self.dashboard_title_waiting = pending_title;
         if let Some(title) = &self.dashboard_title_waiting {
@@ -426,9 +574,28 @@ impl CodexSession {
         Ok(())
     }
     pub fn new(saved: SavedSession, args: Vec<String>, cx: &mut Context<Self>) -> Self {
+        Self::new_checked(saved, args, std::sync::Arc::new(|| Ok(())), cx)
+    }
+    /// Return the pending session immediately; fresh checkout validation runs
+    /// in the provider actor before any CLI or metadata discovery can start.
+    pub fn new_checked(
+        saved: SavedSession,
+        args: Vec<String>,
+        validation: codex::StartupValidation,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let ready = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let validated = ready.clone();
+        let validation = std::sync::Arc::new(move || {
+            validated.store(false, std::sync::atomic::Ordering::Release);
+            let result = validation();
+            validated.store(result.is_ok(), std::sync::atomic::Ordering::Release);
+            result
+        });
         let state = Snapshot::new(saved.clone());
-        let connection = codex::connect(saved, args.clone());
+        let connection = codex::connect_checked(saved, args.clone(), validation);
         let mut session = Self::from_connection(state, connection, cx);
+        session.skill_startup_ready = Some(ready);
         session.start_skill_watch(args, cx);
         session
     }
@@ -438,7 +605,19 @@ impl CodexSession {
         cx: &mut Context<Self>,
     ) -> Self {
         let handle = connection.handle;
+        let (wake, mut wakes) = futures::channel::mpsc::channel(1);
+        let wake = std::sync::Mutex::new(wake);
+        let event_driven = connection.updates.set_wake(std::sync::Arc::new(move || {
+            let _ = wake
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .try_send(());
+        }));
         let poll = cx.spawn(async move |this, cx| loop {
+            if event_driven && wakes.next().await.is_none() {
+                break;
+            }
+            // Coalesce bursts after a wake. Idle transports schedule no timer.
             cx.background_executor()
                 .timer(Duration::from_millis(40))
                 .await;
@@ -460,9 +639,12 @@ impl CodexSession {
         });
         Self {
             has_transport: true,
+            skill_startup_ready: None,
+            restored: None,
+            restore_load: None,
             state: state.into(),
             handle,
-            _poll: poll,
+            updates_task: poll,
             skill_watch: None,
             refreshed_skills: None,
             deferred: None,
@@ -481,7 +663,34 @@ impl CodexSession {
         self.skill_watch = Some(cx.spawn(async move |this, cx| {
             let mut previous = None;
             loop {
-                let Ok(request) = this.read_with(cx, |this, _| this.state.saved.clone()) else {
+                let Ok(ready) = this.read_with(cx, |this, _| {
+                    this.skill_startup_ready
+                        .as_ref()
+                        .is_none_or(|ready| ready.load(std::sync::atomic::Ordering::Acquire))
+                }) else {
+                    return;
+                };
+                if !ready {
+                    if cx.update(skill_clock::wait).await.is_err() {
+                        return;
+                    }
+                    continue;
+                }
+                let Ok(request) = this.read_with(cx, |this, _| {
+                    let saved = &this.state.saved;
+                    // Discovery needs launch configuration, never a transcript,
+                    // recovery checkpoints or private composer attachments.
+                    let mut request = SavedSession::empty(
+                        saved.key.clone(),
+                        saved.provider,
+                        saved.project.clone(),
+                        saved.cwd.clone(),
+                    );
+                    request.roots.clone_from(&saved.roots);
+                    request.config_args.clone_from(&saved.config_args);
+                    request.native_config_version = saved.native_config_version;
+                    request
+                }) else {
                     break;
                 };
                 let options = args.clone();
@@ -513,13 +722,15 @@ impl CodexSession {
                                 return;
                             }
                             if this.state.models != catalog.models {
-                                this.update_models(catalog.models, cx);
+                                this.update_models(catalog.models.to_vec(), cx);
                             }
                             if this.state.skills != catalog.skills {
                                 this.state.skills.clone_from(&catalog.skills);
                                 if !this.is_deferred() {
-                                    this.refreshed_skills = Some(catalog.skills.clone());
-                                    let _ = this.handle.send(Action::UpdateSkills(catalog.skills));
+                                    this.refreshed_skills = Some(catalog.skills.to_vec());
+                                    let _ = this
+                                        .handle
+                                        .send(Action::UpdateSkills(catalog.skills.to_vec()));
                                 }
                                 cx.notify();
                             }
@@ -532,9 +743,13 @@ impl CodexSession {
                 if successful {
                     previous = Some(revision);
                 }
-                cx.background_executor()
-                    .timer(Duration::from_secs(if successful { 5 } else { 30 }))
-                    .await;
+                let periods = if successful { 1 } else { 6 };
+                for _ in 0..periods {
+                    let tick = cx.update(skill_clock::wait);
+                    if tick.await.is_err() {
+                        return;
+                    }
+                }
             }
         }));
     }
@@ -553,7 +768,7 @@ impl CodexSession {
             if &state.skills == skills {
                 self.refreshed_skills = None;
             } else {
-                state.skills.clone_from(skills);
+                state.skills = skills.clone().into();
             }
         }
         if let Some(launch) = self.dashboard_launch {
@@ -601,6 +816,14 @@ impl CodexSession {
         }
     }
     pub fn send(&mut self, action: Action, cx: &mut Context<Self>) {
+        if self.restored.is_some() {
+            if matches!(action, Action::Reconnect) && self.state.status == codex::Status::Failed {
+                if let Some(restore) = self.restored.as_mut() {
+                    restore.loading = false;
+                }
+            }
+            self.ensure_connected(cx);
+        }
         if grove_core::connections::credentials_busy(self.state.saved.provider.agent())
             && matches!(
                 &action,
@@ -901,7 +1124,37 @@ impl CodexSession {
 }
 impl Drop for CodexSession {
     fn drop(&mut self) {
+        // Preserve an explicit queued archive request ahead of shutdown's
+        // preservation request. A dormant actor must drain both without a CLI.
         self.handle.stop(false);
+        if let Some(restore) = self.restored.take() {
+            let key = self.state.saved.key.clone();
+            let project = self.state.saved.project.clone();
+            let roots = self.state.saved.roots.clone();
+            let draft = restore.draft_changed.then(|| {
+                (
+                    self.state.saved.draft.clone(),
+                    self.state.saved.draft_images.clone(),
+                    self.state.saved.draft_reference.clone(),
+                )
+            });
+            std::thread::spawn(move || match codex::load_active_session(&key) {
+                Ok(mut saved) => {
+                    saved.project = project;
+                    saved.roots = roots;
+                    if let Some((text, images, reference)) = draft {
+                        saved.draft = text;
+                        saved.draft_images = images;
+                        saved.draft_reference = reference;
+                    }
+                    let _connection =
+                        codex::connect_deferred(saved, restore.args, restore.connection);
+                }
+                Err(error) => restore
+                    .connection
+                    .reject_pending(format!("Could not close restored session: {error}")),
+            });
+        }
     }
 }
 
@@ -1070,6 +1323,167 @@ mod dashboard_tests {
     }
 
     #[gpui::test]
+    fn restored_codex_and_claude_keep_metadata_without_starting_transport(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let sessions = cx.update(|cx| {
+            [codex::Provider::Codex, codex::Provider::Claude]
+                .into_iter()
+                .map(|provider| {
+                    let mut metadata = saved(provider);
+                    metadata.title = Some("Retained title".into());
+                    metadata.draft = "Retained draft".into();
+                    metadata.thread_id = Some("retained-thread".into());
+                    let expected = serde_json::to_value(&metadata).unwrap();
+                    let session = cx.new(|cx| CodexSession::restored(metadata, Vec::new(), cx));
+                    assert_eq!(
+                        serde_json::to_value(&session.read(cx).state.saved).unwrap(),
+                        expected
+                    );
+                    session
+                })
+                .collect::<Vec<_>>()
+        });
+        cx.run_until_parked();
+        for session in sessions {
+            session.read_with(cx, |session, _| {
+                assert!(!session.has_transport());
+                assert!(session.restored.is_some());
+                assert!(session.restore_load.is_none());
+                assert!(session.skill_watch.is_none());
+                assert!(!session.catalog_loading);
+                assert_eq!(session.state.status, codex::Status::Idle);
+            });
+        }
+    }
+
+    #[gpui::test]
+    fn restored_replacement_keeps_codex_and_claude_command_identity(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| {
+            for provider in [codex::Provider::Codex, codex::Provider::Claude] {
+                let record = saved(provider);
+                let session = cx.new(|cx| CodexSession::restored(record.clone(), Vec::new(), cx));
+                session.update(cx, |session, cx| {
+                    let restore = session.restored.take().unwrap();
+                    let stable = session.handle.clone();
+                    let (_updates, output) = grove_core::latest::channel();
+                    let replacement = CodexSession::from_connection(Snapshot::new(record), codex::Connection { handle: stable.clone(), updates: output }, cx);
+                    session.replace_restored(replacement);
+                    assert!(restore.connection.take_pending_actions().is_empty(), "replacing the view must not send Stop to its new actor");
+                    stable.send(Action::Draft("same command channel".into())).unwrap();
+                    assert!(matches!(restore.connection.take_pending_actions().as_slice(), [Action::Draft(text)] if text == "same command channel"));
+                });
+            }
+        });
+    }
+
+    #[gpui::test]
+    fn restored_failure_rejects_unsent_requests_and_keeps_drafts_for_retry(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        cx.update(|cx| {
+            for provider in [codex::Provider::Codex, codex::Provider::Claude] {
+                let session = cx.new(|cx| CodexSession::restored(saved(provider), Vec::new(), cx));
+                session.update(cx, |session, _| {
+                    session.restored.as_mut().unwrap().loading = true;
+                    session
+                        .handle
+                        .send(Action::Draft("typed during hydration".into()))
+                        .unwrap();
+                    let id = session
+                        .handle
+                        .submit("must not replay".into(), Vec::new())
+                        .unwrap();
+                    session.restore_failed("temporary recovery failure".into());
+                    let restore = session.restored.take().unwrap();
+                    assert!(!restore.loading);
+                    assert!(restore.draft_changed);
+                    assert!(restore.connection.take_pending_actions().is_empty());
+                    assert_eq!(session.state.saved.draft, "typed during hydration");
+                    assert_eq!(session.state.rejected_submission, Some(id));
+                    assert_eq!(session.state.status, codex::Status::Failed);
+                });
+            }
+        });
+    }
+
+    #[gpui::test]
+    fn closing_dormant_codex_and_claude_archives_before_activation(cx: &mut gpui::TestAppContext) {
+        let _config = crate::settings::lock_test_config();
+        for provider in [codex::Provider::Codex, codex::Provider::Claude] {
+            let key = format!(
+                "dormant-close-{}-{}",
+                if provider == codex::Provider::Codex {
+                    "codex"
+                } else {
+                    "claude"
+                },
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            );
+            let mut record = saved(provider);
+            record.key = key.clone();
+            record.draft = "retained unsent draft".into();
+            record.items.push(serde_json::json!({"id":"retained","type":"agentMessage","text":"retained full history"}));
+            record.persist_recovery().unwrap();
+            let mut metadata = record.clone();
+            metadata.items.clear();
+            let session = cx.update(|cx| {
+                cx.new(|cx| {
+                    CodexSession::restored(
+                        metadata,
+                        vec!["--unsupported-grove-test-option".into()],
+                        cx,
+                    )
+                })
+            });
+            let handle = session.read_with(cx, |session, _| session.handle.clone());
+            let (done, outcome) = handle.stop_archiving();
+            cx.update(|_| drop(session));
+            cx.run_until_parked();
+            done.recv_timeout(Duration::from_secs(10)).unwrap();
+            assert_eq!(
+                outcome.recv_timeout(Duration::from_secs(10)).unwrap(),
+                Ok(())
+            );
+            assert!(!codex::recovery_dir()
+                .unwrap()
+                .join(format!("{key}.json"))
+                .exists());
+            let archived = codex::load_history_session(&key).unwrap();
+            assert_eq!(archived.items, record.items);
+            assert_eq!(archived.draft, record.draft);
+            codex::finish_history_reopen(&key).unwrap();
+        }
+    }
+
+    #[gpui::test]
+    fn closing_missing_dormant_recovery_reports_archival_error(cx: &mut gpui::TestAppContext) {
+        let _config = crate::settings::lock_test_config();
+        let mut record = saved(codex::Provider::Codex);
+        record.key = format!(
+            "missing-dormant-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        let session = cx.update(|cx| cx.new(|cx| CodexSession::restored(record, Vec::new(), cx)));
+        let handle = session.read_with(cx, |session, _| session.handle.clone());
+        let (done, outcome) = handle.stop_archiving();
+        cx.update(|_| drop(session));
+        cx.run_until_parked();
+        done.recv_timeout(Duration::from_secs(10)).unwrap();
+        assert!(outcome
+            .recv_timeout(Duration::from_secs(10))
+            .unwrap()
+            .unwrap_err()
+            .contains("Could not close restored session"));
+    }
+
+    #[gpui::test]
     fn history_snapshot_has_no_transport_or_catalog_for_codex_and_claude(
         cx: &mut gpui::TestAppContext,
     ) {
@@ -1210,7 +1624,8 @@ mod dashboard_tests {
                     )
                 });
                 session.update(cx, |session, _| {
-                    let skills = vec![serde_json::json!({"name":"new-skill"})];
+                    let skills: Vec<serde_json::Value> =
+                        vec![serde_json::json!({"name":"new-skill"})];
                     session.refreshed_skills = Some(skills.clone());
                     session.accept_snapshot(snapshot.clone());
                     assert_eq!(session.state.skills, skills);
@@ -1220,7 +1635,7 @@ mod dashboard_tests {
                         Some("same-thread")
                     );
                     assert!(session.refreshed_skills.is_some());
-                    snapshot.skills = skills;
+                    snapshot.skills = skills.into();
                     session.accept_snapshot(snapshot.clone());
                     assert!(session.refreshed_skills.is_none());
                     snapshot.skills.clear();
@@ -1283,8 +1698,8 @@ mod dashboard_tests {
                     session.state.models = vec![
                         serde_json::json!({"model":"first", "supportedReasoningEfforts":[{"reasoningEffort":"low"}]}),
                         serde_json::json!({"model":"second", "supportedReasoningEfforts":[{"reasoningEffort":"high"},{"reasoningEffort":"max"}]}),
-                    ];
-                    session.state.skills = vec![serde_json::json!({"name":"checkout-skill"})];
+                    ].into();
+                    session.state.skills = vec![serde_json::json!({"name":"checkout-skill"})].into();
                     session.state.resolved_access = Some("read-only".into());
                     session.state.saved.draft = "keep my draft".into();
                     session.state.effort = Some("low".into());
@@ -1423,7 +1838,8 @@ mod dashboard_tests {
                             access: None,
                         })
                         .unwrap();
-                    session.state.models = vec![serde_json::json!({"model":"available-model"})];
+                    session.state.models =
+                        vec![serde_json::json!({"model":"available-model"})].into();
                     let error = session
                         .activate("project".into(), cwd, Vec::new(), cx)
                         .unwrap_err();
@@ -1461,7 +1877,7 @@ mod dashboard_tests {
                 session.catalog_loading = true;
                 session.catalog_error = None;
                 let mut stale = Snapshot::new(saved(codex::Provider::Codex));
-                stale.models = vec![serde_json::json!({"model":"stale-codex-model"})];
+                stale.models = vec![serde_json::json!({"model":"stale-codex-model"})].into();
                 session.complete_catalog(old_generation, Ok(stale), cx);
                 assert!(session.catalog_loading);
                 assert!(session.state.models.is_empty());
@@ -1469,7 +1885,7 @@ mod dashboard_tests {
                 session.complete_catalog(old_generation, Err("old failure".into()), cx);
                 assert!(session.catalog_error.is_none());
                 let mut current = Snapshot::new(saved(codex::Provider::Claude));
-                current.models = vec![serde_json::json!({"model":"different-model"})];
+                current.models = vec![serde_json::json!({"model":"different-model"})].into();
                 session.complete_catalog(session.catalog_generation, Ok(current), cx);
                 assert!(!session.catalog_loading);
                 assert!(session
@@ -1505,7 +1921,7 @@ mod dashboard_tests {
                         session.state.model = Some("removed".into());
                         session.state.saved.composer.model = Some("removed".into());
                         let mut catalog = Snapshot::new(saved(provider));
-                        catalog.models = vec![serde_json::json!({"model":"available"})];
+                        catalog.models = vec![serde_json::json!({"model":"available"})].into();
                         session.complete_catalog(session.catalog_generation, Ok(catalog), cx);
                         assert!(session.catalog_error.is_some());
                         assert!(session.state.error.is_some());
@@ -1564,7 +1980,8 @@ mod dashboard_tests {
                         .send(Action::Draft("latest direct draft".into()))
                         .unwrap();
                     session.drain_deferred(cx);
-                    session.state.skills = vec![serde_json::json!({"name":"old-checkout-skill"})];
+                    session.state.skills =
+                        vec![serde_json::json!({"name":"old-checkout-skill"})].into();
                     session.state.resolved_model = Some("old-checkout-model".into());
                     session.state.resolved_access = Some("full-access".into());
                     session.refresh_catalog(

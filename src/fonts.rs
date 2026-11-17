@@ -151,12 +151,16 @@ pub fn register(cx: &mut gpui::App) -> Result<(), MetricError> {
 
 /// Checks the bundled font advance at runtime because GPUI shaping needs a live `App`.
 pub fn assert_cell_metrics(cx: &mut gpui::App) -> Result<f32, MetricError> {
-    let available = cx.text_system().all_font_names();
     for family in [MONO_FAMILY, UI_FAMILY] {
-        if !available.iter().any(|n| n == family) {
+        let id = cx.text_system().resolve_font(&gpui::font(family));
+        if cx
+            .text_system()
+            .get_font_for_id(id)
+            .is_none_or(|font| font.family.as_ref() != family)
+        {
             return Err(MetricError::MissingFamily {
                 family,
-                available: available.clone(),
+                available: cx.text_system().all_font_names(),
             });
         }
     }

@@ -153,7 +153,9 @@ impl Shell {
             sidebar.set_workspace_selector(workspaces.clone());
             sidebar.set_shell_focus(focus.clone());
         });
-        cx.observe(&sidebar, |_, _, cx| cx.notify()).detach();
+        // GPUI propagates child invalidation through the rendered view path.
+        // Sidebar events below own semantic shell actions; forwarding every
+        // notification here duplicates the engine's ancestor invalidation.
         let toast = runtime.read(cx).toast.clone();
         cx.observe(&toast, |_, _, cx| cx.notify()).detach();
         let provider_updates = runtime.read(cx).provider_updates.clone();
@@ -3273,14 +3275,13 @@ mod tests {
     fn terminal_consumes_tab_before_shell_traversal(cx: &mut gpui::TestAppContext) {
         cx.update(init);
         let (fixture, cx) = cx.add_window_view(|_, cx| {
-            // A failed native spawn exercises the real terminal input routing
-            // without creating a persistent shell or depending on tmux.
-            let session = cx.new(|cx| {
-                crate::entities::terminal_session::TerminalSession::spawn_script("\0", "/", cx)
-            });
+            // An inert failed session exercises real terminal input routing
+            // without starting a process or depending on asynchronous launch.
+            let session =
+                cx.new(crate::entities::terminal_session::TerminalSession::failed_for_test);
             assert!(
                 session.read(cx).spawn_error().is_some(),
-                "NUL script must fail before any PTY reader starts"
+                "Input fixture must have no PTY"
             );
             let terminal =
                 cx.new(|cx| super::super::terminal_view::TerminalView::new(session.clone(), cx));

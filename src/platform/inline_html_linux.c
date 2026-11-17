@@ -162,6 +162,7 @@ static void filter_ready(GObject *store, GAsyncResult *result, gpointer data) {
     g_clear_error(&error); release(doc);
 }
 void *grove_html_linux_create(const unsigned char *bytes, size_t length, unsigned long parent) {
+    g_main_context_wakeup(NULL);
     if (!initialized) {
         gdk_set_allowed_backends("x11");
         if (!gtk_init_check(NULL, NULL)) return NULL;
@@ -261,6 +262,7 @@ double grove_html_linux_report_height(void *handle) {
     return doc->content_height;
 }
 void grove_html_linux_report_theme(void *handle, const unsigned char *bytes, size_t length, bool integrated) {
+    g_main_context_wakeup(NULL);
     GroveLinuxHtml *doc = handle;
     doc->integrated = integrated;
     if (doc->disposed) return;
@@ -286,6 +288,7 @@ static void focus_document(GroveLinuxHtml *doc) {
         }
 }
 void grove_html_linux_focus_host(unsigned long parent) {
+    g_main_context_wakeup(NULL);
     for (GList *item = documents; item; item = item->next) {
         GroveLinuxHtml *doc = item->data;
         if (doc->parent == parent) {
@@ -296,6 +299,7 @@ void grove_html_linux_focus_host(unsigned long parent) {
     }
 }
 void grove_html_linux_hide(void *handle) {
+    g_main_context_wakeup(NULL);
     GroveLinuxHtml *doc = handle;
     if (doc->disposed) return;
     gdk_x11_display_error_trap_push(gdk_display_get_default());
@@ -312,12 +316,14 @@ static gboolean retire(gpointer data) {
 }
 static void retired(gpointer data) { Retirement *r = data; release(r->doc); g_free(r); }
 void grove_html_linux_retire(void *handle) {
+    g_main_context_wakeup(NULL);
     GroveLinuxHtml *doc = handle;
     Retirement *retirement = g_new(Retirement, 1);
     retirement->doc = doc; retirement->generation = doc->generation; doc->refs++;
     g_idle_add_full(G_PRIORITY_DEFAULT_IDLE, retire, retirement, retired);
 }
 void grove_html_linux_exclude(void *handle, double x, double y, double width, double height) {
+    g_main_context_wakeup(NULL);
     GroveLinuxHtml *doc = handle;
     if (doc->disposed || !doc->visible) return;
     XWindowAttributes attributes;
@@ -346,6 +352,7 @@ void grove_html_linux_exclude(void *handle, double x, double y, double width, do
 }
 void grove_html_linux_show(void *handle, unsigned long parent, double x, double y,
     double width, double height, double clip_x, double clip_y, double clip_width, double clip_height, double scale) {
+    g_main_context_wakeup(NULL);
     GroveLinuxHtml *doc = handle;
     if (doc->disposed || doc->status != 1 || width <= 0 || height <= 0 || clip_width <= 0 || clip_height <= 0) {
         grove_html_linux_hide(doc); return;
@@ -368,8 +375,42 @@ void grove_html_linux_show(void *handle, unsigned long parent, double x, double 
     doc->visible = TRUE;
 }
 void grove_html_linux_hide_all(void) {
+    g_main_context_wakeup(NULL);
     for (GList *item = documents; item; item = item->next) { GroveLinuxHtml *doc = item->data; if (!doc->capture) grove_html_linux_hide(doc); }
 }
+/* Query GLib on its owner thread, then wait only on copied poll descriptors in
+ * the worker. Source additions wake GLib's own wakeup fd. Dispatch remains on
+ * the foreground, including GSettings before the first WebKit document exists. */
+typedef struct { GPollFD *fds; gint count; gint timeout; } GroveEventWait;
+static gboolean readiness_owned;
+void *grove_html_linux_prepare_wait(void) {
+    GroveEventWait *wait = g_new0(GroveEventWait, 1);
+    GMainContext *context = g_main_context_default();
+    if (!g_main_context_acquire(context)) { wait->timeout = 1000; return wait; }
+    readiness_owned = TRUE;
+    gint priority = 0;
+    gboolean ready = g_main_context_prepare(context, &priority);
+    gint capacity = 0;
+    for (;;) {
+        wait->count = g_main_context_query(context, priority, &wait->timeout, wait->fds, capacity);
+        if (wait->count <= capacity) break;
+        capacity = wait->count;
+        wait->fds = g_renew(GPollFD, wait->fds, capacity);
+    }
+    if (ready) wait->timeout = 0;
+    return wait;
+}
+void grove_html_linux_finish_wait(void) {
+    if (readiness_owned) g_main_context_release(g_main_context_default());
+    readiness_owned = FALSE;
+}
+void grove_html_linux_wait_events(void *handle) {
+    GroveEventWait *wait = handle;
+    g_poll(wait->fds, wait->count, wait->timeout);
+    g_free(wait->fds);
+    g_free(wait);
+}
+
 void grove_html_linux_pump(void) {
     if (!initialized) return;
     /* Bound each turn; a busy document must not starve GPUI's input/render loop. */
@@ -377,6 +418,7 @@ void grove_html_linux_pump(void) {
         g_main_context_iteration(NULL, FALSE);
 }
 void grove_html_linux_destroy(void *handle) {
+    g_main_context_wakeup(NULL);
     GroveLinuxHtml *doc = handle;
     grove_html_linux_hide(doc); doc->disposed = TRUE;
     documents = g_list_remove(documents, doc);
@@ -393,6 +435,7 @@ void grove_html_linux_destroy(void *handle) {
 
 /* Isolated offscreen capture uses the exact production document policy. */
 void *grove_html_linux_capture_create(const unsigned char *bytes, size_t length, unsigned width, unsigned height) {
+    g_main_context_wakeup(NULL);
     GroveLinuxHtml *doc = grove_html_linux_create(bytes, length, 0);
     if (!doc) return NULL;
     doc->capture = TRUE;

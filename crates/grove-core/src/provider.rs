@@ -1,6 +1,17 @@
 //! Provider-neutral session state, commands, persistence, and interaction contracts.
-//! Native transports live in `codex` and `claude`; persisted formats stay compatible.
-pub use crate::transcript_items::{TranscriptItem, TranscriptItems};
+//! Native transports live in `codex` and `claude`; legacy inline recovery files migrate on save.
+mod persistence;
+pub(crate) use persistence::Background as BackgroundPersistence;
+/// Append provider text in place; malformed/missing text retains legacy empty-prefix behavior.
+pub(crate) fn append_json_text(value: &mut Value, suffix: &str) {
+    if let Value::String(text) = value {
+        text.push_str(suffix);
+    } else {
+        *value = Value::String(suffix.into());
+    }
+}
+
+pub use crate::transcript_items::{SharedValues, TranscriptItem, TranscriptItems};
 use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -8,7 +19,6 @@ use std::fmt::Write as _;
 use std::{
     borrow::Borrow,
     collections::{HashMap, HashSet},
-    io::Write,
     path::PathBuf,
     sync::{
         atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
@@ -1262,8 +1272,8 @@ pub struct Snapshot {
     pub approval_policy: Option<Value>,
     /// Modes advertised by the installed Claude CLI, not assumed SDK capabilities.
     pub permission_modes: Vec<String>,
-    pub models: Vec<Value>,
-    pub skills: Vec<Value>,
+    pub models: SharedValues,
+    pub skills: SharedValues,
     pub model: Option<String>,
     pub effort: Option<String>,
     pub access: Option<String>,
@@ -2149,8 +2159,8 @@ impl Snapshot {
             sandbox: None,
             approval_policy: None,
             permission_modes: Vec::new(),
-            models: Vec::new(),
-            skills: Vec::new(),
+            models: SharedValues::default(),
+            skills: SharedValues::default(),
             model: composer.model,
             effort: composer.effort,
             access: composer.access,
@@ -2249,6 +2259,27 @@ impl Snapshot {
             Some("reasoning" | "reasoningMessage")
         ) || self.subagent_period(id).is_none()
         {
+            return;
+        }
+        // Avoid mutable transcript access (and a revision bump) for duplicate
+        // child notifications. Both durable and live child rows share item Arcs.
+        let identified = !item["id"].is_null();
+        let same_live = identified
+            && self.subagent_activity.get(id).is_some_and(|activity| {
+                activity
+                    .items
+                    .iter()
+                    .any(|old| old["id"] == item["id"] && old == &item)
+            });
+        let same_saved = self.saved.provider != Provider::Claude
+            || (identified
+                && self.saved.claude_subagents.get(id).is_some_and(|child| {
+                    child
+                        .items
+                        .iter()
+                        .any(|old| old["id"] == item["id"] && old == &item)
+                }));
+        if same_live && same_saved {
             return;
         }
         if self.saved.provider == Provider::Claude {
@@ -2627,7 +2658,20 @@ impl Snapshot {
         );
         self.set_subagent_metadata(id, thread["agentRole"].as_str(), None);
         if let Some(turns) = thread["turns"].as_array() {
-            let mut chronological = Vec::new();
+            let parent_ids: HashSet<&str> = self
+                .saved
+                .items
+                .iter()
+                .filter_map(|item| item["id"].as_str())
+                .collect();
+            let existing: HashMap<String, TranscriptItem> = self
+                .subagent_activity
+                .get(id)
+                .into_iter()
+                .flat_map(|activity| activity.items.iter())
+                .filter_map(|item| item["id"].as_str().map(|id| (id.to_owned(), item.clone())))
+                .collect();
+            let mut chronological: Vec<TranscriptItem> = Vec::new();
             for turn in turns {
                 let inherited = turn["id"].as_str().is_some_and(|turn| {
                     self.turn_id.as_deref() == Some(turn)
@@ -2644,13 +2688,18 @@ impl Snapshot {
                 if let Some(items) = turn["items"].as_array() {
                     for item in items {
                         if item["type"] != "reasoning"
-                            && !self
-                                .saved
-                                .items
-                                .iter()
-                                .any(|parent| !item["id"].is_null() && parent["id"] == item["id"])
+                            && !item["id"]
+                                .as_str()
+                                .is_some_and(|id| parent_ids.contains(id))
                         {
-                            chronological.push(item.clone());
+                            chronological.push(
+                                item["id"]
+                                    .as_str()
+                                    .and_then(|id| existing.get(id))
+                                    .filter(|old| old.as_ref() == item)
+                                    .cloned()
+                                    .unwrap_or_else(|| item.clone().into()),
+                            );
                         }
                     }
                 }
@@ -2660,12 +2709,18 @@ impl Snapshot {
                 if let Some(activity) = self.subagent_activity.get_mut(id) {
                     // A read can introduce older history after live notifications.
                     // Keep the read's provider order and append only unseen live items.
-                    for item in std::mem::take(&mut activity.items) {
-                        if !chronological.iter().any(|old| old["id"] == item["id"]) {
-                            chronological.push(item);
+                    let ids: HashSet<String> = chronological
+                        .iter()
+                        .filter_map(|item| item["id"].as_str().map(str::to_owned))
+                        .collect();
+                    for item in &activity.items {
+                        if !item["id"].as_str().is_some_and(|id| ids.contains(id)) {
+                            chronological.push(item.clone());
                         }
                     }
-                    activity.items = chronological.into();
+                    if activity.items != chronological {
+                        activity.items = chronological.into_iter().collect();
+                    }
                 }
             }
         }
@@ -3186,11 +3241,7 @@ impl Snapshot {
                     while parts.len() <= index {
                         parts.push(json!(""));
                     }
-                    parts[index] = json!(format!(
-                        "{}{}",
-                        parts[index].as_str().unwrap_or_default(),
-                        p["delta"].as_str().unwrap_or_default()
-                    ));
+                    append_json_text(&mut parts[index], p["delta"].as_str().unwrap_or_default());
                 }
             }
             "item/mcpToolCall/progress" => {
@@ -3262,22 +3313,17 @@ impl Snapshot {
                 }
                 let method = message["method"].as_str().unwrap_or_default();
                 let output = method.contains("outputDelta");
-                let at=self.saved.items.iter().position(|old|old["id"]==p["itemId"]).unwrap_or_else(|| {let mut item = json!({"id":p["itemId"],"type":if output{"commandExecution"}else if method.contains("plan"){"plan"}else{"agentMessage"}});stamp_message_received(&mut item, None);self.saved.items.push(item);self.saved.items.len()-1});
+                let at=self.saved.items.iter().rposition(|old|old["id"]==p["itemId"]).unwrap_or_else(|| {let mut item = json!({"id":p["itemId"],"type":if output{"commandExecution"}else if method.contains("plan"){"plan"}else{"agentMessage"}});stamp_message_received(&mut item, None);self.saved.items.push(item);self.saved.items.len()-1});
                 let key = if output { "aggregatedOutput" } else { "text" };
                 let item = &mut self.saved.items[at];
-                let text = format!(
-                    "{}{}",
-                    item[key].as_str().unwrap_or_default(),
-                    p["delta"].as_str().unwrap_or_default()
-                );
-                item[key] = json!(text);
+                append_json_text(&mut item[key], p["delta"].as_str().unwrap_or_default());
             }
             _ => return false,
         }
         true
     }
     fn item_index(&mut self, id: &Value, kind: &str) -> usize {
-        if let Some(at) = self.saved.items.iter().position(|item| item["id"] == *id) {
+        if let Some(at) = self.saved.items.iter().rposition(|item| item["id"] == *id) {
             return at;
         }
         let mut item = json!({"id":id,"type":kind,"status":"inProgress"});
@@ -3646,6 +3692,22 @@ pub(crate) fn prompt_input(text: &str, images: Vec<String>) -> Vec<Value> {
     );
     input
 }
+/// Fresh, repeatable startup validation. Native actors invoke it only on their
+/// worker thread, before the first process and each explicit reconnect.
+pub type StartupValidation = Arc<dyn Fn() -> Result<(), String> + Send + Sync>;
+
+pub(crate) fn startup_submission(action: &Action) -> Option<Option<u64>> {
+    match action {
+        Action::Submit { id, .. }
+        | Action::SubmitWithMode { id, .. }
+        | Action::ProjectPrompt { id, .. }
+        | Action::ActivityPrompt { id, .. } => Some(Some(*id)),
+        Action::Prompt(_) | Action::PromptWithImages { .. } | Action::PromptInline { .. } => {
+            Some(None)
+        }
+        _ => None,
+    }
+}
 pub enum Action {
     /// Metadata-only refresh; never reconnects or alters the conversation.
     UpdateSkills(Vec<Value>),
@@ -3820,6 +3882,22 @@ impl Handle {
             receive,
         )
     }
+    /// Bind a native actor's command queue to its thread wake token. Commands
+    /// queued before startup remain in the queue and are drained before parking.
+    pub(crate) fn actor_channel() -> (
+        Self,
+        mpsc::Receiver<Action>,
+        Arc<std::sync::OnceLock<std::thread::Thread>>,
+    ) {
+        let thread = Arc::new(std::sync::OnceLock::<std::thread::Thread>::new());
+        let wake = thread.clone();
+        let (handle, receiver) = Self::channel_with_wake(Arc::new(move || {
+            if let Some(thread) = wake.get() {
+                thread.unpark();
+            }
+        }));
+        (handle, receiver, thread)
+    }
     /// Wake an embedding host after each command is queued. The callback must be
     /// nonblocking; hosts may coalesce notifications and drain the command queue.
     pub fn channel_with_wake(wake: Arc<dyn Fn() + Send + Sync>) -> (Self, mpsc::Receiver<Action>) {
@@ -3914,6 +3992,54 @@ impl Handle {
         self.stop_completion(forget);
     }
 }
+/// A stable command identity whose actor is created only when a hidden session
+/// is selected or receives an action. Queued commands survive activation.
+pub struct DeferredConnection {
+    pub handle: Handle,
+    pub(crate) receiver: mpsc::Receiver<Action>,
+    pub(crate) thread: Arc<std::sync::OnceLock<std::thread::Thread>>,
+}
+impl DeferredConnection {
+    /// Take commands that could not be delivered during hydration. The host
+    /// must preserve draft edits, reject unsent requests and answer Stop receipts.
+    pub fn take_pending_actions(&self) -> Vec<Action> {
+        self.receiver.try_iter().collect()
+    }
+    /// Fail a permanently abandoned dormant connection without starting a CLI.
+    /// Explicit close callers still receive an archival error and completion;
+    /// the original recovery files remain untouched for a later recovery attempt.
+    pub fn reject_pending(self, error: String) {
+        for action in self.receiver.try_iter() {
+            if let Action::Stop {
+                done,
+                archive_outcome,
+                ..
+            } = action
+            {
+                if let Some(outcome) = archive_outcome {
+                    let _ = outcome.send(Err(error.clone()));
+                }
+                let _ = done.send(());
+            }
+        }
+    }
+}
+pub fn deferred_connection(wake: Arc<dyn Fn() + Send + Sync>) -> DeferredConnection {
+    let thread = Arc::new(std::sync::OnceLock::<std::thread::Thread>::new());
+    let actor = thread.clone();
+    let (handle, receiver) = Handle::channel_with_wake(Arc::new(move || {
+        if let Some(thread) = actor.get() {
+            thread.unpark();
+        } else {
+            wake();
+        }
+    }));
+    DeferredConnection {
+        handle,
+        receiver,
+        thread,
+    }
+}
 pub struct Connection {
     pub handle: Handle,
     pub updates: crate::latest::Receiver<Snapshot>,
@@ -3958,6 +4084,16 @@ pub(crate) fn workspace_recovery_blocked_in_dirs(
         #[serde(default)]
         recovery: Option<crate::checkpoint::Checkpoint>,
     }
+    type SummaryCache = HashMap<
+        PathBuf,
+        (
+            (u64, std::time::SystemTime),
+            Option<crate::checkpoint::Checkpoint>,
+        ),
+    >;
+    static SUMMARIES: std::sync::OnceLock<std::sync::Mutex<SummaryCache>> =
+        std::sync::OnceLock::new();
+    let summaries = SUMMARIES.get_or_init(std::sync::Mutex::default);
     let paths = paths
         .iter()
         .map(|path| path.canonicalize().unwrap_or_else(|_| path.clone()))
@@ -3992,14 +4128,36 @@ pub(crate) fn workspace_recovery_blocked_in_dirs(
                     ));
                 }
             };
-            let summary: Summary =
-                serde_json::from_reader(std::io::BufReader::new(file)).map_err(|e| {
-                    format!(
-                        "Workspace recovery journal {} needs attention: {e}",
-                        path.display()
-                    )
-                })?;
-            if let Some(recovery) = summary.pending_edit.and_then(|pending| pending.recovery) {
+            let metadata = file.metadata().map_err(|error| error.to_string())?;
+            let stamp = (
+                metadata.len(),
+                metadata.modified().map_err(|error| error.to_string())?,
+            );
+            let cached = summaries
+                .lock()
+                .map_err(|error| error.to_string())?
+                .get(&path)
+                .filter(|(previous, _)| *previous == stamp)
+                .cloned();
+            let recovery = if let Some((_, recovery)) = cached {
+                recovery
+            } else {
+                let summary: Summary = serde_json::from_reader(std::io::BufReader::new(file))
+                    .map_err(|e| {
+                        format!(
+                            "Workspace recovery journal {} needs attention: {e}",
+                            path.display()
+                        )
+                    })?;
+                let recovery = summary.pending_edit.and_then(|pending| pending.recovery);
+                let mut cache = summaries.lock().map_err(|error| error.to_string())?;
+                if cache.len() >= 4096 {
+                    cache.clear();
+                }
+                cache.insert(path.clone(), (stamp, recovery.clone()));
+                recovery
+            };
+            if let Some(recovery) = recovery {
                 if recovery.roots().iter().any(|root| {
                     paths
                         .iter()
@@ -4011,6 +4169,80 @@ pub(crate) fn workspace_recovery_blocked_in_dirs(
         }
     }
     Ok(false)
+}
+
+/// Load archive list metadata without replaying journal transcripts. Legacy
+/// inline archives are read compatibly and become small heads on their next save.
+pub fn load_session_history_metadata() -> Result<Recovery, String> {
+    load_metadata_from_dir(&session_history_dir()?)
+}
+/// Restore hidden sessions without replaying their transcripts or launching actors.
+pub fn load_sessions_metadata() -> Result<Recovery, String> {
+    load_metadata_from_dir(&recovery_dir()?)
+}
+pub fn load_active_session(key: &str) -> Result<SavedSession, String> {
+    if !valid_key(key) {
+        return Err("Invalid native session recovery key".into());
+    }
+    load_saved_session(&recovery_dir()?.join(format!("{key}.json")))
+}
+fn load_metadata_from_dir(dir: &std::path::Path) -> Result<Recovery, String> {
+    let mut recovery = Recovery {
+        sessions: Vec::new(),
+        warnings: Vec::new(),
+    };
+    if !dir.exists() {
+        return Ok(recovery);
+    }
+    let mut sessions = Vec::new();
+    for entry in fs_err::read_dir(dir).map_err(|error| error.to_string())? {
+        let entry = entry.map_err(|error| error.to_string())?;
+        let path = entry.path();
+        if path.extension().is_none_or(|extension| extension != "json") {
+            continue;
+        }
+        let saved = fs_err::read(&path)
+            .map_err(|error| error.to_string())
+            .and_then(|bytes| {
+                serde_json::from_slice::<SavedSession>(&bytes).map_err(|error| error.to_string())
+            });
+        match saved {
+            Ok(mut saved)
+                if valid_key(&saved.key)
+                    && path.file_stem().and_then(|stem| stem.to_str()) == Some(&saved.key) =>
+            {
+                saved.items = TranscriptItems::default();
+                sessions.push((
+                    std::cmp::Reverse(
+                        entry
+                            .metadata()
+                            .and_then(|metadata| metadata.modified())
+                            .ok(),
+                    ),
+                    saved,
+                ));
+            }
+            _ => recovery.warnings.push(format!(
+                "Could not read native session history {}. The recovery file was preserved.",
+                path.display()
+            )),
+        }
+    }
+    sessions.sort_by_key(|(modified, _)| *modified);
+    recovery.sessions = sessions.into_iter().map(|(_, saved)| saved).collect();
+    Ok(recovery)
+}
+/// Hydrate exactly one archived transcript on explicit preview/reopen or a
+/// background history search. Keys are validated before forming filesystem paths.
+pub fn load_history_session(key: &str) -> Result<SavedSession, String> {
+    if !valid_key(key) {
+        return Err("Invalid native session history key".into());
+    }
+    let saved = load_saved_session(&session_history_dir()?.join(format!("{key}.json")))?;
+    if saved.key != key {
+        return Err("Mismatched native session history key".into());
+    }
+    Ok(saved)
 }
 
 pub fn load_session_history() -> Result<Recovery, String> {
@@ -4042,12 +4274,7 @@ pub fn finish_history_reopen(key: &str) -> Result<(), String> {
     if !valid_key(key) {
         return Err("Invalid native session history key".into());
     }
-    let path = session_history_dir()?.join(format!("{key}.json"));
-    match fs_err::remove_file(path) {
-        Ok(()) => Ok(()),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(error.to_string()),
-    }
+    persistence::remove(&session_history_dir()?.join(format!("{key}.json")))
 }
 
 pub(crate) fn archive_closed_session(saved: &SavedSession) -> Result<(), String> {
@@ -4061,11 +4288,7 @@ pub(crate) fn archive_closed_in_dirs(
 ) -> Result<(), String> {
     // The archive is durable before removing the only startup recovery record.
     persist_in_dir(saved, history)?;
-    match fs_err::remove_file(active.join(format!("{}.json", saved.key))) {
-        Ok(()) => Ok(()),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(error.to_string()),
-    }
+    persistence::remove(&active.join(format!("{}.json", saved.key)))
 }
 fn valid_key(key: &str) -> bool {
     !key.is_empty()
@@ -4086,6 +4309,17 @@ pub fn load_sessions() -> Result<Recovery, String> {
     }
     load_from_dir(&dir)
 }
+/// Read a native session recovery/archive file, hydrating its committed transcript
+/// journal when present. Direct JSON deserialization is only for inline wire data.
+pub fn load_saved_session(path: &std::path::Path) -> Result<SavedSession, String> {
+    let mut saved = persistence::load(path)?;
+    if !valid_key(&saved.key) || path.file_stem().and_then(|stem| stem.to_str()) != Some(&saved.key)
+    {
+        return Err("Mismatched native session recovery key".into());
+    }
+    crate::visuals::recover(&mut saved);
+    Ok(saved)
+}
 pub(crate) fn load_from_dir(dir: &std::path::Path) -> Result<Recovery, String> {
     let mut recovery = Recovery {
         sessions: Vec::new(),
@@ -4096,11 +4330,7 @@ pub(crate) fn load_from_dir(dir: &std::path::Path) -> Result<Recovery, String> {
         if path.extension().is_none_or(|x| x != "json") {
             continue;
         }
-        let parsed = fs_err::read(&path)
-            .map_err(|e| e.to_string())
-            .and_then(|bytes| {
-                serde_json::from_slice::<SavedSession>(&bytes).map_err(|e| e.to_string())
-            });
+        let parsed = persistence::load(&path);
         match parsed {
             Ok(session)
                 if valid_key(&session.key)
@@ -4129,31 +4359,7 @@ pub(crate) fn persist_in_dir(saved: &SavedSession, dir: &std::path::Path) -> Res
     if !valid_key(&saved.key) {
         return Err("Invalid provider recovery key".into());
     }
-    fs_err::create_dir_all(dir).map_err(|e| e.to_string())?;
-    let path = dir.join(format!("{}.json", saved.key));
-    let mut file = tempfile::NamedTempFile::new_in(dir).map_err(|e| e.to_string())?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        file.as_file()
-            .set_permissions(std::fs::Permissions::from_mode(0o600))
-            .map_err(|e| e.to_string())?;
-    }
-    {
-        // JSON emits many small writes for keys and escaped tool output. Buffer
-        // those writes, then propagate flush errors before syncing or replacing
-        // the recovery file so atomicity and durability stay unchanged.
-        let mut writer = std::io::BufWriter::with_capacity(64 * 1024, file.as_file_mut());
-        serde_json::to_writer(&mut writer, saved).map_err(|e| e.to_string())?;
-        writer.flush().map_err(|e| e.to_string())?;
-    }
-    file.as_file().sync_all().map_err(|e| e.to_string())?;
-    file.persist(path).map_err(|e| e.to_string())?;
-    #[cfg(unix)]
-    fs_err::File::open(dir)
-        .and_then(|dir| dir.sync_all())
-        .map_err(|e| e.to_string())?;
-    Ok(())
+    persistence::persist(saved, dir)
 }
 
 #[cfg(test)]
@@ -4183,6 +4389,285 @@ mod independent_conversation_tests {
             1,
             "failed enqueue must not wake"
         );
+    }
+
+    #[test]
+    fn deferred_wake_retargets_cloned_handles_without_losing_queued_actions() {
+        let wakes = Arc::new(AtomicU64::new(0));
+        let observed = wakes.clone();
+        let deferred = deferred_connection(Arc::new(move || {
+            observed.fetch_add(1, Ordering::Relaxed);
+        }));
+        let handle = deferred.handle.clone();
+        handle
+            .send(Action::Draft("before activation".into()))
+            .unwrap();
+        assert_eq!(wakes.load(Ordering::Relaxed), 1);
+        assert!(
+            matches!(deferred.receiver.try_recv().unwrap(), Action::Draft(text) if text == "before activation")
+        );
+        deferred.thread.set(std::thread::current()).unwrap();
+        handle
+            .send(Action::Draft("after activation".into()))
+            .unwrap();
+        assert_eq!(wakes.load(Ordering::Relaxed), 1);
+        assert!(
+            matches!(deferred.receiver.try_recv().unwrap(), Action::Draft(text) if text == "after activation")
+        );
+        // Consume the actor wake token so this test does not perturb later tests.
+        std::thread::park_timeout(std::time::Duration::ZERO);
+    }
+    #[test]
+    fn abandoned_deferred_connection_reports_failed_archive_without_startup() {
+        let deferred = deferred_connection(Arc::new(|| {}));
+        let handle = deferred.handle.clone();
+        let (done, outcome) = handle.stop_archiving();
+        deferred.reject_pending("recovery unavailable".into());
+        done.recv_timeout(std::time::Duration::from_secs(1))
+            .unwrap();
+        assert_eq!(outcome.recv().unwrap(), Err("recovery unavailable".into()));
+        assert!(handle.send(Action::Draft("closed".into())).is_err());
+    }
+    #[test]
+    fn stopping_deferred_codex_and_claude_preserves_data_without_startup() {
+        for provider in [Provider::Codex, Provider::Claude] {
+            let key = format!(
+                "test-deferred-stop-{}-{}",
+                if provider == Provider::Codex {
+                    "codex"
+                } else {
+                    "claude"
+                },
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            );
+            let mut saved = SavedSession::empty(
+                key.clone(),
+                provider,
+                "test".into(),
+                "/missing-grove-fixture-directory".into(),
+            );
+            saved.draft = "preserved before activation".into();
+            saved
+                .items
+                .push(json!({"id":"retained","type":"agentMessage","text":"retained history"}));
+            let deferred = deferred_connection(Arc::new(|| {}));
+            let done = deferred.handle.stop_completion(false);
+            let connection = crate::codex::connect_deferred(
+                saved,
+                vec!["--unsupported-grove-fixture-option".into()],
+                deferred,
+            );
+            done.recv_timeout(std::time::Duration::from_secs(10))
+                .unwrap();
+            let snapshot = connection.updates.try_recv().unwrap();
+            assert!(
+                snapshot.error.is_none(),
+                "startup must be skipped: {:?}",
+                snapshot.error
+            );
+            let path = recovery_dir().unwrap().join(format!("{key}.json"));
+            let disk = load_saved_session(&path).unwrap();
+            assert_eq!(disk.draft, "preserved before activation");
+            assert_eq!(disk.items[0]["text"], "retained history");
+            persistence::remove(&path).unwrap();
+        }
+    }
+    fn checked_snapshot(
+        connection: &Connection,
+        predicate: impl Fn(&Snapshot) -> bool,
+    ) -> Snapshot {
+        let deadline = Instant::now() + std::time::Duration::from_secs(5);
+        while Instant::now() < deadline {
+            while let Ok(snapshot) = connection.updates.try_recv() {
+                if predicate(&snapshot) {
+                    return snapshot;
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        panic!("checked startup snapshot did not arrive");
+    }
+
+    #[test]
+    fn checked_startup_codex_and_claude_reject_without_cli_and_revalidate_reconnect() {
+        for provider in [Provider::Codex, Provider::Claude] {
+            let key = format!(
+                "checked-{}-{}",
+                if provider == Provider::Codex {
+                    "codex"
+                } else {
+                    "claude"
+                },
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            );
+            let mut saved = SavedSession::empty(
+                key.clone(),
+                provider,
+                "test".into(),
+                "/missing-checked-fixture".into(),
+            );
+            saved.draft = "retained draft".into();
+            saved.title = Some("retained title".into());
+            saved.items.push(json!({"id":"retained-user","type":"userMessage","content":[{"type":"text","text":"existing prompt"}]}));
+            let attempts = Arc::new(AtomicU64::new(0));
+            let seen = attempts.clone();
+            let (worker, observed) = mpsc::channel();
+            let validation = Arc::new(move || {
+                let attempt = seen.fetch_add(1, Ordering::Relaxed) + 1;
+                let _ = worker.send(std::thread::current().id());
+                Err(format!("fresh checkout validation {attempt}"))
+            });
+            let connection = crate::codex::connect_checked(
+                saved,
+                vec!["--unsupported-grove-test-option".into()],
+                validation,
+            );
+            assert_ne!(
+                observed
+                    .recv_timeout(std::time::Duration::from_secs(5))
+                    .unwrap(),
+                std::thread::current().id(),
+                "validation must run off the caller thread"
+            );
+            let id = connection
+                .handle
+                .submit("never replay this request".into(), Vec::new())
+                .unwrap();
+            let failed = checked_snapshot(&connection, |snapshot| {
+                snapshot.rejected_submission == Some(id)
+            });
+            // Startup rejection retains the provider's disconnected/reconnect contract.
+            assert_eq!(failed.status, Status::Disconnected);
+            assert_eq!(failed.saved.draft, "retained draft");
+            assert_eq!(failed.saved.title.as_deref(), Some("retained title"));
+            assert_eq!(failed.saved.items.len(), 1);
+            assert_eq!(failed.saved.items[0]["id"], "retained-user");
+            assert!(
+                failed.saved.title_generation.is_none(),
+                "a failed guard must also suppress title CLI jobs"
+            );
+            connection
+                .handle
+                .send(Action::Draft("edited after failure".into()))
+                .unwrap();
+            connection.handle.send(Action::Reconnect).unwrap();
+            observed
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap();
+            let retried = checked_snapshot(&connection, |snapshot| {
+                snapshot
+                    .error
+                    .as_deref()
+                    .is_some_and(|error| error.contains("validation 2"))
+            });
+            assert_eq!(retried.status, Status::Disconnected);
+            assert_eq!(retried.saved.draft, "edited after failure");
+            assert_eq!(attempts.load(Ordering::Relaxed), 2);
+            connection
+                .handle
+                .stop_completion(false)
+                .recv_timeout(std::time::Duration::from_secs(10))
+                .unwrap();
+            let path = recovery_dir().unwrap().join(format!("{key}.json"));
+            assert_eq!(
+                load_saved_session(&path).unwrap().draft,
+                "edited after failure"
+            );
+            persistence::remove(&path).unwrap();
+        }
+    }
+
+    #[test]
+    fn checked_startup_stop_during_validation_never_spawns_codex_or_claude() {
+        for provider in [Provider::Codex, Provider::Claude] {
+            let key = format!(
+                "checked-stop-{}-{}",
+                if provider == Provider::Codex {
+                    "codex"
+                } else {
+                    "claude"
+                },
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            );
+            let saved = SavedSession::empty(
+                key.clone(),
+                provider,
+                "test".into(),
+                "/missing-checked-fixture".into(),
+            );
+            let release = Arc::new((std::sync::Mutex::new(false), std::sync::Condvar::new()));
+            let gate = release.clone();
+            let (started, entered) = mpsc::channel();
+            let validation = Arc::new(move || {
+                let _ = started.send(());
+                let mut ready = gate.0.lock().unwrap();
+                while !*ready {
+                    ready = gate.1.wait(ready).unwrap();
+                }
+                Ok(())
+            });
+            let connection = crate::codex::connect_checked(
+                saved,
+                vec!["--unsupported-grove-test-option".into()],
+                validation,
+            );
+            entered
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap();
+            let done = connection.handle.stop_completion(false);
+            *release.0.lock().unwrap() = true;
+            release.1.notify_one();
+            done.recv_timeout(std::time::Duration::from_secs(10))
+                .unwrap();
+            let stopped = connection.updates.try_recv().unwrap();
+            assert!(stopped
+                .error
+                .as_deref()
+                .is_some_and(|error| error.contains("closing") || error.contains("stopping")));
+            let path = recovery_dir().unwrap().join(format!("{key}.json"));
+            assert!(load_saved_session(&path).is_ok());
+            persistence::remove(&path).unwrap();
+        }
+    }
+
+    #[test]
+    fn text_append_retains_unicode_and_empty_prefix_behavior() {
+        let mut value = json!(null);
+        append_json_text(&mut value, "工具 ");
+        append_json_text(&mut value, "🦀");
+        assert_eq!(value, json!("工具 🦀"));
+        append_json_text(&mut value, "");
+        assert_eq!(value, json!("工具 🦀"));
+    }
+    #[test]
+    #[ignore = "manual synthetic JSON streaming append baseline"]
+    fn json_stream_append_benchmark() {
+        let delta = "工具输出 🦀 ".repeat(4);
+        for sample in 0..3 {
+            let mut legacy = json!("");
+            let start = Instant::now();
+            for _ in 0..4096 {
+                legacy = json!(format!("{}{}", legacy.as_str().unwrap(), delta));
+            }
+            let legacy_ms = start.elapsed().as_secs_f64() * 1000.0;
+            let mut value = json!("");
+            let start = Instant::now();
+            for _ in 0..4096 {
+                append_json_text(&mut value, &delta);
+            }
+            let append_ms = start.elapsed().as_secs_f64() * 1000.0;
+            assert_eq!(legacy, value);
+            println!("json_stream_append sample={sample} legacy_ms={legacy_ms:.3} append_ms={append_ms:.3} bytes={}", value.as_str().unwrap().len());
+        }
     }
 
     #[test]

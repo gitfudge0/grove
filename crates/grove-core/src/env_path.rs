@@ -3,6 +3,7 @@
 
 use std::process::Command;
 use std::time::Duration;
+use wait_timeout::ChildExt as _;
 
 use std::ffi::OsString;
 use std::sync::{Arc, Mutex, OnceLock, RwLock};
@@ -35,6 +36,69 @@ static BASELINE_ENV: OnceLock<Vec<(OsString, OsString)>> = OnceLock::new();
 static INITIALIZED: OnceLock<()> = OnceLock::new();
 static REFRESH_LOCK: Mutex<()> = Mutex::new(());
 
+static INITIAL_CAPTURE: (Mutex<bool>, std::sync::Condvar) =
+    (Mutex::new(false), std::sync::Condvar::new());
+static CAPTURE_SCHEDULED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Mark startup capture before opening a window. This snapshots inherited
+/// exports on the foreground but performs no shell or filesystem work.
+pub fn prepare_initial_environment() {
+    let _ = inherited_environment();
+    CAPTURE_SCHEDULED.store(true, std::sync::atomic::Ordering::Release);
+}
+
+/// Run on the background executor. Unlike the legacy pre-window initializer,
+/// this never mutates process environment while other threads are running.
+pub fn initialize_login_environment() {
+    INITIALIZED.get_or_init(|| {
+        let _refresh = REFRESH_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let baseline = inherited_environment();
+        let captured = if cfg!(windows)
+            || (std::env::var_os("GROVE_FORCE_LOGIN_PATH").is_none() && !needs_resolution())
+        {
+            Some(
+                baseline
+                    .iter()
+                    .filter_map(|(key, value)| {
+                        Some((key.to_str()?.to_owned(), value.to_str()?.to_owned()))
+                    })
+                    .filter(|(key, _)| exportable_key(key))
+                    .collect(),
+            )
+        } else {
+            query_login_environment()
+        };
+        let _ = SESSION_ENV
+            .get_or_init(EnvironmentCache::default)
+            .publish(captured);
+    });
+    *INITIAL_CAPTURE
+        .0
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = true;
+    INITIAL_CAPTURE.1.notify_all();
+}
+
+/// Session/PTY workers wait here before resolving executables. Never call on
+/// the foreground; metadata and snapshot reads stay nonblocking.
+pub fn wait_for_initial_environment() {
+    if !CAPTURE_SCHEDULED.load(std::sync::atomic::Ordering::Acquire) {
+        return;
+    }
+    let mut ready = INITIAL_CAPTURE
+        .0
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    while !*ready {
+        ready = INITIAL_CAPTURE
+            .1
+            .wait(ready)
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+    }
+}
+
 fn inherited_environment() -> &'static [(OsString, OsString)] {
     BASELINE_ENV.get_or_init(|| std::env::vars_os().collect())
 }
@@ -42,6 +106,10 @@ fn inherited_environment() -> &'static [(OsString, OsString)] {
 /// Capture original inherited exports before startup resolution changes them.
 /// Rich terminal launches already inherit the environment and skip a shell.
 pub fn ensure_login_path() {
+    if CAPTURE_SCHEDULED.load(std::sync::atomic::Ordering::Acquire) {
+        wait_for_initial_environment();
+        return;
+    }
     INITIALIZED.get_or_init(|| {
         let _refresh = REFRESH_LOCK
             .lock()
@@ -231,7 +299,15 @@ fn query_environment(
         use std::os::unix::process::CommandExt;
         command.process_group(0);
     }
-    let mut child = command.spawn().ok()?;
+    let mut child = match command.spawn() {
+        Ok(child) => child,
+        Err(error) => {
+            #[cfg(test)]
+            eprintln!("shell capture spawn failed: {error}");
+            tracing::debug!(%error, "shell environment capture could not start");
+            return None;
+        }
+    };
     let mut stdout = child.stdout.take()?;
     let (sender, receiver) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
@@ -240,15 +316,11 @@ fn query_environment(
         let _ = sender.send(result);
     });
     let deadline = std::time::Instant::now() + timeout;
-    let success = loop {
-        match child.try_wait() {
-            Ok(Some(status)) => break status.success(),
-            Ok(None) if std::time::Instant::now() < deadline => {
-                std::thread::sleep(Duration::from_millis(50));
-            }
-            _ => break false,
-        }
-    };
+    let success = child
+        .wait_timeout(timeout)
+        .ok()
+        .flatten()
+        .is_some_and(|status| status.success());
     // Also terminate background rc helpers retaining the output pipe.
     #[cfg(unix)]
     {
@@ -262,8 +334,31 @@ fn query_environment(
     let _ = child.wait();
     // A detached rc helper may escape the process group and hold the pipe.
     // Never let its reader delay the startup fallback.
-    let raw = receiver.recv_timeout(Duration::from_millis(100)).ok()??;
-    success.then(|| extract_environment(&raw)).flatten()
+    // A successful shell can finish before its reader is scheduled under a
+    // parallel test/build load. Use its remaining capture budget, while an
+    // escaped background helper still gets only the bounded 100ms grace.
+    let drain = if success {
+        deadline
+            .saturating_duration_since(std::time::Instant::now())
+            .max(Duration::from_millis(100))
+    } else {
+        Duration::from_millis(100)
+    };
+    let Ok(Some(raw)) = receiver.recv_timeout(drain) else {
+        #[cfg(test)]
+        eprintln!("shell capture read failed; process success={success}");
+        return None;
+    };
+    #[cfg(test)]
+    if !success {
+        eprintln!("shell capture process failed");
+    }
+    let environment = success.then(|| extract_environment(&raw)).flatten();
+    #[cfg(test)]
+    if success && environment.is_none() {
+        eprintln!("shell capture invalid exports ({} bytes)", raw.len());
+    }
+    environment
 }
 
 #[cfg(test)]

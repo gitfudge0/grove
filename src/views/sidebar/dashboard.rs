@@ -228,8 +228,8 @@ impl DestinationTray {
                     if let ScopePickerEvent::Applied(targets, cwd) = event {
                         if let Some(primary) = targets.iter().find(|root| &root.path == cwd) {
                             this.project = primary.project;
-                            this.path = cwd.clone();
-                            this.scope = targets.clone();
+                            this.path.clone_from(cwd);
+                            this.scope.clone_from(targets);
                             this.generation = this.generation.wrapping_add(1);
                             this.loading = false;
                             this.error = None;
@@ -528,18 +528,20 @@ impl Render for DestinationTray {
             self.scope
                 .iter()
                 .find(|target| target.path == self.path)
-                .map(|target| {
-                    format!(
-                        "Starts in {} / {}",
-                        target.project_name,
-                        if target.branch.is_empty() {
-                            crate::paths::path_basename(&target.path)
-                        } else {
-                            target.branch.clone()
-                        }
-                    )
-                })
-                .unwrap_or_else(|| "Review worktrees".into())
+                .map_or_else(
+                    || "Review worktrees".into(),
+                    |target| {
+                        format!(
+                            "Starts in {} / {}",
+                            target.project_name,
+                            if target.branch.is_empty() {
+                                crate::paths::path_basename(&target.path)
+                            } else {
+                                target.branch.clone()
+                            }
+                        )
+                    },
+                )
         } else {
             worktree
         };
@@ -2233,7 +2235,7 @@ mod tests {
                     );
                     assert!(sidebar.dashboard_open);
                     settings.update(cx, |settings, cx| {
-                        settings.open_projects(Some("/tmp/picker-second".into()), window, cx)
+                        settings.open_projects(Some("/tmp/picker-second".into()), window, cx);
                     });
                     assert!(settings.read(cx).is_open());
                     sidebar.open_project_checkout_from_settings(
@@ -2262,7 +2264,7 @@ mod tests {
         cx.update(|_, cx| {
             SettingsState::update(cx, |store| {
                 store.projects.remove(0);
-            })
+            });
         });
         cx.run_until_parked();
         cx.update(|_, cx| {
@@ -2802,6 +2804,21 @@ mod tests {
                             sidebar.worktree_errors
                         );
                     }
+                });
+            });
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            while sidebar.read_with(cx, |sidebar, _| sidebar.worktree_creating)
+                && std::time::Instant::now() < deadline
+            {
+                cx.run_until_parked();
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            cx.update(|window, cx| {
+                sidebar.update(cx, |sidebar, cx| {
+                    assert!(
+                        !sidebar.worktree_creating,
+                        "worktree creation did not finish"
+                    );
                     assert!(sidebar.pending_new_worktree.is_none());
                     assert!(sidebar.dashboard_open);
                     let d = sidebar.dashboard.as_ref().unwrap();

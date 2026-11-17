@@ -298,8 +298,10 @@ fn hash_transcript_value(value: &serde_json::Value, hasher: &mut impl Hasher) {
 /// Optimistic bubbles are a separate cache input.
 struct TranscriptRenderCache {
     rich_messages: Rc<RichMessageIndex>,
-    work: WorkIndex,
+    visual_items: HashSet<String>,
+    work: Rc<WorkIndex>,
     review_display: Rc<std::cell::RefCell<HashMap<usize, Option<String>>>>,
+    review_overview: Rc<std::cell::OnceCell<Option<String>>>,
     source: Rc<codex::Snapshot>,
     optimistic: Vec<serde_json::Value>,
     state: Rc<codex::Snapshot>,
@@ -341,15 +343,66 @@ impl RichMessageIndex {
 /// provider updates can share this without keeping their old snapshot visible.
 struct PreparedTranscript {
     content: [u64; 2],
+    id_index: rustc_hash::FxHashMap<String, usize>,
+    item_data: Vec<Rc<PreparedItem>>,
+    commentary: Vec<bool>,
+    activity_prefix: Vec<usize>,
     task_key: u64,
-    stream_keys: HashSet<String>,
     has_timestamp: bool,
-    response_groups: Vec<ResponseGroup>,
+    response_groups: Vec<Rc<ResponseGroup>>,
     response_ends: Vec<Option<usize>>,
     response_prose: Vec<Option<usize>>,
     minimap_entries: Vec<MessageMinimapEntry>,
     nearest_user: Vec<usize>,
+    work_keys: rustc_hash::FxHashMap<usize, String>,
     next_nonuser: Vec<usize>,
+}
+
+/// Item-local payloads survive tail appends and metadata-only snapshots.
+struct PreparedItem {
+    source: codex::TranscriptItem,
+    text: gpui::SharedString,
+    tool: bool,
+    detail: std::cell::OnceCell<gpui::SharedString>,
+    detail_markdown: std::cell::OnceCell<gpui::SharedString>,
+    snippet_source_digest: std::cell::OnceCell<u64>,
+    label_width: std::cell::RefCell<Option<(String, gpui::TextStyle, gpui::Pixels, gpui::Pixels)>>,
+}
+impl PreparedItem {
+    fn new(source: codex::TranscriptItem) -> Self {
+        Self {
+            text: transcript_item_text(&source).into(),
+            tool: is_tool_item(&source),
+            source,
+            detail: std::cell::OnceCell::default(),
+            detail_markdown: std::cell::OnceCell::default(),
+            snippet_source_digest: std::cell::OnceCell::default(),
+            label_width: std::cell::RefCell::default(),
+        }
+    }
+    fn snippet_source_digest(&self, source: &str) -> u64 {
+        if std::ptr::eq(source, self.text.as_ref()) || source == self.text.as_ref() {
+            *self
+                .snippet_source_digest
+                .get_or_init(|| snippets::source_digest(&self.text))
+        } else {
+            // Report scopes can transform the same provider item for display.
+            // Their actual source must retain its own command identity.
+            snippets::source_digest(source)
+        }
+    }
+    fn detail(&self) -> gpui::SharedString {
+        self.detail
+            .get_or_init(|| tool_detail(&self.source).into())
+            .clone()
+    }
+    fn detail_markdown(&self) -> gpui::SharedString {
+        self.detail_markdown
+            .get_or_init(|| {
+                format!("```text\n{}\n```", self.detail().replace("```", "` ` `")).into()
+            })
+            .clone()
+    }
 }
 
 /// Snapshot metadata is independent of item identity (work may finish without
@@ -360,6 +413,7 @@ struct WorkIndex {
     active: Vec<bool>,
     active_start: usize,
     latest_tool: Option<usize>,
+    parent_activity: Vec<bool>,
 }
 impl WorkIndex {
     fn new(state: &codex::Snapshot, prepared: &PreparedTranscript) -> Self {
@@ -410,15 +464,42 @@ impl WorkIndex {
             );
         }
         debug_assert_eq!(prepared.nearest_user.len(), n + 1);
+        let parent_activity = (0..=n)
+            .map(|index| {
+                let work = period[index].map(|ordinal| &state.saved.work_periods[ordinal]);
+                // The legacy lookup excludes the current user when no period owns it.
+                let start = work
+                    .map_or_else(
+                        || {
+                            if index > 0
+                                && state
+                                    .saved
+                                    .items
+                                    .get(index)
+                                    .is_some_and(|item| item["type"] == "userMessage")
+                            {
+                                prepared.nearest_user[index - 1]
+                            } else {
+                                prepared.nearest_user[index]
+                            }
+                        },
+                        |work| work.start_item,
+                    )
+                    .min(n);
+                let end = work.and_then(|work| work.end_item).unwrap_or(n).min(n);
+                start < end && prepared.activity_prefix[end] > prepared.activity_prefix[start]
+            })
+            .collect();
         Self {
             period,
             active,
             active_start,
             latest_tool,
+            parent_activity,
         }
     }
-    fn key(prepared: &PreparedTranscript, index: usize) -> String {
-        format!("work-{}", prepared.nearest_user[index])
+    fn key(prepared: &PreparedTranscript, index: usize) -> &str {
+        &prepared.work_keys[&prepared.nearest_user[index]]
     }
     fn tool_visible(&self, state: &codex::Snapshot, index: usize) -> bool {
         !state.status.busy() || index < self.active_start || self.latest_tool == Some(index)
@@ -457,7 +538,7 @@ impl WorkIndex {
             period.and_then(|period| period.duration_ms.map(|ms| ms / 1000))
         };
         Some((
-            Self::key(prepared, index),
+            Self::key(prepared, index).to_owned(),
             work_duration_label(self.active[index], duration),
             self.active[index],
         ))
@@ -513,12 +594,75 @@ impl TranscriptRenderCache {
                 }
                 content[1] = hasher.finish();
             }
-            Rc::new(Self::prepare(&state, content))
+            Rc::new(Self::prepare_reusing(
+                &state,
+                content,
+                previous
+                    .filter(|old| old.state.saved.thread_id == state.saved.thread_id)
+                    .map(|old| old.prepared.as_ref()),
+            ))
         });
-        let work = WorkIndex::new(&state, &prepared);
+        let work = previous
+            .filter(|old| {
+                Rc::ptr_eq(&old.prepared, &prepared)
+                    && old.state.status.busy() == state.status.busy()
+                    && old.state.saved.work_periods.len() == state.saved.work_periods.len()
+                    && old
+                        .state
+                        .saved
+                        .work_periods
+                        .iter()
+                        .zip(&state.saved.work_periods)
+                        .all(|(a, b)| a.start_item == b.start_item && a.end_item == b.end_item)
+            })
+            .map_or_else(
+                || Rc::new(WorkIndex::new(&state, &prepared)),
+                |old| old.work.clone(),
+            );
+        let review_overview = previous
+            .filter(|old| {
+                let a = &old.state;
+                let b = &state;
+                a.saved.items.revision() == b.saved.items.revision()
+                    && a.saved.cwd == b.saved.cwd
+                    && a.saved.session_review.reviewed_through
+                        == b.saved.session_review.reviewed_through
+                    && a.saved.session_review.summary == b.saved.session_review.summary
+                    && a.review_completion() == b.review_completion()
+                    && a.saved
+                        .session_review
+                        .pending
+                        .as_ref()
+                        .and_then(|r| a.saved.work_periods.get(r.period))
+                        .map(|p| (p.start_item, p.end_item))
+                        == b.saved
+                            .session_review
+                            .pending
+                            .as_ref()
+                            .and_then(|r| b.saved.work_periods.get(r.period))
+                            .map(|p| (p.start_item, p.end_item))
+                    && a.saved
+                        .session_review
+                        .pending
+                        .as_ref()
+                        .map(|r| (r.id, r.period))
+                        == b.saved
+                            .session_review
+                            .pending
+                            .as_ref()
+                            .map(|r| (r.id, r.period))
+            })
+            .map_or_else(Rc::default, |old| old.review_overview.clone());
         Self {
+            review_overview,
             work,
             rich_messages: Rc::new(RichMessageIndex::new(&source.saved.rich_plans)),
+            visual_items: source
+                .saved
+                .visuals
+                .iter()
+                .map(|visual| visual.item_id.clone())
+                .collect(),
             review_display: Rc::default(),
             source,
             optimistic,
@@ -527,20 +671,117 @@ impl TranscriptRenderCache {
         }
     }
 
-    fn prepare(state: &codex::Snapshot, content: [u64; 2]) -> PreparedTranscript {
+    fn prepare_reusing(
+        state: &codex::Snapshot,
+        content: [u64; 2],
+        previous: Option<&PreparedTranscript>,
+    ) -> PreparedTranscript {
         let items = &state.saved.items;
-        let task_key = task_cache_key(items);
-        let stream_keys = items
+        let item_data: Vec<_> = items
             .iter()
             .enumerate()
             .map(|(index, item)| {
-                item["id"]
-                    .as_str()
-                    .map_or_else(|| format!("message-{index}"), str::to_owned)
+                previous
+                    .and_then(|old| old.item_data.get(index))
+                    .filter(|old| std::ptr::eq(old.source.as_ref(), item.as_ref()))
+                    .cloned()
+                    .unwrap_or_else(|| Rc::new(PreparedItem::new(item.clone())))
             })
             .collect();
+        let mut id_index = rustc_hash::FxHashMap::default();
+        for (index, item) in items.iter().enumerate() {
+            if let Some(id) = item["id"].as_str() {
+                id_index.entry(id.to_owned()).or_insert(index);
+            }
+        }
+        let mut commentary = vec![false; items.len()];
+        let mut following_activity = false;
+        for index in (0..items.len()).rev() {
+            let item = &items[index];
+            if item["type"] == "userMessage" {
+                following_activity = false;
+            }
+            if item["type"] == "agentMessage" {
+                commentary[index] = match item["phase"].as_str() {
+                    Some("commentary") => true,
+                    Some("final_answer") => false,
+                    _ => following_activity,
+                };
+                following_activity = true;
+            } else if item_data[index].tool {
+                following_activity = true;
+            }
+        }
+        let mut activity_prefix = Vec::with_capacity(items.len() + 1);
+        activity_prefix.push(0);
+        for (index, item) in items.iter().enumerate() {
+            activity_prefix.push(
+                activity_prefix[index]
+                    + usize::from(
+                        (item_data[index].tool && !tasks::is_checklist(item)) || commentary[index],
+                    ),
+            );
+        }
+        let task_key = task_cache_key(items);
         let has_timestamp = items.iter().any(|item| item["groveReceivedAt"].is_u64());
-        let response_groups = response_groups(items, state.saved.thread_id.as_deref());
+        let unchanged = previous.map_or(0, |old| {
+            old.item_data
+                .iter()
+                .zip(&item_data)
+                .take_while(|(a, b)| Rc::ptr_eq(a, b))
+                .count()
+        });
+        // Rebuild the entire containing turn, including phase/final-answer selection.
+        let restart = items[..unchanged.min(items.len())]
+            .iter()
+            .rposition(|item| item["type"] == "userMessage")
+            .unwrap_or(0);
+        let mut groups = previous.map_or_else(Vec::new, |old| {
+            old.response_groups
+                .iter()
+                .filter(|group| group.end <= restart)
+                .cloned()
+                .collect()
+        });
+        let mut tail_groups = response_groups(&items[restart..], state.saved.thread_id.as_deref());
+        for group in &mut tail_groups {
+            // Missing-id fallbacks must use absolute indices, not slice offsets.
+            if restart > 0 {
+                if let Some(first) = group.prose.first().copied() {
+                    let first_agent = (0..=first)
+                        .find(|index| items[restart + index]["type"] == "agentMessage")
+                        .unwrap_or(first);
+                    let id = items[restart + first_agent]["id"]
+                        .as_str()
+                        .map_or_else(|| (restart + first_agent).to_string(), str::to_owned);
+                    group.key = format!(
+                        "{}:response:{id}",
+                        state.saved.thread_id.as_deref().unwrap_or_default()
+                    );
+                    group.source_keys = group
+                        .prose
+                        .iter()
+                        .map(|index| {
+                            let id = items[restart + index]["id"]
+                                .as_str()
+                                .map_or_else(|| (restart + index).to_string(), str::to_owned);
+                            format!("{}:source:{id}", group.key)
+                        })
+                        .collect();
+                }
+            }
+            group.end += restart;
+            for index in &mut group.prose {
+                *index += restart;
+            }
+            group.copy_sources = group
+                .prose
+                .iter()
+                .map(|index| item_data[*index].text.clone())
+                .collect();
+        }
+        groups.extend(tail_groups.into_iter().map(Rc::new));
+        let response_groups = groups;
         let mut response_ends = vec![None; items.len() + 1];
         let mut response_prose = vec![None; items.len()];
         for (group_index, group) in response_groups.iter().enumerate() {
@@ -549,7 +790,18 @@ impl TranscriptRenderCache {
                 response_prose[*index] = Some(group_index);
             }
         }
-        let minimap_entries = message_minimap_entries(items);
+        let mut minimap_entries = previous.map_or_else(Vec::new, |old| {
+            old.minimap_entries
+                .iter()
+                .filter(|entry| entry.item_index < restart)
+                .cloned()
+                .collect()
+        });
+        let mut tail_entries = message_minimap_entries(&items[restart..]);
+        for entry in &mut tail_entries {
+            entry.item_index += restart;
+        }
+        minimap_entries.extend(tail_entries);
         let mut nearest_user = Vec::with_capacity(items.len() + 1);
         let mut latest_user = 0;
         for (index, item) in items.iter().enumerate() {
@@ -559,6 +811,12 @@ impl TranscriptRenderCache {
             nearest_user.push(latest_user);
         }
         nearest_user.push(latest_user);
+        let mut work_keys = rustc_hash::FxHashMap::default();
+        for &user in &nearest_user {
+            work_keys
+                .entry(user)
+                .or_insert_with(|| format!("work-{user}"));
+        }
         let mut next_nonuser = vec![items.len(); items.len() + 1];
         for index in (0..items.len()).rev() {
             next_nonuser[index] = if items[index]["type"] == "userMessage" {
@@ -569,14 +827,18 @@ impl TranscriptRenderCache {
         }
         PreparedTranscript {
             content,
+            id_index,
+            item_data,
+            commentary,
+            activity_prefix,
             task_key,
-            stream_keys,
             has_timestamp,
             response_groups,
             response_ends,
             response_prose,
             minimap_entries,
             nearest_user,
+            work_keys,
             next_nonuser,
         }
     }
@@ -635,9 +897,10 @@ const TASK_SPINNER_PERIOD: std::time::Duration =
 /// Clock ticks per spinner frame, the inverse of `animation_clock::spinner_frame`.
 const SPINNER_TICKS_PER_FRAME: u64 = 3;
 
+/// Separately cached scene: unrelated transcript frames do not rebuild every marker.
 /// A user input and the final (or latest streaming) assistant message before
 /// the next input. Source indices stay distinct from rendered child indices.
-#[derive(Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 struct MessageMinimapEntry {
     item_index: usize,
     prompt: String,
@@ -688,12 +951,21 @@ fn message_minimap_entries<T: std::borrow::Borrow<serde_json::Value>>(
                 prompt: if prompt.trim().is_empty() {
                     "Image attachment".into()
                 } else {
-                    prompt
+                    minimap_source_excerpt(&prompt)
                 },
-                response,
+                response: minimap_source_excerpt(&response),
             }
         })
         .collect()
+}
+
+fn minimap_source_excerpt(text: &str) -> String {
+    let mut characters = text.chars();
+    let mut preview = characters.by_ref().take(240).collect::<String>();
+    if characters.next().is_some() {
+        preview.push('…');
+    }
+    preview
 }
 
 fn minimap_excerpt(text: &str) -> String {
@@ -739,8 +1011,9 @@ fn action_key(event: &gpui::KeyDownEvent) -> bool {
 pub(super) fn copy_control(
     id: &'static str,
     label: &'static str,
-    text: String,
+    text: impl Into<gpui::SharedString>,
 ) -> gpui::Stateful<gpui::Div> {
+    let text = text.into();
     let keyboard = text.clone();
     header_control_with_label_tooltip(id, label)
         .debug_selector(move || id.into())
@@ -749,12 +1022,12 @@ pub(super) fn copy_control(
         .child(crate::icons::icon("copy", ICON_MD, c::FG_DIM()))
         .on_key_down(move |event, _, cx| {
             if action_key(event) {
-                cx.write_to_clipboard(gpui::ClipboardItem::new_string(keyboard.clone()));
+                cx.write_to_clipboard(gpui::ClipboardItem::new_string(keyboard.to_string()));
                 cx.stop_propagation();
             }
         })
         .on_click(move |_, _, cx| {
-            cx.write_to_clipboard(gpui::ClipboardItem::new_string(text.clone()));
+            cx.write_to_clipboard(gpui::ClipboardItem::new_string(text.to_string()));
         })
 }
 
@@ -1342,9 +1615,15 @@ pub struct CodexView {
     reference_disclosure_focus: FocusHandle,
     reference_remove_focus: FocusHandle,
     selection_views: HashMap<String, Entity<TextViewState>>,
-    message_slots: HashMap<String, Rc<std::cell::RefCell<measured_slot::Measurement>>>,
-    tool_slots: HashMap<String, Rc<std::cell::RefCell<measured_tool::Measurement>>>,
-    work_header_slots: HashMap<String, Rc<std::cell::RefCell<measured_slot::HeaderMeasurement>>>,
+    selection_subscriptions: HashMap<String, Subscription>,
+    focus_subscriptions: HashMap<String, (Subscription, Subscription)>,
+    focus_revision: Option<u64>,
+    focus_sources: HashMap<String, codex::TranscriptItem>,
+    message_slots:
+        rustc_hash::FxHashMap<String, Rc<std::cell::RefCell<measured_slot::Measurement>>>,
+    tool_slots: rustc_hash::FxHashMap<String, Rc<std::cell::RefCell<measured_tool::Measurement>>>,
+    work_header_slots:
+        rustc_hash::FxHashMap<String, Rc<std::cell::RefCell<measured_slot::HeaderMeasurement>>>,
     selection_dismissed: Option<TextSelectionSnapshot>,
     selection_root_observed: bool,
     selection_reply_focus: FocusHandle,
@@ -1412,6 +1691,8 @@ pub struct CodexView {
     conversation_focus: FocusHandle,
     images: Vec<String>,
     previews: HashMap<String, Arc<gpui::Image>>,
+    transcript_previews:
+        rustc_hash::FxHashMap<(usize, usize), (codex::TranscriptItem, Arc<gpui::Image>)>,
     pending_image_pastes: usize,
     pending_attachment_picker: bool,
     scroll: gpui::ScrollHandle,
@@ -1424,10 +1705,11 @@ pub struct CodexView {
     motion_frame_pending: Rc<Cell<bool>>,
     stream_text: HashMap<String, (String, usize)>,
     message_hover: HashSet<String>,
-    message_focus: HashMap<String, FocusHandle>,
+    message_focus: rustc_hash::FxHashMap<String, FocusHandle>,
     copied_message: Option<(String, u64)>,
     copied_code_blocks: HashMap<String, u64>,
     snippets: HashMap<String, snippets::Snippet>,
+    preview_snapshot: Option<(Rc<codex::Snapshot>, String, Rc<codex::Snapshot>)>,
     copy_generation: u64,
     timestamp_tick_pending: Rc<Cell<bool>>,
     stream_thread: Option<String>,
@@ -1445,6 +1727,7 @@ pub struct CodexView {
     status_card_keys: HashSet<String>,
     task_cache: Option<Rc<TaskCache>>,
     transcript_cache: Option<Rc<TranscriptRenderCache>>,
+    snippet_sources: std::cell::RefCell<snippets::SnippetSources>,
     turn_history: TurnHistory,
     history_earlier_focus: FocusHandle,
     history_latest_focus: FocusHandle,
@@ -1978,9 +2261,13 @@ impl CodexView {
             reference_disclosure_focus: cx.focus_handle(),
             reference_remove_focus: cx.focus_handle(),
             selection_views: HashMap::new(),
-            message_slots: HashMap::new(),
-            tool_slots: HashMap::new(),
-            work_header_slots: HashMap::new(),
+            selection_subscriptions: HashMap::new(),
+            focus_subscriptions: HashMap::new(),
+            focus_revision: None,
+            focus_sources: HashMap::new(),
+            message_slots: rustc_hash::FxHashMap::default(),
+            tool_slots: rustc_hash::FxHashMap::default(),
+            work_header_slots: rustc_hash::FxHashMap::default(),
             selection_dismissed: None,
             selection_root_observed: false,
             selection_reply_focus: cx.focus_handle(),
@@ -2047,6 +2334,7 @@ impl CodexView {
             conversation_focus,
             images,
             previews,
+            transcript_previews: rustc_hash::FxHashMap::default(),
             pending_image_pastes: 0,
             pending_attachment_picker: false,
             scroll,
@@ -2059,10 +2347,11 @@ impl CodexView {
             motion_frame_pending: Rc::default(),
             stream_text: HashMap::new(),
             message_hover: HashSet::new(),
-            message_focus: HashMap::new(),
+            message_focus: rustc_hash::FxHashMap::default(),
             copied_message: None,
             copied_code_blocks: HashMap::new(),
             snippets: HashMap::new(),
+            preview_snapshot: None,
             copy_generation: 0,
             timestamp_tick_pending: Rc::new(Cell::new(false)),
             stream_thread,
@@ -2080,6 +2369,7 @@ impl CodexView {
             status_card_keys: HashSet::new(),
             task_cache: None,
             transcript_cache: None,
+            snippet_sources: std::cell::RefCell::default(),
             turn_history: TurnHistory::default(),
             history_earlier_focus: cx.focus_handle().tab_stop(true).tab_index(0),
             history_latest_focus: cx.focus_handle().tab_stop(true).tab_index(0),
@@ -3110,9 +3400,23 @@ impl CodexView {
             return None;
         }
         let work_period = state.review_completion()?;
-        let summary = super::review_summary::ReviewSummary::from_snapshot(state)
-            .map(|summary| review_overview(&summary.text))
-            .filter(|summary| !summary.is_empty());
+        let summary = self.transcript_cache.as_ref().map_or_else(
+            || {
+                super::review_summary::ReviewSummary::from_snapshot(state)
+                    .map(|summary| review_overview(&summary.text))
+                    .filter(|summary| !summary.is_empty())
+            },
+            |cache| {
+                cache
+                    .review_overview
+                    .get_or_init(|| {
+                        super::review_summary::ReviewSummary::from_snapshot(state)
+                            .map(|summary| review_overview(&summary.text))
+                            .filter(|summary| !summary.is_empty())
+                    })
+                    .clone()
+            },
+        );
         let expanded = summary.is_some() && !self.expanded.contains("session-review-disclosure");
         Some(
             composer_tray(window)
@@ -3932,6 +4236,15 @@ impl CodexView {
             .into_any_element()
     }
 
+    fn prepared_item(&self, state: &codex::Snapshot, index: usize) -> Rc<PreparedItem> {
+        self.transcript_cache
+            .as_ref()
+            .and_then(|cache| cache.item_data.get(index))
+            .filter(|data| std::ptr::eq(data.source.as_ref(), state.saved.items[index].as_ref()))
+            .cloned()
+            .unwrap_or_else(|| Rc::new(PreparedItem::new(state.saved.items[index].clone())))
+    }
+
     fn render_tool_row(
         &mut self,
         detail_index: usize,
@@ -3951,14 +4264,31 @@ impl CodexView {
         let keyboard_key = tool_key.clone();
         let failed = tool_failed(tool);
         let activity = tool_activity_summary(tool, tool_is_running(state, detail_index));
-        let mut label_run = window.text_style().to_run(activity.len());
-        label_run.font.family = crate::fonts::UI_FAMILY.into();
-        let label_width = truncation_safe_label_width(
-            &activity,
-            rpx(TEXT_SMALL).to_pixels(window.rem_size()),
-            &label_run,
-            window.text_system(),
-        );
+        let data = self.prepared_item(state, detail_index);
+        let style = window.text_style();
+        let font_size = rpx(TEXT_SMALL).to_pixels(window.rem_size());
+        let label_width = {
+            let mut cache = data.label_width.borrow_mut();
+            if cache
+                .as_ref()
+                .is_none_or(|(label, old_style, old_size, _)| {
+                    label != &activity || *old_style != style || *old_size != font_size
+                })
+            {
+                let mut label_run = style.to_run(activity.len());
+                label_run.font.family = crate::fonts::UI_FAMILY.into();
+                let width = truncation_safe_label_width(
+                    &activity,
+                    font_size,
+                    &label_run,
+                    window.text_system(),
+                );
+                *cache = Some((activity.clone(), style, font_size, width));
+            }
+            cache
+                .as_ref()
+                .map_or(gpui::px(0.), |(_, _, _, width)| *width)
+        };
         let mut detail_row = div()
             .id(("codex-tool-detail-row", detail_index))
             .w_full()
@@ -4057,7 +4387,8 @@ impl CodexView {
                 .on_click(cx.listener(move |this, _, _, cx| this.toggle_expansion(&tool_key, cx))),
             );
         if tool_expanded {
-            let copy = tool_detail(tool);
+            let copy = data.detail().to_string();
+            let markdown = data.detail_markdown();
             detail_row = detail_row.child(
                 div()
                     .id(("codex-tool-detail", detail_index))
@@ -4072,15 +4403,9 @@ impl CodexView {
                     .gap(rpx(SPACE_SM))
                     .child(copy_control("codex-copy-tool", "Copy tool call", copy))
                     .child(
-                        TextView::markdown(
-                            ("codex-group-tool-text", detail_index),
-                            format!(
-                                "```text\n{}\n```",
-                                tool_detail(tool).replace("```", "` ` `")
-                            ),
-                        )
-                        .style(markdown_style(window))
-                        .selectable(true),
+                        TextView::markdown(("codex-group-tool-text", detail_index), markdown)
+                            .style(markdown_style(window))
+                            .selectable(true),
                     ),
             );
         }
@@ -4111,19 +4436,19 @@ impl CodexView {
         let plan_details = kind == "plan"
             && state.saved.provider == codex::Provider::Claude
             && item["tool"].is_string();
-        let text = if self.review_scope.is_some() {
+        let data = &frame.prepared.item_data[index];
+        let text: gpui::SharedString = if self.review_scope.is_some() {
             grove_core::conversation_result::display_text(
                 "review",
                 "grove-review",
                 kind,
-                &transcript_item_text(item),
+                &data.text,
             )
+            .into()
+        } else if self.description_scope.is_some() {
+            description_conversation_text(self.description_scope.as_ref(), kind, &data.text).into()
         } else {
-            description_conversation_text(
-                self.description_scope.as_ref(),
-                kind,
-                &transcript_item_text(item),
-            )
+            data.text.clone()
         };
         let approval = (kind == "userMessage")
             .then(|| state.saved.rich_plans.approval_for_payload(&text))
@@ -4154,7 +4479,7 @@ impl CodexView {
                     .rounded(rpx(RADIUS_PANEL))
                     .bg(c::BG_RAIL())
             });
-        let text = if tool { tool_detail(item) } else { text };
+        let text = if tool { data.detail() } else { text };
         let text = if kind == "userMessage" {
             frame
                 .review_display
@@ -4162,21 +4487,21 @@ impl CodexView {
                 .entry(index)
                 .or_insert_with(|| state.saved.rich_plans.response_display_text(&text))
                 .clone()
-                .unwrap_or(text)
+                .map_or(text.clone(), gpui::SharedString::from)
         } else {
             text
         };
         let copy = if kind == "userMessage" {
-            reference_prompt_copy(&text)
+            gpui::SharedString::from(reference_prompt_copy(&text))
         } else {
             text.clone()
         };
         let text = if kind == "userMessage" {
-            reference_prompt_markdown(&text)
+            gpui::SharedString::from(reference_prompt_markdown(&text))
         } else {
             text
         };
-        let text = if kind == "agentMessage" && !cx.reduce_motion() {
+        let text = if kind == "agentMessage" && state.status.busy() && !cx.reduce_motion() {
             let key = item["id"]
                 .as_str()
                 .map_or_else(|| format!("message-{index}"), str::to_owned);
@@ -4189,7 +4514,7 @@ impl CodexView {
                 } else {
                     text.len()
                 };
-                (text.clone(), shown)
+                (text.to_string(), shown)
             });
             let revealed =
                 super::motion::streamed_text(&text, entry, elapsed, state.status.busy()).to_owned();
@@ -4204,13 +4529,20 @@ impl CodexView {
                     });
                 }
             }
-            revealed
+            gpui::SharedString::from(revealed)
         } else {
             if kind == "agentMessage" {
                 let key = item["id"]
                     .as_str()
                     .map_or_else(|| format!("message-{index}"), str::to_owned);
-                self.stream_text.insert(key, (text.clone(), text.len()));
+                let entry = self
+                    .stream_text
+                    .entry(key)
+                    .or_insert_with(|| (text.to_string(), text.len()));
+                if entry.0 != text.as_ref() {
+                    entry.0 = text.to_string();
+                }
+                entry.1 = text.len();
             }
             text
         };
@@ -4419,8 +4751,10 @@ impl CodexView {
                                 owner.clone()
                             } else {
                                 let owner = cx.new(|cx| TextViewState::markdown(&text, cx));
-                                self.subscriptions
-                                    .push(cx.observe(&owner, |_, _, cx| cx.notify()));
+                                self.selection_subscriptions.insert(
+                                    owner_key.clone(),
+                                    cx.observe(&owner, |_, _, cx| cx.notify()),
+                                );
                                 self.selection_views
                                     .insert(owner_key.clone(), owner.clone());
                                 owner
@@ -4432,106 +4766,107 @@ impl CodexView {
                                 .selectable(true);
                             if kind == "agentMessage" {
                                 let owner = cx.entity().downgrade();
+                                let source_digest = data.snippet_source_digest(&text);
                                 let source = text.clone();
+                                let footer_source = text.clone();
                                 let footer_owner = owner.clone();
                                 let footer_key = owner_key.clone();
-                                let footer_source = text.clone();
                                 let footer_cwd = state.saved.cwd.clone();
                                 let cwd = state.saved.cwd.clone();
                                 let finalized = (item["groveCompleted"] == true
                                     || item["status"] == "completed")
                                     && item["status"] != "inProgress"
                                     && !self.transcript_only();
-                                view.code_block_actions(move |block, window, cx| {
-                                    let code = block.code().to_string();
-                                    let key = snippets::key(
-                                        &owner_key,
-                                        block.span.as_ref().map_or(0, |span| span.start),
-                                        &code,
-                                        &source,
-                                    );
-                                    let focus = owner
-                                        .update(cx, |this, cx| {
-                                            this.message_focus
-                                                .entry(key.clone())
-                                                .or_insert_with(|| cx.focus_handle())
-                                                .clone()
+                                view.code_block_layout_projection(true)
+                                    .code_block_actions(move |block, window, cx| {
+                                        let code = block.code().to_string();
+                                        let key = snippets::key_with_digest(
+                                            &owner_key,
+                                            block.span.as_ref().map_or(0, |span| span.start),
+                                            &code,
+                                            source_digest,
+                                        );
+                                        let focus = owner
+                                            .update(cx, |this, cx| {
+                                                this.message_focus
+                                                    .entry(key.clone())
+                                                    .or_insert_with(|| cx.focus_handle())
+                                                    .clone()
+                                            })
+                                            .ok();
+                                        let copied = owner.upgrade().is_some_and(|owner| {
+                                            owner.read(cx).copied_code_blocks.contains_key(&key)
+                                        });
+                                        let label = if copied { "Copied" } else { "Copy code" };
+                                        let keyboard_owner = owner.clone();
+                                        let keyboard_key = key.clone();
+                                        let keyboard_code = code.clone();
+                                        let click_owner = owner.clone();
+                                        let click_code = code.clone();
+                                        let copy_key = key.clone();
+                                        let copy = header_control_with_label_tooltip(
+                                            "codex-copy-code",
+                                            label,
+                                        )
+                                        .when_some(focus, |this, focus| this.track_focus(&focus))
+                                        .debug_selector(move || {
+                                            if copied {
+                                                "codex-code-copied".into()
+                                            } else {
+                                                "codex-copy-code".into()
+                                            }
                                         })
-                                        .ok();
-                                    let copied = owner.upgrade().is_some_and(|owner| {
-                                        owner.read(cx).copied_code_blocks.contains_key(&key)
-                                    });
-                                    let label = if copied { "Copied" } else { "Copy code" };
-                                    let keyboard_owner = owner.clone();
-                                    let keyboard_key = key.clone();
-                                    let keyboard_code = code.clone();
-                                    let click_owner = owner.clone();
-                                    let click_code = code.clone();
-                                    let copy_key = key.clone();
-                                    let copy =
-                                        header_control_with_label_tooltip("codex-copy-code", label)
-                                            .when_some(focus, |this, focus| {
-                                                this.track_focus(&focus)
-                                            })
-                                            .debug_selector(move || {
-                                                if copied {
-                                                    "codex-code-copied".into()
-                                                } else {
-                                                    "codex-copy-code".into()
-                                                }
-                                            })
-                                            .tab_index(0)
-                                            .focus_visible(|style| style.bg(c::BG_HOVER()))
-                                            .child(crate::icons::icon(
-                                                if copied { "check" } else { "copy" },
-                                                ICON_MD,
-                                                c::FG_DIM(),
-                                            ))
-                                            .on_key_down(move |event, _, cx| {
-                                                if action_key(event) {
-                                                    let _ =
-                                                        keyboard_owner.update(cx, |this, cx| {
-                                                            this.copy_code_block(
-                                                                keyboard_key.clone(),
-                                                                keyboard_code.clone(),
-                                                                cx,
-                                                            );
-                                                        });
-                                                    cx.stop_propagation();
-                                                }
-                                            })
-                                            .on_click(move |_, _, cx| {
-                                                let _ = click_owner.update(cx, |this, cx| {
+                                        .tab_index(0)
+                                        .focus_visible(|style| style.bg(c::BG_HOVER()))
+                                        .child(crate::icons::icon(
+                                            if copied { "check" } else { "copy" },
+                                            ICON_MD,
+                                            c::FG_DIM(),
+                                        ))
+                                        .on_key_down(move |event, _, cx| {
+                                            if action_key(event) {
+                                                let _ = keyboard_owner.update(cx, |this, cx| {
                                                     this.copy_code_block(
-                                                        copy_key.clone(),
-                                                        click_code.clone(),
+                                                        keyboard_key.clone(),
+                                                        keyboard_code.clone(),
                                                         cx,
                                                     );
                                                 });
+                                                cx.stop_propagation();
+                                            }
+                                        })
+                                        .on_click(move |_, _, cx| {
+                                            let _ = click_owner.update(cx, |this, cx| {
+                                                this.copy_code_block(
+                                                    copy_key.clone(),
+                                                    click_code.clone(),
+                                                    cx,
+                                                );
                                             });
-                                    let mut actions = div().flex().gap(rpx(SPACE_SM)).child(copy);
-                                    let language =
-                                        block.lang().map(|s| s.to_string()).unwrap_or_default();
-                                    let closed = block
-                                        .span
-                                        .as_ref()
-                                        .and_then(|span| source.get(span.start..span.end))
-                                        .is_some_and(closed_shell_fence);
-                                    if finalized
-                                        && closed
-                                        && !code.trim().is_empty()
-                                        && snippet_shell_supported(&language)
-                                    {
-                                        if let Ok(run_actions) = owner.update(cx, |this, cx| {
-                                            this.snippet_actions(&key, &code, &cwd, window, cx)
-                                        }) {
-                                            actions = actions.child(run_actions);
+                                        });
+                                        let mut actions =
+                                            div().flex().gap(rpx(SPACE_SM)).child(copy);
+                                        let language =
+                                            block.lang().map(|s| s.to_string()).unwrap_or_default();
+                                        let closed = block
+                                            .span
+                                            .as_ref()
+                                            .and_then(|span| source.get(span.start..span.end))
+                                            .is_some_and(closed_shell_fence);
+                                        if finalized
+                                            && closed
+                                            && !code.trim().is_empty()
+                                            && snippet_shell_supported(&language)
+                                        {
+                                            if let Ok(run_actions) = owner.update(cx, |this, cx| {
+                                                this.snippet_actions(&key, &code, &cwd, window, cx)
+                                            }) {
+                                                actions = actions.child(run_actions);
+                                            }
                                         }
-                                    }
-                                    actions
-                                })
-                                .code_block_footer(
-                                    move |block, window, cx| {
+                                        actions
+                                    })
+                                    .code_block_footer(move |block, window, cx| {
                                         let code = block.code().to_string();
                                         let language =
                                             block.lang().map(|s| s.to_string()).unwrap_or_default();
@@ -4547,11 +4882,11 @@ impl CodexView {
                                             && !code.trim().is_empty()
                                             && snippet_shell_supported(&language)
                                         {
-                                            let key = snippets::key(
+                                            let key = snippets::key_with_digest(
                                                 &footer_key,
                                                 block.span.as_ref().map_or(0, |span| span.start),
                                                 &code,
-                                                &footer_source,
+                                                source_digest,
                                             );
                                             footer_owner
                                                 .update(cx, |this, cx| {
@@ -4567,8 +4902,7 @@ impl CodexView {
                                         } else {
                                             div().into_any_element()
                                         }
-                                    },
-                                )
+                                    })
                             } else {
                                 view
                             }
@@ -4727,11 +5061,21 @@ impl CodexView {
                             .flex_wrap()
                             .gap(rpx(SPACE_LG));
                         for (image_index, image) in images.into_iter().enumerate() {
-                            if let Some(image) = self.previews.get(image).cloned().or_else(|| {
-                                let preview = image_from_url(image)?;
-                                self.previews.insert(image.to_owned(), preview.clone());
-                                Some(preview)
-                            }) {
+                            let key = (index, image_index);
+                            if let Some(image) = self
+                                .transcript_previews
+                                .get(&key)
+                                .filter(|(source, _)| std::ptr::eq(source.as_ref(), item))
+                                .map(|(_, preview)| preview.clone())
+                                .or_else(|| {
+                                    let preview = image_from_url(image)?;
+                                    self.transcript_previews.insert(
+                                        key,
+                                        (state.saved.items[index].clone(), preview.clone()),
+                                    );
+                                    Some(preview)
+                                })
+                            {
                                 thumbnails = thumbnails.child(
                                     attachment_preview(image)
                                         .id(format!("codex-message-image-{index}-{image_index}"))
@@ -4805,10 +5149,13 @@ impl CodexView {
                 let source_key = format!("{}:source:{id}", group.key);
                 if !self.message_focus.contains_key(&source_key) {
                     let focus = cx.focus_handle();
-                    self.subscriptions
-                        .push(cx.on_focus_in(&focus, window, |_, _, cx| cx.notify()));
-                    self.subscriptions
-                        .push(cx.on_focus_out(&focus, window, |_, _, _, cx| cx.notify()));
+                    self.focus_subscriptions.insert(
+                        source_key.clone(),
+                        (
+                            cx.on_focus_in(&focus, window, |_, _, cx| cx.notify()),
+                            cx.on_focus_out(&focus, window, |_, _, _, cx| cx.notify()),
+                        ),
+                    );
                     self.message_focus.insert(source_key.clone(), focus);
                 }
                 let focus = self.message_focus[&source_key].clone();
@@ -4839,10 +5186,13 @@ impl CodexView {
             );
             if !self.message_focus.contains_key(&key) {
                 let focus = cx.focus_handle();
-                self.subscriptions
-                    .push(cx.on_focus_in(&focus, window, |_, _, cx| cx.notify()));
-                self.subscriptions
-                    .push(cx.on_focus_out(&focus, window, |_, _, _, cx| cx.notify()));
+                self.focus_subscriptions.insert(
+                    key.clone(),
+                    (
+                        cx.on_focus_in(&focus, window, |_, _, cx| cx.notify()),
+                        cx.on_focus_out(&focus, window, |_, _, _, cx| cx.notify()),
+                    ),
+                );
                 self.message_focus.insert(key.clone(), focus);
             }
             let focus = self.message_focus[&key].clone();
@@ -4944,12 +5294,12 @@ impl CodexView {
             })
             .on_key_down(cx.listener(move |this, event: &gpui::KeyDownEvent, _, cx| {
                 if action_key(event) {
-                    this.copy_message(keyboard_key.clone(), keyboard_text.clone(), cx);
+                    this.copy_message(keyboard_key.clone(), keyboard_text.to_string(), cx);
                     cx.stop_propagation();
                 }
             }))
             .on_click(cx.listener(move |this, _, _, cx| {
-                this.copy_message(key.clone(), copy.clone(), cx);
+                this.copy_message(key.clone(), copy.to_string(), cx);
             }));
             if copied {
                 copy_button = copy_button.child(
@@ -5000,15 +5350,15 @@ impl CodexView {
     }
 
     fn render_message_minimap(
-        &self,
-        entries: &[MessageMinimapEntry],
+        &mut self,
+        prepared: Rc<PreparedTranscript>,
         anchors: &[(usize, usize)],
         window: &Window,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         #[cfg(test)]
         let _phase = measured_slot::phases::Section::minimap();
-        if entries.is_empty() {
+        if prepared.minimap_entries.is_empty() {
             return div().into_any_element();
         }
         let near_bottom = self.scroll.max_offset().y + self.scroll.offset().y
@@ -5027,6 +5377,17 @@ impl CodexView {
             - rpx(SPACE_3XL).to_pixels(window.rem_size()))
         .max(rpx(CHROME_CONTROL_H).to_pixels(window.rem_size()))
         .min(rpx(MINIMAP_PREVIEW_W - SPACE_3XL).to_pixels(window.rem_size()));
+        self.build_message_minimap(&prepared.minimap_entries, active, preview_width, window, cx)
+    }
+
+    fn build_message_minimap(
+        &self,
+        entries: &[MessageMinimapEntry],
+        active: Option<usize>,
+        preview_width: gpui::Pixels,
+        _window: &Window,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
         let rail = div()
             .id("codex-message-minimap")
             .debug_selector(|| "codex-message-minimap".into())
@@ -5686,7 +6047,19 @@ impl Render for CodexView {
         }
         self.restore_image_tokens(window, cx);
         let state = if let Some(child) = &self.preview_child {
-            Rc::new(self.session.read(cx).state.subagent_snapshot(child))
+            let source = self.session.read(cx).state.shared();
+            if self
+                .preview_snapshot
+                .as_ref()
+                .is_none_or(|(old, id, _)| !Rc::ptr_eq(old, &source) || id != child)
+            {
+                let projected = Rc::new(source.subagent_snapshot(child));
+                self.preview_snapshot = Some((source.clone(), child.clone(), projected));
+            }
+            self.preview_snapshot.as_ref().map_or_else(
+                || Rc::new(source.subagent_snapshot(child)),
+                |(_, _, projected)| projected.clone(),
+            )
         } else {
             self.session.read(cx).state.shared()
         };
@@ -5766,6 +6139,11 @@ impl Render for CodexView {
             self.reference = None;
             self.submitted_reference = None;
             self.selection_views.clear();
+            self.selection_subscriptions.clear();
+            self.message_focus.clear();
+            self.focus_subscriptions.clear();
+            self.focus_sources.clear();
+            self.focus_revision = None;
             self.selection_dismissed = None;
             self.submitted = None;
             self.submitted_ack = None;
@@ -5864,10 +6242,19 @@ impl Render for CodexView {
                     optimistic_items,
                     self.transcript_cache.as_deref(),
                 ));
+                self.transcript_previews.retain(|(index, _), (source, _)| {
+                    cache
+                        .state
+                        .saved
+                        .items
+                        .get(*index)
+                        .is_some_and(|item| std::ptr::eq(source.as_ref(), item.as_ref()))
+                });
                 self.transcript_cache = Some(cache.clone());
                 cache
             }
         };
+        self.prune_transcript_controls(&transcript);
         let state = transcript.state.clone();
         if transcript.has_timestamp && !self.timestamp_tick_pending.replace(true) {
             let pending = self.timestamp_tick_pending.clone();
@@ -5939,8 +6326,14 @@ impl Render for CodexView {
             }
         }
         let initial_transcript = self.last_content.is_none() || changed_thread;
-        self.stream_text
-            .retain(|key, _| transcript.stream_keys.contains(key));
+        self.stream_text.retain(|key, _| {
+            transcript.id_index.contains_key(key)
+                || key
+                    .strip_prefix("message-")
+                    .and_then(|index| index.parse::<usize>().ok())
+                    .and_then(|index| state.saved.items.get(index))
+                    .is_some_and(|item| !item["id"].is_string())
+        });
         if self.follow_after_submit {
             self.last_follow_offset = None;
         }
@@ -6042,9 +6435,7 @@ impl Render for CodexView {
                 )
                 .into_any_element();
         }
-        let history_start = if self.transcript_only() {
-            0
-        } else {
+        let history_start = {
             let following = near_bottom
                 && !self.composer_collapsed
                 && self.edit_confirmation.is_none()
@@ -6104,7 +6495,7 @@ impl Render for CodexView {
             .px(rpx(content_inset))
             .py(rpx(SPACE_3XL))
             .gap(rpx(SPACE_20));
-        if !self.transcript_only() && (history_start > 0 || self.turn_history.expanded) {
+        if history_start > 0 || self.turn_history.expanded {
             let hidden = history::history_boundaries(&state.saved.items, minimap_entries)
                 .partition_point(|index| *index < history_start);
             messages = messages.child(self.render_history_disclosure(hidden, cx));
@@ -6131,8 +6522,7 @@ impl Render for CodexView {
             // may be hidden commentary, a checklist, or a collapsed tool.
             if let Some(group_index) = response_ends[index].filter(|_| index > history_start) {
                 let group = &response_groups[group_index];
-                let footer = if self.transcript_only()
-                    || window.is_a11y_active()
+                let footer = if window.is_a11y_active()
                     || measured_slot::force_eager()
                     || measured_slot::force_footer_eager()
                 {
@@ -6187,7 +6577,6 @@ impl Render for CodexView {
                 self.message_focus.insert(focus_key.clone(), focus.clone());
                 let header = if !active
                     && !expanded
-                    && !self.transcript_only()
                     && !window.is_a11y_active()
                     && !measured_slot::force_eager()
                     && !measured_slot::force_header_eager()
@@ -6207,7 +6596,7 @@ impl Render for CodexView {
                     self.render_work_header(index, &key, &label, expanded, &focus, cx)
                 };
                 messages = messages.child(header);
-                if expanded && !work_has_parent_activity(&state, index) {
+                if expanded && !transcript.work.parent_activity[index] {
                     message_child += 1;
                     messages = messages.child(
                         div()
@@ -6245,10 +6634,10 @@ impl Render for CodexView {
                 continue;
             }
             // Keep completed commentary with the work it describes; the answer stays inline.
-            if work_commentary(&state, index)
+            if transcript.commentary[index]
                 && !self
                     .expanded
-                    .contains(&WorkIndex::key(&transcript.prepared, index))
+                    .contains(WorkIndex::key(&transcript.prepared, index))
                 && !transcript.work.active[index]
             {
                 continue;
@@ -6278,12 +6667,13 @@ impl Render for CodexView {
                 continue;
             }
             let tool = is_tool_item(item);
-            let has_visual =
-                |index: usize| {
-                    state.saved.items.get(index).is_some_and(|item| {
-                        state.saved.visuals.iter().any(|r| item["id"] == r.item_id)
-                    })
-                };
+            let has_visual = |index: usize| {
+                state.saved.items.get(index).is_some_and(|item| {
+                    item["id"]
+                        .as_str()
+                        .is_some_and(|id| transcript.visual_items.contains(id))
+                })
+            };
             if tool && has_visual(index) {
                 let focus = self.ensure_control_focus(&format!("visual-tool-{index}"), window, cx);
                 let mut publication = div()
@@ -6323,7 +6713,9 @@ impl Render for CodexView {
                 let end = state.saved.items[index..]
                     .iter()
                     .position(|item| {
-                        state.saved.visuals.iter().any(|r| item["id"] == r.item_id)
+                        item["id"]
+                            .as_str()
+                            .is_some_and(|id| transcript.visual_items.contains(id))
                             || !is_tool_item(item)
                             || (item["type"] == "reasoning") != (kind == "reasoning")
                     })
@@ -6337,7 +6729,7 @@ impl Render for CodexView {
                     .filter(|(offset, _)| {
                         let item_index = index + offset;
                         self.expanded
-                            .contains(&WorkIndex::key(&transcript.prepared, item_index))
+                            .contains(WorkIndex::key(&transcript.prepared, item_index))
                             || (transcript.work.tool_visible(&state, item_index)
                                 && transcript.work.active[item_index])
                     })
@@ -6416,7 +6808,7 @@ impl Render for CodexView {
                             && (transcript.work.active[end]
                                 || self
                                     .expanded
-                                    .contains(&WorkIndex::key(&transcript.prepared, end))),
+                                    .contains(WorkIndex::key(&transcript.prepared, end))),
                         |group| group.mb(-rpx(SPACE_2XL)),
                     )
                     .w_full()
@@ -6483,7 +6875,6 @@ impl Render for CodexView {
                         let eager = self.expanded.contains(&tool_key)
                             || tool_is_running(&state, detail_index)
                             || shimmer
-                            || self.transcript_only()
                             || window.is_a11y_active()
                             || gpui_component::text::has_active_text_selection(window, cx)
                             || window.is_inspector_picking(cx)
@@ -6544,7 +6935,6 @@ impl Render for CodexView {
                 && !receipt
                 && !tail_stream
                 && !entrance
-                && !self.transcript_only()
                 && !window.is_a11y_active()
             {
                 rendered_slot_keys.insert(slot_key.clone());
@@ -6585,10 +6975,18 @@ impl Render for CodexView {
                 .unwrap_or(message_child.saturating_sub(1));
             self.jump_to_message(child, window, cx);
         }
+        self.prune_idle_snippets(&rendered_selection_keys);
         if self.transcript_only() {
-            self.message_slots.clear();
-            self.work_header_slots.clear();
-            self.tool_slots.clear();
+            self.message_slots
+                .retain(|key, _| rendered_slot_keys.contains(key));
+            self.work_header_slots
+                .retain(|key, _| rendered_header_keys.contains(key));
+            self.tool_slots
+                .retain(|key, _| rendered_tool_keys.contains(key));
+            self.selection_views
+                .retain(|key, _| rendered_selection_keys.contains(key));
+            self.selection_subscriptions
+                .retain(|key, _| self.selection_views.contains_key(key));
             // Stay pinned through layout growth until a wheel gesture starts browsing.
             // Returning to the bottom resumes following without affecting the composer.
             if self.preview_follow_latest {
@@ -6613,13 +7011,16 @@ impl Render for CodexView {
         // native selection controller cannot copy their last painted text.
         self.selection_views
             .retain(|key, _| rendered_selection_keys.contains(key));
+        self.selection_subscriptions
+            .retain(|key, _| self.selection_views.contains_key(key));
         self.message_slots
             .retain(|key, _| rendered_slot_keys.contains(key));
         self.tool_slots
             .retain(|key, _| rendered_tool_keys.contains(key));
         self.work_header_slots
             .retain(|key, _| rendered_header_keys.contains(key));
-        let minimap = self.render_message_minimap(minimap_entries, &minimap_anchors, window, cx);
+        let minimap =
+            self.render_message_minimap(transcript.prepared.clone(), &minimap_anchors, window, cx);
         let selection_overlay = self.render_selection_reply(&state, window, cx);
         let transcript_bounds = self.transcript_bounds.clone();
         let bounds_owner = cx.entity().downgrade();
@@ -7084,17 +7485,7 @@ impl Render for CodexView {
         } else {
             None
         };
-        self.previews.retain(|url, _| {
-            self.images.contains(url)
-                || state.saved.items.iter().any(|item| {
-                    item["content"].as_array().is_some_and(|content| {
-                        content.iter().any(|part| {
-                            part["url"].as_str() == Some(url)
-                                || part["image_url"].as_str() == Some(url)
-                        })
-                    })
-                })
-        });
+        self.previews.retain(|url, _| self.images.contains(url));
         let queued = self.queue_tray(
             lower_attached
                 || !state.saved.rewind_drafts.is_empty()
@@ -8216,6 +8607,109 @@ impl CodexView {
         .into_any_element()
     }
 
+    fn prune_transcript_controls(&mut self, transcript: &TranscriptRenderCache) {
+        let revision = transcript.state.saved.items.revision();
+        if self.focus_revision == Some(revision) {
+            return;
+        }
+        self.focus_revision = Some(revision);
+        let thread = transcript
+            .state
+            .saved
+            .thread_id
+            .as_deref()
+            .unwrap_or_default();
+        let prefix = format!("{thread}:");
+        let mut valid: HashSet<String> = transcript
+            .state
+            .saved
+            .items
+            .iter()
+            .enumerate()
+            .map(|(index, item)| {
+                format!(
+                    "{thread}:{}",
+                    item["id"]
+                        .as_str()
+                        .map_or_else(|| index.to_string(), str::to_owned)
+                )
+            })
+            .collect();
+        for group in &transcript.response_groups {
+            valid.insert(group.key.clone());
+            valid.extend(group.source_keys.iter().cloned());
+        }
+        let sources: HashMap<_, _> = transcript
+            .state
+            .saved
+            .items
+            .iter()
+            .enumerate()
+            .map(|(index, item)| {
+                (
+                    format!(
+                        "{thread}:{}",
+                        item["id"]
+                            .as_str()
+                            .map_or_else(|| index.to_string(), str::to_owned)
+                    ),
+                    item.clone(),
+                )
+            })
+            .collect();
+        let changed_code_owners: HashSet<_> = self
+            .focus_sources
+            .iter()
+            .filter(|(owner, old)| {
+                sources
+                    .get(*owner)
+                    .is_none_or(|new| !std::ptr::eq(old.as_ref(), new.as_ref()))
+            })
+            .map(|(owner, _)| owner.clone())
+            .collect();
+        self.focus_sources = sources;
+        let count = transcript.state.saved.items.len();
+        self.message_focus.retain(|key, _| {
+            if key
+                .rsplit_once(":code:")
+                .is_some_and(|(owner, _)| changed_code_owners.contains(owner))
+            {
+                return false;
+            }
+            if let Some(boundary) = key.strip_prefix("fork:") {
+                return boundary
+                    .split(':')
+                    .next()
+                    .and_then(|v| v.parse::<usize>().ok())
+                    .is_some_and(|index| index <= count);
+            }
+            for family in ["tool-row:", "work-header:"] {
+                if let Some(row) = key.strip_prefix(family) {
+                    return row
+                        .strip_prefix(&prefix)
+                        .and_then(|row| row.split(':').next())
+                        .and_then(|v| v.parse::<usize>().ok())
+                        .is_some_and(|index| index < count);
+                }
+            }
+            if key.starts_with(&prefix) {
+                let mut base = key.as_str();
+                loop {
+                    if valid.contains(base) {
+                        return true;
+                    }
+                    let Some((parent, _)) = base.rsplit_once(':') else {
+                        return false;
+                    };
+                    base = parent;
+                }
+            }
+            true
+        });
+        self.focus_subscriptions
+            .retain(|key, _| self.message_focus.contains_key(key));
+    }
+
     fn ensure_control_focus(
         &mut self,
         key: &str,
@@ -8240,10 +8734,13 @@ impl CodexView {
             return focus.clone();
         }
         let focus = cx.focus_handle();
-        self.subscriptions
-            .push(cx.on_focus_in(&focus, window, |_, _, cx| cx.notify()));
-        self.subscriptions
-            .push(cx.on_focus_out(&focus, window, |_, _, _, cx| cx.notify()));
+        self.focus_subscriptions.insert(
+            key.to_owned(),
+            (
+                cx.on_focus_in(&focus, window, |_, _, cx| cx.notify()),
+                cx.on_focus_out(&focus, window, |_, _, _, cx| cx.notify()),
+            ),
+        );
         self.message_focus.insert(key.to_owned(), focus.clone());
         focus
     }
@@ -8305,6 +8802,20 @@ impl CodexView {
             .into_any_element()
     }
 
+    fn response_copy_text(&self, group: &ResponseGroup) -> String {
+        let text = group.copy_text();
+        if self.review_scope.is_some() {
+            grove_core::conversation_result::display_text(
+                "review",
+                "grove-review",
+                "agentMessage",
+                &text,
+            )
+        } else {
+            description_conversation_text(self.description_scope.as_ref(), "agentMessage", &text)
+        }
+    }
+
     fn response_footer(
         &mut self,
         group: &ResponseGroup,
@@ -8322,10 +8833,13 @@ impl CodexView {
         let key = group.key.clone();
         if !self.message_focus.contains_key(&key) {
             let focus = cx.focus_handle();
-            self.subscriptions
-                .push(cx.on_focus_in(&focus, window, |_, _, cx| cx.notify()));
-            self.subscriptions
-                .push(cx.on_focus_out(&focus, window, |_, _, _, cx| cx.notify()));
+            self.focus_subscriptions.insert(
+                key.clone(),
+                (
+                    cx.on_focus_in(&focus, window, |_, _, cx| cx.notify()),
+                    cx.on_focus_out(&focus, window, |_, _, _, cx| cx.notify()),
+                ),
+            );
             self.message_focus.insert(key.clone(), focus);
         }
         let focus = self.message_focus[&key].clone();
@@ -8357,21 +8871,8 @@ impl CodexView {
         }
         let copy_focus = self.ensure_control_focus(&format!("{key}:copy"), window, cx);
         let keyboard_key = key.clone();
-        let text = if self.review_scope.is_some() {
-            grove_core::conversation_result::display_text(
-                "review",
-                "grove-review",
-                "agentMessage",
-                &group.copy_text,
-            )
-        } else {
-            description_conversation_text(
-                self.description_scope.as_ref(),
-                "agentMessage",
-                &group.copy_text,
-            )
-        };
-        let keyboard_text = text.clone();
+        let copy_group = group.clone();
+        let keyboard_group = group.clone();
         let mut button = if copied {
             header_control_frame("codex-message-copy", "Copied", c::BG_HOVER())
         } else {
@@ -8389,12 +8890,14 @@ impl CodexView {
         ))
         .on_key_down(cx.listener(move |this, event: &gpui::KeyDownEvent, _, cx| {
             if action_key(event) {
-                this.copy_message(keyboard_key.clone(), keyboard_text.clone(), cx);
+                let text = this.response_copy_text(&keyboard_group);
+                this.copy_message(keyboard_key.clone(), text, cx);
                 cx.stop_propagation();
             }
         }))
         .on_click(cx.listener(move |this, _, _, cx| {
-            this.copy_message(key.clone(), text.clone(), cx);
+            let text = this.response_copy_text(&copy_group);
+            this.copy_message(key.clone(), text, cx);
         }));
         if copied {
             button = button.child(
@@ -8485,13 +8988,19 @@ impl CodexView {
     }
 
     fn source_item_index(&self, id: &str, cx: &App) -> Option<usize> {
-        self.session
-            .read(cx)
-            .state
-            .saved
-            .items
-            .iter()
-            .position(|item| item["id"] == id)
+        let state = &self.session.read(cx).state;
+        if let Some(cache) = self
+            .transcript_cache
+            .as_ref()
+            .filter(|cache| cache.source.saved.items.revision() == state.saved.items.revision())
+        {
+            return cache
+                .id_index
+                .get(id)
+                .copied()
+                .filter(|index| *index < state.saved.items.len());
+        }
+        state.saved.items.iter().position(|item| item["id"] == id)
     }
 
     fn request_edit_item(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
@@ -11199,14 +11708,29 @@ fn active_work_start(state: &codex::Snapshot) -> usize {
 }
 
 /// Presentation-only response boundaries; provider work periods never split a response.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 struct ResponseGroup {
     key: String,
     end: usize,
     prose: Vec<usize>,
     source_keys: Vec<String>,
-    copy_text: String,
+    copy_text: std::cell::OnceCell<String>,
+    copy_sources: Vec<gpui::SharedString>,
     received_at: Option<u64>,
+}
+
+impl ResponseGroup {
+    fn copy_text(&self) -> String {
+        self.copy_text
+            .get_or_init(|| {
+                self.copy_sources
+                    .iter()
+                    .map(std::convert::AsRef::as_ref)
+                    .collect::<Vec<_>>()
+                    .join("\n\n")
+            })
+            .clone()
+    }
 }
 
 fn response_groups<T: std::borrow::Borrow<serde_json::Value>>(
@@ -11245,11 +11769,11 @@ fn response_groups<T: std::borrow::Borrow<serde_json::Value>>(
                     .iter()
                     .map(|index| format!("{key}:source:{}", source_id(*index)))
                     .collect(),
-                copy_text: prose
+                copy_text: std::cell::OnceCell::default(),
+                copy_sources: prose
                     .iter()
-                    .map(|index| transcript_item_text(items[*index].borrow()))
-                    .collect::<Vec<_>>()
-                    .join("\n\n"),
+                    .map(|index| transcript_item_text(items[*index].borrow()).into())
+                    .collect(),
                 received_at: items[*last].borrow()["groveReceivedAt"].as_u64(),
                 key,
                 end,
@@ -11262,6 +11786,7 @@ fn response_groups<T: std::borrow::Borrow<serde_json::Value>>(
 }
 
 /// Explicit message phases win; older providers keep their last response outside work.
+#[cfg(test)]
 fn work_commentary(state: &codex::Snapshot, index: usize) -> bool {
     let item = &state.saved.items[index];
     if item["type"] != "agentMessage" {
@@ -11362,6 +11887,7 @@ fn work_duration_label(active: bool, duration: Option<u64>) -> String {
 }
 
 /// Only parent commentary and tools belong to the work disclosure.
+#[cfg(test)]
 fn work_has_parent_activity(state: &codex::Snapshot, index: usize) -> bool {
     let start = work_period_at(state, index).map_or_else(
         || {
@@ -11540,6 +12066,20 @@ fn animated_task_mark(
     cx: &App,
 ) -> gpui::AnyElement {
     let id = id.into();
+    if status == TaskStatus::InProgress && phase == TaskPhase::Running && !cx.reduce_motion() {
+        return super::components::isolated_animation(id.clone(), move |_, cx| {
+            animated_task_mark_inner(id.clone(), status, phase, cx)
+        });
+    }
+    animated_task_mark_inner(id, status, phase, cx)
+}
+
+fn animated_task_mark_inner(
+    id: gpui::ElementId,
+    status: TaskStatus,
+    phase: TaskPhase,
+    cx: &App,
+) -> gpui::AnyElement {
     let selector = match &id {
         gpui::ElementId::Name(name) if name.as_ref() == "codex-task-strip-mark" => {
             "codex-task-header-mark".to_owned()
@@ -14429,7 +14969,7 @@ mod tests {
         assert_eq!(items.iter().filter(|item| is_tool_item(item)).count(), 2);
         let groups = response_groups(&items, Some("thread"));
         assert_eq!(groups.len(), 1);
-        assert_eq!(groups[0].copy_text, "Reviewed navigation.");
+        assert_eq!(groups[0].copy_text(), "Reviewed navigation.");
     }
     #[test]
     fn composer_markdown_styles_nested_unicode_source_without_overlapping_ranges() {
@@ -14535,7 +15075,7 @@ mod tests {
                 "{provider:?}"
             );
             assert_eq!(
-                response_groups(&state.saved.items, None)[0].copy_text,
+                response_groups(&state.saved.items, None)[0].copy_text(),
                 answer,
                 "{provider:?}"
             );
@@ -15605,7 +16145,7 @@ mod tests {
         state.models = vec![
             json!({"model":"default", "resolvedModel":"claude-opus-5-5", "supportedReasoningEfforts":[{"reasoningEffort":"high"},{"reasoningEffort":"max"}]}),
             json!({"model":"haiku-legacy", "resolvedModel":"claude-haiku-legacy"}),
-        ];
+        ].into();
         let (choices, _) = CodexView::menu_choices(&state, ComposerMenu::Effort);
         assert!(choices.iter().any(|(value, _)| value == "high"));
         assert!(choices.iter().any(|(value, _)| value == "max"));
@@ -16488,7 +17028,7 @@ mod tests {
                     view.session.update(cx, |session, _| {
                         session.state.saved.provider = provider;
                         session.state.skills =
-                            vec![json!({"name":"describe-changes","enabled":true})];
+                            vec![json!({"name":"describe-changes","enabled":true})].into();
                     });
                     view.input.update(cx, |input, cx| {
                         input.set_value("/describe-changes local", window, cx);
@@ -16579,7 +17119,7 @@ mod tests {
                 view.update(cx, |view, cx| {
                     view.session.update(cx, |session, _| {
                         session.state.saved.provider = provider;
-                        session.state.skills = vec![json!({"name":"review","enabled":true})];
+                        session.state.skills = vec![json!({"name":"review","enabled":true})].into();
                     });
                     view.input.update(cx, |input, cx| {
                         input.set_value("/review local", window, cx);
@@ -17140,7 +17680,7 @@ mod tests {
         let (view, cx, actions, _) = fixture(cx);
         cx.update(|window, cx| view.update(cx, |view, cx| {
             view.session.update(cx, |session, _| {
-                session.state.models = vec![json!({"model":"speed-model", "serviceTiers":[{"id":"fast"}], "supportedReasoningEfforts":[]})];
+                session.state.models = vec![json!({"model":"speed-model", "serviceTiers":[{"id":"fast"}], "supportedReasoningEfforts":[]})].into();
                 session.state.model = Some("speed-model".into());
                 session.state.saved.draft_images = vec!["untouched attachment".into()];
             });
@@ -17252,7 +17792,7 @@ mod tests {
                         state.effort = Some("high".into());
                         state.models = vec![
                             json!({"model":"speed-fixture", "displayName":if available {"Selected model"} else {"A very long configured model name with unavailable fast mode"}, "supportsFastMode":available, "serviceTiers":if available {vec![json!({"id":"fast"})]} else {vec![]}, "supportedReasoningEfforts":[{"reasoningEffort":"low"},{"reasoningEffort":"medium"},{"reasoningEffort":"high"}]}),
-                        ];
+                        ].into();
                         if provider == codex::Provider::Claude && available {
                             state.reported_speed = Some("cooldown".into());
                         }
@@ -17360,7 +17900,7 @@ mod tests {
                         state.effort = Some(effort.into());
                         state.models = vec![
                             json!({"model":"speed-fixture", "displayName":"Selected model", "supportsFastMode":true, "serviceTiers":vec![json!({"id":"fast"})], "supportedReasoningEfforts":[{"reasoningEffort":"low"},{"reasoningEffort":"medium"},{"reasoningEffort":"high"}]}),
-                        ];
+                        ].into();
                         if provider == codex::Provider::Claude {
                             state.reported_speed = Some("cooldown".into());
                         }
@@ -17774,7 +18314,7 @@ mod tests {
                     if rem == 16.0 {
                         baseline_heights.insert((kind, width as u32), model.size.height);
                     } else {
-                        let baseline = baseline_heights[&(kind, width as u32)];
+                        let baseline = baseline_heights[&(kind, width as u32)].into();
                         assert!(
                             model.size.height > baseline,
                             "zoom must change actual control geometry: {model:?} vs {baseline:?}"
@@ -18487,16 +19027,8 @@ mod tests {
                 draw(cx);
                 cx.update(|window, cx| {
                     view.update(cx, |view, cx| {
-                        assert!(
-                            !view
-                                .selection_views
-                                .values()
-                                .next()
-                                .unwrap()
-                                .read(cx)
-                                .supports_layout_projection(),
-                            "code controls keep the containing body live"
-                        );
+                        // Table layout may stay eager; the invariant is that its
+                        // original code-copy destination remains usable below.
                         view.message_focus
                             .iter()
                             .find(|(key, _)| key.contains(":code:"))
@@ -18789,7 +19321,7 @@ mod tests {
                         .unwrap()
                         .prepared
                         .response_groups[0];
-                    (group.key.clone(), group.copy_text.clone())
+                    (group.key.clone(), group.copy_text())
                 });
                 assert!(
                     !measured_slot::RENDERED_FOOTERS
@@ -18997,8 +19529,15 @@ mod tests {
                 "{scenario}: old header measurement must release its entry"
             );
             view.read_with(cx, |view, cx| {
-                assert!(view.message_slots.is_empty(), "{scenario}");
-                assert!(view.work_header_slots.is_empty(), "{scenario}");
+                if scenario != "preview" {
+                    assert!(view.message_slots.is_empty(), "{scenario}");
+                    assert!(view.work_header_slots.is_empty(), "{scenario}");
+                } else {
+                    assert_eq!(
+                        view.transcript_cache.as_ref().unwrap().state.saved.items[0]["id"],
+                        "child-answer"
+                    );
+                }
                 assert_eq!(
                     view.input.read(cx).value().as_ref(),
                     "Preserved lifecycle draft"
@@ -19416,16 +19955,17 @@ mod tests {
 
             replace(&view, cx, "```rust\nlet value = 1;\n```");
             assert!(
-                !owner(&view, cx).read_with(cx, |owner, _| owner.supports_layout_projection()),
-                "new accepted interactive code cannot inherit static extent"
+                owner(&view, cx).read_with(cx, |owner, _| owner.supports_layout_projection()),
+                "new code measures its own extent before projection"
             );
             let dynamic_id = owner(&view, cx).entity_id();
             replace(&view, cx, "```rust\nlet value = 2;\n```");
-            assert_ne!(
+            assert_eq!(
                 owner(&view, cx).entity_id(),
                 dynamic_id,
-                "dynamic controls keep original new-owner behavior"
+                "unfocused code owners can reuse measurement identity"
             );
+            assert!(owner(&view, cx).read_with(cx, |owner, _| owner.source().contains("value = 2")));
             cx.update(|window, cx| {
                 window.clear_text_selection(cx);
                 window.blur();
@@ -19632,7 +20172,7 @@ mod tests {
                 assert_ne!(before.content, after.content);
                 assert_eq!(after.state.saved.items[0]["text"], "two");
                 assert_eq!(after.state.error.as_deref(), Some("new error"));
-                assert_eq!(after.response_groups[0].copy_text, "two");
+                assert_eq!(after.response_groups[0].copy_text(), "two");
             });
         }
     }
@@ -19895,6 +20435,65 @@ mod tests {
     }
 
     #[test]
+    fn metadata_only_notifications_reuse_work_index_and_review_parse() {
+        let mut state = snapshot();
+        state.saved.items =
+            vec![json!({"id":"answer","type":"agentMessage","text":"An answer"})].into();
+        let first = TranscriptRenderCache::new(Rc::new(state.clone()), vec![]);
+        first
+            .review_overview
+            .set(Some("Cached review".into()))
+            .unwrap();
+        state.model = Some("changed metadata".into());
+        let metadata =
+            TranscriptRenderCache::refreshed(Rc::new(state.clone()), vec![], Some(&first));
+        assert!(Rc::ptr_eq(&first.work, &metadata.work));
+        assert!(Rc::ptr_eq(
+            &first.review_overview,
+            &metadata.review_overview
+        ));
+        state.saved.items[0]["text"] = json!("Changed answer");
+        let changed = TranscriptRenderCache::refreshed(Rc::new(state), vec![], Some(&metadata));
+        assert!(!Rc::ptr_eq(&metadata.work, &changed.work));
+        assert!(!Rc::ptr_eq(
+            &metadata.review_overview,
+            &changed.review_overview
+        ));
+    }
+
+    #[gpui::test]
+    fn transcript_removal_releases_focus_callbacks_for_both_providers(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (view, cx, _, _) = fixture(cx);
+        for provider in [codex::Provider::Codex, codex::Provider::Claude] {
+            cx.update(|window, cx| {
+                view.update(cx, |view, cx| {
+                    let mut state = snapshot();
+                    state.saved.provider = provider;
+                    state.saved.thread_id = Some("focus-thread".into());
+                    state.saved.items =
+                        vec![json!({"id":"old","type":"agentMessage","text":"Old response"})]
+                            .into();
+                    let cache = TranscriptRenderCache::new(Rc::new(state.clone()), vec![]);
+                    view.prune_transcript_controls(&cache);
+                    view.ensure_control_focus("focus-thread:old:copy", window, cx);
+                    assert!(view
+                        .focus_subscriptions
+                        .contains_key("focus-thread:old:copy"));
+                    state.saved.items.clear();
+                    let next = TranscriptRenderCache::new(Rc::new(state), vec![]);
+                    view.prune_transcript_controls(&next);
+                    assert!(!view.message_focus.contains_key("focus-thread:old:copy"));
+                    assert!(!view
+                        .focus_subscriptions
+                        .contains_key("focus-thread:old:copy"));
+                });
+            });
+        }
+    }
+
+    #[test]
     fn transcript_metadata_refresh_reuses_preparation_without_stale_state() {
         let mut initial = snapshot();
         initial.saved.items = vec![json!({
@@ -19911,13 +20510,13 @@ mod tests {
         assert!(Rc::ptr_eq(&before.prepared, &after.prepared));
         assert_eq!(after.state.error.as_deref(), Some("new provider error"));
         assert_eq!(after.state.model.as_deref(), Some("new model"));
-        assert_eq!(after.response_groups[0].copy_text, "one");
+        assert_eq!(after.response_groups[0].copy_text(), "one");
         let mut edited = after.state.as_ref().clone();
         edited.saved.items[0]["text"] = json!("two");
         let edited = TranscriptRenderCache::refreshed(Rc::new(edited), vec![], Some(&after));
         assert!(!Rc::ptr_eq(&after.prepared, &edited.prepared));
         assert_ne!(after.content, edited.content);
-        assert_eq!(edited.response_groups[0].copy_text, "two");
+        assert_eq!(edited.response_groups[0].copy_text(), "two");
         assert_eq!(
             edited.state.saved.items[0]["result"]["opaque"],
             "retained tool bytes"
@@ -20530,7 +21129,7 @@ mod tests {
                 for provider in [codex::Provider::Codex, codex::Provider::Claude] {
                     view.session.update(cx, |session, _| {
                         session.state.saved.provider = provider;
-                        session.state.skills = vec![json!({"name":"review","enabled":true})];
+                        session.state.skills = vec![json!({"name":"review","enabled":true})].into();
                     });
                     view.file_suggestions = vec!["src/main.rs".into()];
                     view.file_lookup = Some("s".into());
@@ -20603,7 +21202,7 @@ mod tests {
         cx.update(|window, cx| {
             view.update(cx, |view, cx| {
                 view.session.update(cx, |session, _| {
-                    session.state.skills = vec![json!({"name":"review","enabled":true})];
+                    session.state.skills = vec![json!({"name":"review","enabled":true})].into();
                 });
                 view.input.update(cx, |input, cx| {
                     input.set_value("Use $rev", window, cx);
@@ -20703,7 +21302,8 @@ mod tests {
         let (_, cx) = cx.add_window_view(|window, cx| {
             let session = cx.new(|cx| CodexSession::draft(state.saved, Vec::new(), cx));
             session.update(cx, |session, _| {
-                session.state.models = vec![json!({"model":"code-1","displayName":"Code model"})];
+                session.state.models =
+                    vec![json!({"model":"code-1","displayName":"Code model"})].into();
                 session.state.model = Some("code-1".into());
             });
             let tray = cx.new(|_| {
@@ -21533,7 +22133,8 @@ mod tests {
             json!({"name":"disabled","enabled":false}),
             json!({"name":"enabled"}),
             json!({"name":"clear"}),
-        ];
+        ]
+        .into();
         let choices = slash_choices(&claude, "");
         assert!(!choices.iter().any(|(value, _)| value == "/disabled"));
         assert!(choices.iter().any(|(value, _)| value == "/enabled"));
@@ -21555,7 +22156,8 @@ mod tests {
         claude.skills = vec![
             json!({"name":"compact","description":"Claude command"}),
             json!({"name":"context","description":"Claude command"}),
-        ];
+        ]
+        .into();
         let commands = slash_choices(&claude, "comp");
         assert_eq!(
             commands
@@ -21860,7 +22462,7 @@ mod tests {
                     view.input
                         .update(cx, |input, cx| input.set_value("after compact", window, cx));
                     view.input.focus_handle(cx).focus(window, cx);
-                })
+                });
             });
             draw(cx);
             cx.simulate_keystrokes("enter");
@@ -21881,8 +22483,8 @@ mod tests {
                             images: vec![],
                         });
                         cx.notify();
-                    })
-                })
+                    });
+                });
             });
             draw(cx);
             assert!(view.read_with(cx, |view, cx| view.input.read(cx).value().is_empty()));
@@ -24431,7 +25033,7 @@ mod tests {
             state.resolved_model = Some("resolved".into());
             state.models = vec![
                 json!({"model":"alias", "resolvedModel":"resolved", "supportedReasoningEfforts":[{"reasoningEffort":"high"}]}),
-            ];
+            ].into();
             assert_eq!(CodexView::effort_choices(&state), vec!["high"]);
             state.models[0]["supportedReasoningEfforts"] = json!([
                 {"reasoningEffort":"low"}, {"reasoningEffort":"medium"}, {"reasoningEffort":"high"}
@@ -24650,7 +25252,7 @@ mod tests {
                     view.update(cx, |view, cx| {
                         view.session.update(cx, |session, cx| {
                             session.state.saved.provider = provider;
-                            session.state.models = vec![json!({"model":"test", "displayName":"GPT-6.1 Terra", "supportedReasoningEfforts":[{"reasoningEffort":"medium"}]})];
+                            session.state.models = vec![json!({"model":"test", "displayName":"GPT-6.1 Terra", "supportedReasoningEfforts":[{"reasoningEffort":"medium"}]})].into();
                             session.state.model = Some("test".into());
                             session.state.effort = Some("medium".into());
                             cx.notify();
@@ -24685,7 +25287,7 @@ mod tests {
         cx.update(|_, cx| cx.set_reduce_motion(true));
         cx.update(|window, cx| view.update(cx, |view, cx| {
             view.session.update(cx, |session, cx| {
-                session.state.models = vec![json!({"model":"test", "displayName":"Test model", "defaultReasoningEffort":"medium", "supportedReasoningEfforts":[{"reasoningEffort":"low"},{"reasoningEffort":"medium"},{"reasoningEffort":"high"}]})];
+                session.state.models = vec![json!({"model":"test", "displayName":"Test model", "defaultReasoningEffort":"medium", "supportedReasoningEfforts":[{"reasoningEffort":"low"},{"reasoningEffort":"medium"},{"reasoningEffort":"high"}]})].into();
                 session.state.model = Some("test".into());
                 session.state.effort = Some("medium".into());
                 cx.notify();
@@ -24804,7 +25406,7 @@ mod tests {
                         session.state.models = vec![
                             json!({"model":"motion-model", "supportedReasoningEfforts":supported.iter().map(|effort| json!({"reasoningEffort":effort})).collect::<Vec<_>>()}),
                             json!({"model":"fixed-model", "supportedReasoningEfforts":[{"reasoningEffort":"high"}]}),
-                        ];
+                        ].into();
                         cx.notify();
                     });
                     view.open_menu(ComposerMenu::Settings, window, cx);
@@ -25002,7 +25604,7 @@ mod tests {
                 session.state.model = Some("same-model".into());
                 session.state.effort = Some("high".into());
                 session.state.resolved_effort = Some("low".into());
-                session.state.models = vec![json!({"model":"same-model", "defaultReasoningEffort":"low", "supportedReasoningEfforts":[{"reasoningEffort":"low"},{"reasoningEffort":"high"}]})];
+                session.state.models = vec![json!({"model":"same-model", "defaultReasoningEffort":"low", "supportedReasoningEfforts":[{"reasoningEffort":"low"},{"reasoningEffort":"high"}]})].into();
                 cx.notify();
             });
             view.open_menu(ComposerMenu::Settings, window, cx);
@@ -25110,7 +25712,7 @@ mod tests {
         cx.update(|window, cx| view.update(cx, |view, cx| {
             view.session.update(cx, |session, cx| {
                 session.state.model = Some("test".into());
-                session.state.models = vec![json!({"model":"test", "supportedReasoningEfforts":[{"reasoningEffort":"low"},{"reasoningEffort":"high"}]})];
+                session.state.models = vec![json!({"model":"test", "supportedReasoningEfforts":[{"reasoningEffort":"low"},{"reasoningEffort":"high"}]})].into();
                 cx.notify();
             });
             view.open_menu(ComposerMenu::Settings, window, cx);
@@ -28449,7 +29051,7 @@ mod tests {
         let groups = response_groups(&items, Some("thread"));
         assert_eq!(groups.len(), 2);
         assert_eq!(groups[0].key, "thread:response:first");
-        assert_eq!(groups[0].copy_text, "First\n\nLast");
+        assert_eq!(groups[0].copy_text(), "First\n\nLast");
         assert_eq!(groups[0].received_at, Some(20));
         assert_eq!(groups[0].end, 6);
         assert_eq!(groups[1].end, items.len());
@@ -28468,7 +29070,7 @@ mod tests {
         );
         streaming.truncate(2);
         assert_eq!(
-            response_groups(&streaming, Some("thread"))[0].copy_text,
+            response_groups(&streaming, Some("thread"))[0].copy_text(),
             "First"
         );
     }
@@ -28635,6 +29237,7 @@ mod tests {
                 .ok()
                 .is_none_or(|cwd| cwd.trim() != path)
             {
+                cx.run_until_parked();
                 assert!(std::time::Instant::now() < deadline);
                 std::thread::sleep(std::time::Duration::from_millis(10));
             }

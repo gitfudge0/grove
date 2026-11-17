@@ -3583,6 +3583,10 @@ struct PendingCapture {
 thread_local! {
     static CAPTURE: std::cell::RefCell<Option<PendingCapture>> = const { std::cell::RefCell::new(None) };
 }
+pub(crate) fn capture_pending() -> bool {
+    CAPTURE.with(|slot| slot.borrow().is_some())
+}
+
 pub(crate) fn pump_capture(window: &Window, cx: &App) {
     use base64::Engine;
     use std::sync::atomic::Ordering;

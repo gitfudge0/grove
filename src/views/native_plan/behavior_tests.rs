@@ -81,7 +81,7 @@ fn exercise_behavior_reader(provider: Provider, cx: &mut gpui::TestAppContext) {
             let _ = window.draw(cx);
         });
         plan.read_with(cx, |view, _| {
-            assert_eq!(view.open_claims.contains("pairing"), open)
+            assert_eq!(view.open_claims.contains("pairing"), open);
         });
         assert_eq!(
             cx.debug_bounds("native-plan-claim-content-pairing")
@@ -103,7 +103,7 @@ fn exercise_behavior_reader(provider: Provider, cx: &mut gpui::TestAppContext) {
             assert!(view.open_claims.contains("pairing"));
             assert!(view.open_claims.contains("identity"));
             assert!(!view.open_claims.contains("availability"));
-        })
+        });
     });
     cx.run_until_parked();
     cx.update(|window, cx| {
@@ -116,7 +116,7 @@ fn exercise_behavior_reader(provider: Provider, cx: &mut gpui::TestAppContext) {
             assert!(
                 view.decision_focus["access"].is_focused(window),
                 "Next unanswered must focus the revealed decision"
-            )
+            );
         });
     });
     assert!(cx.debug_bounds("native-plan-decision-access").is_some());
@@ -174,7 +174,7 @@ fn exercise_behavior_reader(provider: Provider, cx: &mut gpui::TestAppContext) {
                 view.session.read(cx).state.saved.draft,
                 "KEEP THE CONVERSATION DRAFT"
             );
-        })
+        });
     });
     cx.run_until_parked();
     cx.update(|window, cx| {
@@ -223,7 +223,7 @@ fn exercise_behavior_reader(provider: Provider, cx: &mut gpui::TestAppContext) {
                 .answers
                 .insert("access".into(), "direct".into());
             view.activate(&measured::Action::SendResponse, window, cx);
-        })
+        });
     });
     assert!(
         !actions.try_iter().any(|a| matches!(
@@ -245,7 +245,7 @@ fn exercise_behavior_reader(provider: Provider, cx: &mut gpui::TestAppContext) {
             view.session.update(cx, |session, _| {
                 session.state.saved.rich_plans.revisions.pop();
             });
-        })
+        });
     });
     assert!(
         !actions.try_iter().any(|a| matches!(
@@ -259,7 +259,7 @@ fn exercise_behavior_reader(provider: Provider, cx: &mut gpui::TestAppContext) {
             view.begin_response_review(window, cx);
             view.activate(&measured::Action::SendResponse, window, cx);
             view.activate(&measured::Action::SendResponse, window, cx);
-        })
+        });
     });
     let sent: Vec<_> = actions
         .try_iter()

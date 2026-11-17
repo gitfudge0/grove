@@ -2176,7 +2176,7 @@ impl SettingsPanel {
             .child(Self::setting_row("Terminal backend", if tmux_available { "Existing sessions keep their current backend." } else { "Tmux is not installed. Built-in remains available." }, backend))
             .child(div().text_size(rpx(TEXT_SMALL)).text_color(c::FG_DIM()).child("Tmux keeps terminal processes running after Grove exits. Built-in terminals end when Grove exits. Grove’s conversation view has separate recovery."))
             .child(Self::section("Environment"))
-            .child(Self::setting_row("Shell environment", if cfg!(windows) { "Shell environment refresh is unavailable on Windows." } else { "Refreshes every 10 minutes. Changes apply to new sessions." }, environment_control));
+            .child(Self::setting_row("Shell environment", if cfg!(windows) { "Shell environment refresh is unavailable on Windows." } else { "Refresh the environment for new sessions." }, environment_control));
 
         body = body.when(self.category == Category::Agents, |body| body.child(
             div().flex().flex_col()
@@ -2873,7 +2873,7 @@ mod tests {
                 store.projects.push(grove_core::storage::Project {
                     name: name.into(),
                     path: path.clone(),
-                    scripts: Default::default(),
+                    scripts: grove_core::storage::ProjectScripts::default(),
                     archived,
                     worktree_dir: None,
                 });
@@ -2911,7 +2911,7 @@ mod tests {
                             is_main: false,
                         },
                     ],
-                )
+                );
             });
         });
         assert!(cx.debug_bounds("settings-project-search").is_none());
@@ -2924,7 +2924,7 @@ mod tests {
         cx.update(|window, cx| {
             panel.read(cx).project_disclosure_focus["/qa/Atlas"]
                 .clone()
-                .focus(window, cx)
+                .focus(window, cx);
         });
         cx.simulate_keystrokes("space");
         draw(cx);
@@ -2937,7 +2937,7 @@ mod tests {
                     super::super::sidebar::projects::Page::Edit("/qa/Atlas".into()),
                     window,
                     cx,
-                )
+                );
             });
         });
         draw(cx);
@@ -3824,7 +3824,7 @@ mod tests {
             panel.update(cx, |panel, cx| {
                 panel.open(window, cx);
                 panel.select_category(Category::Agents, cx);
-            })
+            });
         });
         draw(cx);
         for (id, expected) in [

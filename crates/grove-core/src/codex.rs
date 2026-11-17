@@ -93,17 +93,51 @@ pub fn discover_composer(saved: SavedSession, args: Vec<String>) -> Result<Snaps
 }
 
 pub fn connect(saved: SavedSession, args: Vec<String>) -> Connection {
+    connect_deferred(saved, args, deferred_connection(Arc::new(|| {})))
+}
+pub fn connect_checked(
+    saved: SavedSession,
+    args: Vec<String>,
+    validation: StartupValidation,
+) -> Connection {
+    connect_deferred_with_validation(
+        saved,
+        args,
+        deferred_connection(Arc::new(|| {})),
+        Some(validation),
+    )
+}
+/// Activate a lazy restored session without replacing its command handle.
+pub fn connect_deferred(
+    saved: SavedSession,
+    args: Vec<String>,
+    deferred: DeferredConnection,
+) -> Connection {
+    connect_deferred_with_validation(saved, args, deferred, None)
+}
+fn connect_deferred_with_validation(
+    saved: SavedSession,
+    args: Vec<String>,
+    deferred: DeferredConnection,
+    validation: Option<StartupValidation>,
+) -> Connection {
     if saved.provider == Provider::Claude {
-        return crate::claude::connect(saved, args);
+        return crate::claude::connect_deferred_with_validation(saved, args, deferred, validation);
     }
-    let (handle, receive) = Handle::channel();
+    let DeferredConnection {
+        handle,
+        receiver,
+        thread,
+    } = deferred;
     let (updates, output) = crate::latest::channel();
     let actor_pid = handle.1.clone();
     let actor_stopping = handle.2.clone();
     std::thread::spawn(move || {
-        let mut actor = Actor::new(saved, receive, updates, args);
+        let _ = thread.set(std::thread::current());
+        let mut actor = Actor::new(saved, receiver, updates, args);
         actor.pid = actor_pid;
         actor.stopping = actor_stopping;
+        actor.startup_validation = validation;
         actor.run();
     });
     Connection {
@@ -125,11 +159,12 @@ pub fn connect_side_chat(mut saved: SavedSession) -> Connection {
     saved.title_generation = None;
     saved.config_args = side_chat_args();
     saved.native_config_version = 1;
-    let (handle, receive) = Handle::channel();
+    let (handle, receive, actor_thread) = Handle::actor_channel();
     let (updates, output) = crate::latest::channel();
     let actor_pid = handle.1.clone();
     let actor_stopping = handle.2.clone();
     std::thread::spawn(move || {
+        let _ = actor_thread.set(std::thread::current());
         let mut actor = Actor::new(saved, receive, updates, side_chat_args());
         actor.side_chat = true;
         actor.pid = actor_pid;
@@ -253,6 +288,7 @@ fn spawn_profile(
     let capture = crate::provider_diagnostics::Capture::from_env("codex");
     let incoming_capture = capture.clone();
     let (send, lines) = mpsc::channel();
+    let actor_thread = std::thread::current();
     std::thread::spawn(move || {
         for line in BufReader::new(stdout).lines() {
             let value = line.map_err(|e| e.to_string()).and_then(|line| {
@@ -265,6 +301,7 @@ fn spawn_profile(
             if send.send(value).is_err() {
                 return;
             }
+            actor_thread.unpark();
         }
         let tail = diagnostics
             .lock()
@@ -278,6 +315,7 @@ fn spawn_profile(
         let _ = send.send(Err(format!(
             "Codex exited. Check CLI authentication/configuration, then reconnect.{detail}"
         )));
+        actor_thread.unpark();
     });
     Ok(Process {
         activity,
@@ -380,6 +418,8 @@ struct Actor {
     side_chat: bool,
     side_mcp_servers: Vec<String>,
     discovery_only: bool,
+    startup_validation: Option<StartupValidation>,
+    startup_error: Option<String>,
     model_catalog_key: Option<crate::model_catalog::Key>,
     state: Snapshot,
     actions: mpsc::Receiver<Action>,
@@ -402,8 +442,13 @@ struct Actor {
     pid: Arc<AtomicU32>,
     stopping: Arc<AtomicBool>,
     last_save: Instant,
+    last_emit: Instant,
+    persistence: BackgroundPersistence,
+    last_work_active: bool,
+    last_activity_context: Option<(u64, Option<String>)>,
     last_child_poll: Instant,
     child_read_failures: HashMap<String, u8>,
+    child_read_backoff: HashMap<String, (u64, u8, Instant)>,
     interaction_children: crate::interaction::Children,
     stop_tracking: StopTracking,
     needs_save: bool,
@@ -421,6 +466,8 @@ impl Actor {
             side_chat: false,
             side_mcp_servers: Vec::new(),
             discovery_only: false,
+            startup_validation: None,
+            startup_error: None,
             model_catalog_key: None,
             state: Snapshot::new(saved),
             actions,
@@ -443,8 +490,13 @@ impl Actor {
             pid: Arc::new(AtomicU32::new(0)),
             stopping: Arc::new(AtomicBool::new(false)),
             last_save: Instant::now(),
+            last_emit: Instant::now(),
+            persistence: BackgroundPersistence::default(),
+            last_work_active: false,
+            last_activity_context: None,
             last_child_poll: Instant::now(),
             child_read_failures: HashMap::new(),
+            child_read_backoff: HashMap::new(),
             interaction_children: crate::interaction::Children::default(),
             stop_tracking: StopTracking::default(),
             needs_save: false,
@@ -457,7 +509,7 @@ impl Actor {
             self.needs_save = false;
             return;
         }
-        if let Err(e) = persist(&self.state.saved) {
+        if let Err(e) = self.persistence.flush(&self.state.saved) {
             self.state.error = Some(format!("Could not save Codex session: {e}"));
             let _ = self.updates.send(self.state.clone());
         }
@@ -465,6 +517,11 @@ impl Actor {
         self.needs_save = false;
     }
     fn emit(&mut self) {
+        let active = self.state.provider_work_active();
+        if self.last_work_active && !active {
+            self.save();
+        }
+        self.last_work_active = active;
         let model_pending = self.pending.values().any(|request| {
             matches!(
                 request.kind,
@@ -479,14 +536,22 @@ impl Actor {
             self.provider_use.take();
         }
         if let Some(process) = &self.process {
-            process
-                .activity
-                .set_context_items(&self.state.saved.items, self.state.turn_id.clone());
+            let context = (
+                self.state.saved.items.revision(),
+                self.state.turn_id.clone(),
+            );
+            if self.last_activity_context.as_ref() != Some(&context) {
+                process
+                    .activity
+                    .set_context_items(&self.state.saved.items, self.state.turn_id.clone());
+                self.last_activity_context = Some(context);
+            }
             process.visuals.sync(&mut self.state, self.side_chat);
         }
         self.needs_save = true;
         let _ = self.updates.send(self.state.clone());
         self.dirty = false;
+        self.last_emit = Instant::now();
     }
     fn write(&mut self, value: &Value) -> Result<(), String> {
         let p = self.process.as_mut().ok_or("Codex is disconnected")?;
@@ -521,6 +586,18 @@ impl Actor {
         Ok(())
     }
     fn start(&mut self) -> Result<(), String> {
+        crate::env_path::wait_for_initial_environment();
+        self.startup_error = None;
+        if let Some(validate) = &self.startup_validation {
+            if let Err(error) = validate() {
+                self.startup_error = Some(error.clone());
+                self.title_generator.cancel();
+                self.state.status = Status::Disconnected;
+                self.state.error = Some(error.clone());
+                return Err(error);
+            }
+        }
+        self.last_activity_context = None;
         self.compaction_queue = None;
         if self.stopping.load(Ordering::SeqCst) {
             return Err("Codex session is closing".into());
@@ -572,11 +649,12 @@ impl Actor {
         self.model_catalog_key = (!self.side_chat)
             .then(|| crate::model_catalog::Key::new(&self.state.saved, &self.args))
             .flatten();
-        self.state.models = self
+        self.state.models = (self
             .model_catalog_key
             .as_ref()
             .and_then(crate::model_catalog::load)
-            .unwrap_or_default();
+            .unwrap_or_default())
+        .into();
         self.state.skills.clear();
         self.interrupt_retry = None;
         self.interaction_children = crate::interaction::Children::default();
@@ -902,7 +980,7 @@ impl Actor {
             claude_fork_id: None,
         });
         // Persist recovery before the first filesystem mutation or provider request.
-        persist(&self.state.saved)?;
+        self.persistence.flush(&self.state.saved)?;
         if restore_files {
             let result = record
                 .files
@@ -951,7 +1029,7 @@ impl Actor {
         }
         let mut saved = self.state.saved.clone();
         saved.pending_edit = None;
-        if let Err(error) = persist(&saved) {
+        if let Err(error) = self.persistence.flush(&saved) {
             self.state.status = Status::Disconnected;
             self.state.reconnecting = false;
             return Err(format!(
@@ -992,7 +1070,7 @@ impl Actor {
         }
         saved.context = None;
         saved.context_details = None;
-        if let Err(error) = persist(&saved) {
+        if let Err(error) = self.persistence.flush(&saved) {
             self.state.status = Status::Disconnected;
             self.state.reconnecting = false;
             return Err(format!(
@@ -1293,6 +1371,7 @@ impl Actor {
         approve: bool,
         persist_saved: impl Fn(&SavedSession) -> Result<(), String>,
     ) -> Result<(), String> {
+        self.persistence.drain()?;
         if crate::connections::credentials_busy(crate::agent::Agent::Codex) {
             return Err(
                 "Wait for provider authentication to finish before sending plan actions.".into(),
@@ -1336,6 +1415,16 @@ impl Actor {
         Ok(())
     }
     fn action(&mut self, action: Action) -> Result<bool, String> {
+        if let (Some(error), Some(submission)) = (&self.startup_error, startup_submission(&action))
+        {
+            if let Some(id) = submission {
+                self.state.rejected_submission = Some(id);
+            }
+            return Err(format!(
+                "{error}. Request was not sent; reconnect after resolving checkout validation."
+            ));
+        }
+
         if self.side_chat
             && !matches!(
                 &action,
@@ -1418,8 +1507,8 @@ impl Actor {
             Action::MarkReviewed { work_period } => {
                 self.state.mark_reviewed(work_period)?;
             }
-            Action::UpdateSkills(skills) => self.state.skills = skills,
-            Action::UpdateModels(models) => self.state.models = models,
+            Action::UpdateSkills(skills) => self.state.skills = (skills).into(),
+            Action::UpdateModels(models) => self.state.models = (models).into(),
             Action::Interaction { epoch, action } => {
                 if epoch != self.state.interaction_epoch {
                     return Err("This interaction belongs to a previous connection".into());
@@ -1435,11 +1524,11 @@ impl Actor {
                     .saved
                     .rich_plans
                     .update_review(&plan_id, &revision_id, *review)?;
-                persist(&self.state.saved)?;
+                self.persistence.flush(&self.state.saved)?;
             }
             Action::RetryPlanImport { message_id, source } => {
                 crate::rich_plan::retry_import(&mut self.state.saved, &message_id, &source)?;
-                persist(&self.state.saved)?;
+                self.persistence.flush(&self.state.saved)?;
             }
             Action::ApprovePlan {
                 plan_id,
@@ -1493,7 +1582,7 @@ impl Actor {
             Action::RestoreRewindDraft { id } => {
                 let mut saved = self.state.saved.clone();
                 saved.restore_rewind_draft(&id)?;
-                persist(&saved)?;
+                self.persistence.flush(&saved)?;
                 self.state.saved = saved;
                 self.state.edited_messages += 1;
             }
@@ -1526,6 +1615,7 @@ impl Actor {
                 self.state.clear_error();
             }
             Action::ClearConversation => {
+                self.persistence.flush(&self.state.saved)?;
                 self.clear_conversation(persist)?;
                 if let Err(error) = self.start() {
                     self.state.fail(error);
@@ -1784,6 +1874,7 @@ impl Actor {
                 self.pid.store(0, Ordering::SeqCst);
                 self.process = None;
                 let outcome = if forget && !self.side_chat {
+                    self.save();
                     archive_closed_session(&self.state.saved)
                 } else {
                     self.save();
@@ -2854,14 +2945,15 @@ impl Actor {
                 }
             }
             Pending::Skills => {
-                self.state.skills = result["data"]
+                self.state.skills = (result["data"]
                     .as_array()
                     .into_iter()
                     .flatten()
                     .filter_map(|entry| entry["skills"].as_array())
                     .flatten()
                     .cloned()
-                    .collect();
+                    .collect::<Vec<_>>())
+                .into();
             }
             Pending::Config => {
                 if self.side_chat {
@@ -3001,7 +3093,7 @@ impl Actor {
                 }
                 if let Some(origin) = self.state.saved.fork_origin.as_mut() {
                     origin.source_thread = None;
-                    persist(&self.state.saved)?;
+                    self.persistence.flush(&self.state.saved)?;
                 }
                 if self.state.saved.pending_edit.is_some() {
                     self.request("thread/turns/list", json!({"threadId":self.state.saved.thread_id,"itemsView":"notLoaded","limit":100,"sortDirection":"desc"}), Pending::RecoverEdit)?;
@@ -3300,8 +3392,30 @@ impl Actor {
                     a.refresh_error = false;
                 }
                 self.child_read_failures.remove(&thread);
+                let revision = self
+                    .state
+                    .subagent_activity
+                    .get(&thread)
+                    .map(|activity| activity.items.revision());
                 self.state
                     .apply_subagent_read(&thread, period_start, &result["thread"]);
+                let unchanged = revision
+                    == self
+                        .state
+                        .subagent_activity
+                        .get(&thread)
+                        .map(|activity| activity.items.revision());
+                let attempts = if unchanged {
+                    self.child_read_backoff
+                        .get(&thread)
+                        .filter(|(old, _, _)| *old == generation)
+                        .map_or(1, |(_, attempts, _)| attempts.saturating_add(1))
+                } else {
+                    0
+                };
+                let delay = Duration::from_secs((2_u64 << attempts.min(4)).min(30));
+                self.child_read_backoff
+                    .insert(thread, (generation, attempts, Instant::now() + delay));
             }
             Pending::StopList {
                 root,
@@ -3425,7 +3539,20 @@ impl Actor {
                     .map(|agent| (agent.id.clone(), period.start_item))
             })
             .collect();
+        let active: HashSet<&str> = children.iter().map(|(thread, _)| thread.as_str()).collect();
+        self.child_read_backoff
+            .retain(|thread, _| active.contains(thread.as_str()));
         for (thread, period_start) in children {
+            if self
+                .child_read_backoff
+                .get(&thread)
+                .is_some_and(|(generation, _, due)| {
+                    *generation == self.state.subagent_observation_generation
+                        && Instant::now() < *due
+                })
+            {
+                continue;
+            }
             if thread.len() > 1024 {
                 continue;
             }
@@ -3478,14 +3605,17 @@ impl Actor {
         }
     }
     fn run(&mut self) {
-        if let Err(e) = self.start() {
-            self.state.fail(e);
+        if !self.stopping.load(Ordering::SeqCst) {
+            if let Err(e) = self.start() {
+                self.state.fail(e);
+            }
         }
         self.title_generator.update_pending(&mut self.state, false);
         self.emit();
         loop {
-            match self.actions.recv_timeout(Duration::from_millis(40)) {
+            match self.actions.try_recv() {
                 Ok(action) => {
+                    std::thread::current().unpark();
                     match self.action(action) {
                         Ok(false) => break,
                         Ok(true) => {}
@@ -3493,19 +3623,20 @@ impl Actor {
                     }
                     self.dirty = true;
                 }
-                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                Err(mpsc::TryRecvError::Disconnected) => {
                     self.pid.store(0, Ordering::SeqCst);
                     self.process = None;
                     self.save();
                     break;
                 }
-                Err(mpsc::RecvTimeoutError::Timeout) => {}
+                Err(mpsc::TryRecvError::Empty) => {}
             }
-            loop {
+            for _ in 0..256 {
                 let message = self.process.as_ref().and_then(|p| p.lines.try_recv().ok());
                 let Some(message) = message else {
                     break;
                 };
+                std::thread::current().unpark();
                 let outcome = message.and_then(|m| self.message(m));
                 if let Err(e) = outcome {
                     self.reject_pending_submission();
@@ -3518,6 +3649,7 @@ impl Actor {
                 self.dirty = true;
             }
             if !self.side_chat
+                && self.startup_error.is_none()
                 && self.title_generator.tick(
                     &mut self.state.saved,
                     self.state.status,
@@ -3590,12 +3722,36 @@ impl Actor {
                 self.pending.clear();
                 self.dirty = true;
             }
-            if self.dirty {
+            if self.dirty
+                && (self.last_emit.elapsed() >= Duration::from_millis(16)
+                    || !self.state.provider_work_active())
+            {
                 self.emit();
             }
-            if self.needs_save && self.last_save.elapsed() >= Duration::from_millis(250) {
-                self.save();
+            if self.needs_save && self.last_save.elapsed() >= Duration::from_secs(2) {
+                if let Err(error) = self.persistence.schedule(&self.state.saved) {
+                    self.state.error = Some(error);
+                    self.dirty = true;
+                }
+                self.needs_save = false;
+                self.last_save = Instant::now();
             }
+            if let Some(error) = self.persistence.take_error() {
+                self.state.error = Some(error);
+                self.needs_save = true;
+                self.dirty = true;
+            }
+            let mut wait = Duration::from_secs(1);
+            if self.dirty {
+                wait = wait.min(Duration::from_millis(16).saturating_sub(self.last_emit.elapsed()));
+            }
+            if let Some((when, _, _)) = self.interrupt_retry.as_ref() {
+                wait = wait.min(when.saturating_duration_since(Instant::now()));
+            }
+            for request in self.pending.values() {
+                wait = wait.min(request.deadline.saturating_duration_since(Instant::now()));
+            }
+            std::thread::park_timeout(wait);
         }
     }
 }
@@ -3743,7 +3899,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         persist_in_dir(&session, dir.path()).unwrap();
         let path = dir.path().join(format!("{}.json", session.key));
-        let decoded: SavedSession = serde_json::from_slice(&fs_err::read(path).unwrap()).unwrap();
+        let decoded = load_saved_session(&path).unwrap();
         assert_eq!(decoded.side_chats["/checkout/a"].draft, "unsent");
         assert_eq!(decoded.side_chats["/checkout/a"].messages.len(), 2);
         assert_eq!(decoded.side_chats["/checkout/b"].draft, "other");
@@ -4207,8 +4363,7 @@ mod tests {
     fn snapshot_payload_benchmark() {
         use std::hint::black_box;
         let path = std::env::var("GROVE_PERF_SESSION").expect("GROVE_PERF_SESSION");
-        let bytes = fs_err::read(path).unwrap();
-        let saved: SavedSession = serde_json::from_slice(&bytes).unwrap();
+        let saved = load_saved_session(std::path::Path::new(&path)).unwrap();
         let state = Snapshot::new(saved);
         let expected = state.saved.items.len();
         let serialized = serde_json::to_value(&state.saved).unwrap();
@@ -4257,7 +4412,7 @@ mod tests {
     fn transcript_existing_row_edit_benchmark() {
         use std::hint::black_box;
         let path = std::env::var("GROVE_PERF_SESSION").expect("GROVE_PERF_SESSION");
-        let saved: SavedSession = serde_json::from_slice(&fs_err::read(path).unwrap()).unwrap();
+        let saved = load_saved_session(std::path::Path::new(&path)).unwrap();
         let shared = saved.items;
         let legacy: Vec<Value> = shared.iter().map(|item| item.as_ref().clone()).collect();
         let index = legacy
@@ -4312,15 +4467,15 @@ mod tests {
     #[ignore = "manual private recovery persistence benchmark"]
     fn snapshot_persistence_benchmark() {
         let path = std::env::var("GROVE_PERF_SESSION").expect("GROVE_PERF_SESSION");
-        let saved: SavedSession = serde_json::from_slice(&fs_err::read(path).unwrap()).unwrap();
+        let saved = load_saved_session(std::path::Path::new(&path)).unwrap();
         let directory = tempfile::tempdir().unwrap();
         let expected = serde_json::to_value(&saved).unwrap();
         for sample in 0..11 {
             let start = Instant::now();
             persist_in_dir(&saved, directory.path()).unwrap();
             let elapsed = start.elapsed().as_secs_f64() * 1000.0;
-            let actual: Value = serde_json::from_slice(
-                &fs_err::read(directory.path().join(format!("{}.json", saved.key))).unwrap(),
+            let actual = serde_json::to_value(
+                load_saved_session(&directory.path().join(format!("{}.json", saved.key))).unwrap(),
             )
             .unwrap();
             assert_eq!(actual, expected);
@@ -4375,9 +4530,9 @@ mod tests {
                 },
             );
             if cached {
-                actor.state.models = vec![
+                actor.state.models = (vec![
                     json!({"model":"cached-model", "isDefault":true, "defaultReasoningEffort":"high"}),
-                ];
+                ]).into();
                 actor.state.resolved_model = None;
             } else {
                 actor.state.models.clear();
@@ -4573,7 +4728,7 @@ mod tests {
         actor.state.turn_id = None;
         actor.state.saved.draft = "explain".into();
         actor.state.saved.draft_reference = Some(reference("old"));
-        actor.state.skills = vec![json!({"name":"skill","path":"/tmp/skill"})];
+        actor.state.skills = (vec![json!({"name":"skill","path":"/tmp/skill"})]).into();
         let canonical = reference("old").serialize("explain");
         actor
             .action(Action::Submit {
@@ -5495,9 +5650,10 @@ mod tests {
             .speed
             .is_none());
         actor.state.model = Some("catalog-model".into());
-        actor.state.models = vec![
+        actor.state.models = (vec![
             json!({"model":"catalog-model","serviceTiers":[{"id":"priority"},{"id":"ultrafast"}]}),
-        ];
+        ])
+        .into();
         actor.state.saved.draft = "untouched".into();
         actor.state.saved.draft_images = vec!["attachment".into()];
         actor.action(Action::SetSpeed(Speed::Fast)).unwrap();
@@ -5520,10 +5676,11 @@ mod tests {
     fn speed_model_switch_retains_preference_without_unadvertised_tier() {
         let mut actor = actor();
         actor.state.model = Some("fast-capable".into());
-        actor.state.models = vec![
+        actor.state.models = (vec![
             json!({"model":"fast-capable","additionalSpeedTiers":["fast"]}),
             json!({"model":"other"}),
-        ];
+        ])
+        .into();
         actor.action(Action::SetSpeed(Speed::Fast)).unwrap();
         actor
             .action(Action::Configure {
@@ -6054,7 +6211,7 @@ mod tests {
     fn live_catalog_ultra_effort_is_sent_and_persisted() {
         let mut actor = actor();
         // Codex CLI 0.163.0 model/list advertises these stops for GPT-6.1 Sol.
-        actor.state.models = vec![json!({
+        actor.state.models = (vec![json!({
             "id":"gpt-6.1-sol", "model":"gpt-6.1-sol",
             "defaultReasoningEffort":"medium",
             "supportedReasoningEfforts":[
@@ -6062,7 +6219,8 @@ mod tests {
                 {"reasoningEffort":"high"}, {"reasoningEffort":"xhigh"},
                 {"reasoningEffort":"max"}, {"reasoningEffort":"ultra"}
             ]
-        })];
+        })])
+        .into();
         actor
             .action(Action::Configure {
                 model: Some("gpt-6.1-sol".into()),
@@ -6090,7 +6248,8 @@ mod tests {
     fn changing_models_explicitly_replaces_previous_effort_with_catalog_default() {
         let mut actor = actor();
         actor.state.models =
-            vec![json!({"id":"new-id","model":"new-model","defaultReasoningEffort":"low"})];
+            (vec![json!({"id":"new-id","model":"new-model","defaultReasoningEffort":"low"})])
+                .into();
         actor.state.effort = Some("xhigh".into());
         actor
             .action(Action::Configure {
@@ -6211,10 +6370,11 @@ mod tests {
     #[test]
     fn skill_mentions_use_catalog_paths_and_optional_catalog_errors_are_nonfatal() {
         let mut actor = actor();
-        actor.state.skills = vec![
+        actor.state.skills = (vec![
             json!({"name":"review","path":"/skills/review/SKILL.md","enabled":true}),
             json!({"name":"disabled","path":"/disabled","enabled":false}),
-        ];
+        ])
+        .into();
         let input = actor.input("Use $review, then $disabled and $reviewer", vec![]);
         assert_eq!(input.len(), 2);
         assert_eq!(
@@ -8793,7 +8953,7 @@ mod tests {
     }
     #[cfg(unix)]
     fn edit_disk(fixture: &EditFixture) -> SavedSession {
-        serde_json::from_slice(&fs_err::read(&fixture.journal).unwrap()).unwrap()
+        load_saved_session(&fixture.journal).unwrap()
     }
     #[test]
     #[cfg(unix)]

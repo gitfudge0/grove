@@ -1,6 +1,8 @@
 //! Shared header control geometry and accessible naming.
+mod animation_leaf;
 use super::{motion, rpx, tokens::*};
 use crate::theme as c;
+pub(crate) use animation_leaf::isolated_animation;
 use gpui::{div, prelude::*, AnimationExt as _, App, Div, MouseButton, Stateful};
 
 /// Header layout shared by pages, compact viewers and anchored previews.
@@ -661,13 +663,32 @@ pub fn composer_focus_glow(
     focused: bool,
     enabled: bool,
     id: impl Into<gpui::ElementId>,
+    _window: &mut gpui::Window,
+    _cx: &mut App,
+) -> gpui::AnyElement {
+    let id = id.into();
+    // The absolute underlay retains the exact writing-surface bounds. Only its
+    // leaf is notified by the breathing/spread animations.
+    div()
+        .absolute()
+        .size_full()
+        .child(isolated_animation(id.clone(), move |window, cx| {
+            composer_focus_glow_inner(bounds.clone(), focused, enabled, id.clone(), window, cx)
+        }))
+        .into_any_element()
+}
+
+fn composer_focus_glow_inner(
+    bounds: std::rc::Rc<std::cell::Cell<gpui::Bounds<gpui::Pixels>>>,
+    focused: bool,
+    enabled: bool,
+    id: gpui::ElementId,
     window: &mut gpui::Window,
     cx: &mut App,
 ) -> gpui::AnyElement {
     if !enabled || !c::composer_focus_glow_enabled() {
         return div().into_any_element();
     }
-    let id = id.into();
     let now = std::time::Instant::now();
     let reduced = cx.reduce_motion();
     let state = window.use_keyed_state(id.clone(), cx, |_, _| ComposerSpread::new(focused, now));
@@ -1226,6 +1247,16 @@ pub fn shimmer_label(
     running: bool,
     cx: &App,
 ) -> gpui::AnyElement {
+    if !running || cx.reduce_motion() {
+        return div().child(label).into_any_element();
+    }
+    isolated_animation(id.clone(), move |_, cx| {
+        shimmer_label_inner(id.clone(), label.clone(), cx)
+    })
+}
+
+fn shimmer_label_inner(id: gpui::ElementId, label: String, cx: &App) -> gpui::AnyElement {
+    let running = true;
     if !running || cx.reduce_motion() {
         return div().child(label).into_any_element();
     }

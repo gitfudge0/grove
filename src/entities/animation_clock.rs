@@ -2,8 +2,6 @@
 
 use std::time::Duration;
 
-use gpui::{Context, Task};
-
 /// Fast lane: the 60ms cadence the iced app uses whenever anything is moving (`src/gui/update/mod.rs:368-390`).
 pub const FAST: Duration = Duration::from_millis(60);
 /// Slow lane: 1s, so an idle window still ticks for fresh labels, at 1/16th the wakeups.
@@ -52,63 +50,6 @@ pub const SPINNER_FRAMES: u64 = 12;
 /// Working/loading spinner: one of `SPINNER_FRAMES` fixed steps every 3 ticks (`src/gui/icons.rs:70`).
 pub fn spinner_frame(tick: u64) -> u64 {
     (tick / 3) % SPINNER_FRAMES
-}
-
-pub struct AnimationClock {
-    tick: u64,
-    fast: bool,
-    /// Dropping a `Task` cancels it, so this field *is* the running timer.
-    timer: Task<()>,
-}
-
-impl AnimationClock {
-    /// Starts in the slow lane: at startup there are no PTYs yet.
-    pub fn new(cx: &mut Context<Self>) -> Self {
-        Self {
-            tick: 0,
-            fast: false,
-            timer: Self::spawn_timer(false, cx),
-        }
-    }
-
-    pub fn tick(&self) -> u64 {
-        self.tick
-    }
-
-    /// Restarts the timer only when the cadence changes (restarting every frame defeats the slow lane).
-    pub fn set_busy_inputs(
-        &mut self,
-        busy: bool,
-        has_ptys: bool,
-        focused: bool,
-        animating: bool,
-        dirty: bool,
-        cx: &mut Context<Self>,
-    ) {
-        let fast = is_fast(busy, has_ptys, focused, animating, dirty);
-        if fast == self.fast {
-            return;
-        }
-        self.fast = fast;
-        self.timer = Self::spawn_timer(fast, cx);
-    }
-
-    fn spawn_timer(fast: bool, cx: &mut Context<Self>) -> Task<()> {
-        let period = if fast { FAST } else { SLOW };
-        cx.spawn(async move |this: gpui::WeakEntity<Self>, cx| loop {
-            cx.background_executor().timer(period).await;
-            // Observers repaint off cx.notify(); an `Err` here means the entity is gone.
-            if this
-                .update(cx, |this: &mut Self, cx| {
-                    this.tick = this.tick.wrapping_add(1);
-                    cx.notify();
-                })
-                .is_err()
-            {
-                break;
-            }
-        })
-    }
 }
 
 #[cfg(test)]

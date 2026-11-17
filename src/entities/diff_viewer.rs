@@ -5,8 +5,7 @@ use std::time::{Instant, SystemTime};
 
 use gpui::{AppContext as _, Context};
 use grove_core::diff::{self, FileChange, Patch};
-use grove_core::highlight;
-use grove_core::render_rows::{self, SplitRenderRow, UnifiedRenderRow};
+use grove_core::render_rows::{self, UnifiedRenderRow};
 use grove_core::storage::DiffMode;
 
 /// Matched to `ProjectTree`'s `GIT_POLL_INTERVAL` so the file list refreshes on the same rhythm as the git-state chips it's opened from.
@@ -36,23 +35,19 @@ pub enum FileListStyle {
 /// One cached patch, keyed by the file's mtime at load time so a later poll can tell a stale entry from a fresh one.
 #[derive(Clone, Debug)]
 pub struct CachedPatch {
-    pub patch: Patch,
+    pub patch: std::rc::Rc<Patch>,
     pub mtime: Option<SystemTime>,
     /// `Rc`, not `Arc`: the row vectors never cross a thread boundary.
     pub unified: std::rc::Rc<Vec<UnifiedRenderRow>>,
-    pub split: std::rc::Rc<Vec<SplitRenderRow>>,
-    /// The horizontal scroll extent's reference row; split has no counterpart since every row already has a definite pixel width.
-    pub unified_widest: usize,
-    /// Baked here since measuring pixel width needs a `Window` and can't happen off-thread.
-    pub split_old_widest_text: String,
-    pub split_new_widest_text: String,
+    /// Exact painted width, invalidated with the patch and keyed by resolved font size.
+    pub width_cache: std::rc::Rc<std::cell::RefCell<Option<(gpui::Pixels, gpui::Pixels)>>>,
 }
 
 /// Constructed fresh each time the modal opens rather than kept warm, so a stale file list can never leak into a different worktree's session.
 pub struct DiffViewerState {
     pub wt_path: String,
     pub branch: Option<String>,
-    pub files: Vec<FileChange>,
+    pub files: std::rc::Rc<Vec<FileChange>>,
     pub group: Option<diff::ChangeGroup>,
     pub subcategory: Option<String>,
     classifier: diff::ChangeClassifier,
@@ -69,6 +64,8 @@ pub struct DiffViewerState {
     last_live_refresh: Option<Instant>,
     /// Guards against a second render frame overlapping an in-flight refresh.
     live_refresh_inflight: bool,
+    #[cfg(test)]
+    captured_fixture: bool,
     /// True once Enter has moved keyboard focus from the file list to the scrolling body.
     pub body_focused: bool,
     /// Shared [`gpui::UniformListScrollHandle`]: unified and split are both `uniform_list`s now, so there is only one scroll target.
@@ -83,10 +80,16 @@ impl DiffViewerState {
     /// `mode` comes from `SettingsState.store.diff_mode` — the caller reads
     /// the global, this entity does not.
     pub fn new(wt_path: String, mode: DiffMode, cx: &mut Context<Self>) -> Self {
-        let mut this = Self {
+        let mut this = Self::initial(wt_path, mode);
+        this.load_files(cx);
+        this
+    }
+
+    fn initial(wt_path: String, mode: DiffMode) -> Self {
+        Self {
             wt_path,
             branch: None,
-            files: Vec::new(),
+            files: std::rc::Rc::default(),
             group: None,
             subcategory: None,
             classifier: diff::ChangeClassifier::default(),
@@ -99,11 +102,39 @@ impl DiffViewerState {
             loading: true,
             last_live_refresh: None,
             live_refresh_inflight: false,
+            #[cfg(test)]
+            captured_fixture: false,
             body_focused: false,
             body_scroll: gpui::UniformListScrollHandle::new(),
             pan_x: 0.0,
-        };
-        this.load_files(cx);
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn fixture(patch: Patch) -> Self {
+        let mut this = Self::initial("/isolated-diff-fixture".into(), DiffMode::Unified);
+        this.captured_fixture = true;
+        let unified = render_rows::unified_render_rows(&patch, &[], &[]);
+        let path = "fixture.rs".to_owned();
+        this.files = vec![FileChange {
+            path: path.clone(),
+            status: diff::Status::Modified,
+            added: unified.len() as u32,
+            removed: 0,
+        }]
+        .into();
+        this.selected_path = Some(path.clone());
+        this.loading = false;
+        this.last_live_refresh = Some(Instant::now());
+        this.patch_cache.insert(
+            path,
+            CachedPatch {
+                patch: std::rc::Rc::new(patch),
+                mtime: None,
+                unified: std::rc::Rc::new(unified),
+                width_cache: std::rc::Rc::default(),
+            },
+        );
         this
     }
 
@@ -117,7 +148,7 @@ impl DiffViewerState {
         self.group = Some(group);
         self.subcategory = subcategory;
         self.classifier = classifier;
-        self.files.retain(|f| {
+        std::rc::Rc::make_mut(&mut self.files).retain(|f| {
             self.classifier
                 .matches(&f.path, group, self.subcategory.as_deref())
         });
@@ -154,7 +185,8 @@ impl DiffViewerState {
                                 .matches(&f.path, g, this.subcategory.as_deref())
                         })
                     })
-                    .collect();
+                    .collect::<Vec<_>>()
+                    .into();
                 this.branch = Some(branch).filter(|b| !b.is_empty());
                 if this.selected_path.is_none() {
                     this.selected_path = this.files.first().map(|f| f.path.clone());
@@ -170,6 +202,11 @@ impl DiffViewerState {
 
     /// Rides `ProjectTree`'s own poll cadence rather than a second timer; self-throttled and guarded against overlap.
     pub fn maybe_refresh_live(&mut self, cx: &mut Context<Self>) {
+        #[cfg(test)]
+        if self.captured_fixture {
+            // Captured patch fixtures have no backing checkout to poll.
+            return;
+        }
         let now = Instant::now();
         let due = self
             .last_live_refresh
@@ -226,7 +263,7 @@ impl DiffViewerState {
             self.patch_cache.remove(path);
             self.patch_cache_order.retain(|cached| cached != path);
         }
-        self.files = new_files;
+        self.files = std::rc::Rc::new(new_files);
         self.selected_path.clone_from(&reconciled.selected);
         cx.notify();
 
@@ -267,51 +304,17 @@ impl DiffViewerState {
         cx.spawn(async move |this, cx| {
             let path_for_mtime = path.clone();
             let wt_for_mtime = wt_path.clone();
-            // Baking happens off the main thread; the split bake alone measured ~2.4ms in `diff_bench`.
-            let (
-                patch,
-                mtime,
-                unified,
-                split,
-                unified_widest,
-                split_old_widest_text,
-                split_new_widest_text,
-            ) = cx
+            let (patch, mtime, unified) = cx
                 .background_spawn(async move {
                     let patch = diff::file_patch(&wt_path, &path, &status);
                     let mtime =
                         fs_err::metadata(std::path::Path::new(&wt_for_mtime).join(&path_for_mtime))
                             .ok()
                             .and_then(|m| m.modified().ok());
-                    // Only a `Text` patch has anything to highlight; `Binary`/`TooLarge` skip to empty spans.
-                    let (old_spans, new_spans) = match &patch {
-                        Patch::Text { .. } => {
-                            let old_spans = diff::head_blob(&wt_path, &path)
-                                .map(|blob| highlight::highlight_file(&blob, &path))
-                                .unwrap_or_default();
-                            let new_spans = diff::working_file(&wt_path, &path)
-                                .map(|content| highlight::highlight_file(&content, &path))
-                                .unwrap_or_default();
-                            (old_spans, new_spans)
-                        }
-                        Patch::TooLarge { .. } | Patch::Binary => (Vec::new(), Vec::new()),
-                    };
-                    let unified = render_rows::unified_render_rows(&patch, &old_spans, &new_spans);
-                    let split = render_rows::split_render_rows(&patch, &old_spans, &new_spans);
-                    let unified_widest = render_rows::widest_unified_row(&unified);
-                    let split_old_widest_text =
-                        render_rows::widest_split_side_text(&split, true).to_string();
-                    let split_new_widest_text =
-                        render_rows::widest_split_side_text(&split, false).to_string();
-                    (
-                        patch,
-                        mtime,
-                        unified,
-                        split,
-                        unified_widest,
-                        split_old_widest_text,
-                        split_new_widest_text,
-                    )
+                    // This surface paints unified plain rows. Do not bake unused
+                    // split rows or syntax spans for an unmounted representation.
+                    let unified = render_rows::unified_render_rows(&patch, &[], &[]);
+                    (patch, mtime, unified)
                 })
                 .await;
             let _ = this.update(cx, |this, cx| {
@@ -327,13 +330,10 @@ impl DiffViewerState {
                 this.patch_cache.insert(
                     insert_key,
                     CachedPatch {
-                        patch,
+                        patch: std::rc::Rc::new(patch),
                         mtime,
                         unified: std::rc::Rc::new(unified),
-                        split: std::rc::Rc::new(split),
-                        unified_widest,
-                        split_old_widest_text,
-                        split_new_widest_text,
+                        width_cache: std::rc::Rc::default(),
                     },
                 );
                 cx.notify();
@@ -342,32 +342,14 @@ impl DiffViewerState {
         .detach();
     }
 
-    pub fn selected_patch(&self) -> Option<&Patch> {
+    pub fn selected_patch(&self) -> Option<&std::rc::Rc<Patch>> {
         let path = self.selected_path.as_deref()?;
         self.patch_cache.get(path).map(|c| &c.patch)
     }
 
-    pub fn selected_unified(&self) -> Option<(&std::rc::Rc<Vec<UnifiedRenderRow>>, usize)> {
+    pub fn selected_unified(&self) -> Option<&std::rc::Rc<Vec<UnifiedRenderRow>>> {
         let path = self.selected_path.as_deref()?;
-        self.patch_cache
-            .get(path)
-            .map(|c| (&c.unified, c.unified_widest))
-    }
-
-    /// Unlike [`Self::selected_unified`], no widest-row index: split columns size from measured text widths instead.
-    pub fn selected_split(&self) -> Option<&std::rc::Rc<Vec<SplitRenderRow>>> {
-        let path = self.selected_path.as_deref()?;
-        self.patch_cache.get(path).map(|c| &c.split)
-    }
-
-    pub fn selected_split_col_texts(&self) -> Option<(&str, &str)> {
-        let path = self.selected_path.as_deref()?;
-        self.patch_cache.get(path).map(|c| {
-            (
-                c.split_old_widest_text.as_str(),
-                c.split_new_widest_text.as_str(),
-            )
-        })
+        self.patch_cache.get(path).map(|c| &c.unified)
     }
 
     pub fn toggle_list_style(&mut self, cx: &mut Context<Self>) {

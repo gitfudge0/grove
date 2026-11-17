@@ -152,6 +152,21 @@ pub(super) fn focus_host(window: &Window) {
         unsafe { grove_html_linux_focus_host(parent) };
     }
 }
+/// GLib prepare/query belongs to its foreground owner. The opaque allocation
+/// contains only copied GPollFDs and a timeout; the worker waits and frees it.
+pub(super) fn prepare_event_wait() -> usize {
+    // SAFETY: called by the foreground bridge; ownership transfers to wait_events.
+    unsafe { grove_html_linux_prepare_wait() as usize }
+}
+pub(super) fn finish_event_wait() {
+    // SAFETY: balanced with prepare_event_wait on the foreground owner.
+    unsafe { grove_html_linux_finish_wait() };
+}
+pub(super) fn wait_events(wait: usize) {
+    // SAFETY: each allocation is consumed exactly once, with no GTK calls.
+    unsafe { grove_html_linux_wait_events(wait as *mut c_void) };
+}
+
 pub(super) fn pump(cx: &mut gpui::App) {
     // SAFETY: only GPUI's foreground executor pumps GTK's default context.
     unsafe { grove_html_linux_pump() };
@@ -263,4 +278,7 @@ extern "C" {
     fn grove_html_linux_hide_all();
     fn grove_html_linux_focus_host(parent: std::ffi::c_ulong);
     fn grove_html_linux_pump();
+    fn grove_html_linux_prepare_wait() -> *mut c_void;
+    fn grove_html_linux_finish_wait();
+    fn grove_html_linux_wait_events(handle: *mut c_void);
 }

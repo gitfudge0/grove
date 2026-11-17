@@ -581,7 +581,7 @@ impl Render for ScopePicker {
                             .with_focus_handle(self.cancel_focus.clone())
                             .debug_selector(|| "scope-cancel".into())
                             .on_click(cx.listener(|this, _, _, cx| {
-                                this.dismiss(ScopePickerEvent::Cancelled, cx)
+                                this.dismiss(ScopePickerEvent::Cancelled, cx);
                             })),
                     )
                     .child(
@@ -725,7 +725,7 @@ mod tests {
                 assert!(picker.selected.is_empty());
                 assert_eq!(picker.cwd, "");
                 assert!(!picker.can_apply());
-            })
+            });
         });
     }
 

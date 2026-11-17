@@ -3,7 +3,7 @@
 use super::*;
 use gpui::{
     AnyElement, Bounds, Element, ElementId, GlobalElementId, InspectorElementId, LayoutId, Pixels,
-    Size, TextStyle, WeakEntity,
+    SharedString, Size, TextStyle, WeakEntity,
 };
 use std::cell::RefCell;
 
@@ -32,6 +32,7 @@ pub(super) struct Measurement {
     hover_key: String,
     controls: Vec<ControlTarget>,
     pending: bool,
+    was_visible: bool,
 }
 
 #[cfg(test)]
@@ -58,11 +59,13 @@ pub(super) struct SlotLayout {
     cached_size: Option<Size<Pixels>>,
     eager: bool,
 }
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 enum UserControl {
     Fork(bool),
     Edit,
     Copy,
+    CodeCopy(SharedString),
+    Snippet(snippets::SnippetControl),
 }
 #[derive(Clone)]
 struct ControlTarget {
@@ -132,19 +135,19 @@ fn user_control_proxy(
     item: codex::TranscriptItem,
 ) -> AnyElement {
     let key = target.source_key.clone();
-    let kind = target.kind;
+    let kind = target.kind.clone();
     let mut div =
         div()
             .track_focus(&target.focus)
             .tab_index(0)
             .on_key_down(move |event, window, cx| {
                 if action_key(event) {
-                    let _ = view.update(cx, |view, cx| match kind {
+                    let _ = view.update(cx, |view, cx| match &kind {
                         UserControl::Fork(restore_user) => {
                             if !view.transcript_only() && !view.session.read(cx).state.status.busy()
                             {
                                 if let Some(id) = item["id"].as_str() {
-                                    view.fork_from_item(id, restore_user, cx);
+                                    view.fork_from_item(id, *restore_user, cx);
                                 }
                             }
                         }
@@ -152,6 +155,12 @@ fn user_control_proxy(
                             if let Some(id) = item["id"].as_str() {
                                 view.request_edit_item(id, window, cx);
                             }
+                        }
+                        UserControl::Snippet(kind) => {
+                            view.activate_snippet_control(&key, *kind, window, cx);
+                        }
+                        UserControl::CodeCopy(code) => {
+                            view.copy_code_block(key.clone(), code.to_string(), cx);
                         }
                         UserControl::Copy => view.copy_message(
                             key.clone(),
@@ -261,6 +270,36 @@ impl MeasuredTranscriptSlot {
                         }
                     }
                 }
+                if !user {
+                    if let Some(owner) = &owner {
+                        let source = owner.read(cx).source();
+                        let source_digest = self.frame.prepared.item_data[self.index]
+                            .snippet_source_digest(&source);
+                        for block in owner.read(cx).code_blocks() {
+                            let code = block.code();
+                            let key = snippets::key_with_digest(
+                                &self.owner_key,
+                                block.span.map_or(0, |span| span.start),
+                                &code,
+                                source_digest,
+                            );
+                            if let Some(focus) = view.message_focus.get(&key) {
+                                cache.controls.push(ControlTarget {
+                                    focus: focus.clone(),
+                                    source_key: key.clone(),
+                                    kind: UserControl::CodeCopy(code),
+                                });
+                            }
+                            for (focus, kind) in view.snippet_projection_controls(&key, cx) {
+                                cache.controls.push(ControlTarget {
+                                    focus,
+                                    source_key: key.clone(),
+                                    kind: UserControl::Snippet(kind),
+                                });
+                            }
+                        }
+                    }
+                }
                 cache.hover_key = if user {
                     key
                 } else {
@@ -288,6 +327,12 @@ impl MeasuredTranscriptSlot {
         let item = &self.frame.state.saved.items[self.index];
         let id = item["id"].as_str().unwrap_or("");
         let cache = self.cache.borrow();
+        if cache.controls.iter().any(|control| {
+            matches!(control.kind, UserControl::Snippet(_))
+                && view.snippet_requires_eager(&control.source_key)
+        }) {
+            return true;
+        }
         let html_id = item["id"]
             .as_str()
             .map_or_else(|| format!("message-{}", self.index), str::to_owned);
@@ -321,6 +366,7 @@ impl MeasuredTranscriptSlot {
             || view.snippets.keys().any(|key| key.strip_prefix(&self.owner_key)
                 .is_some_and(|tail| tail.starts_with(":code:")))
             || view.message_hover.contains(&cache.hover_key)
+            || cache.controls.iter().any(|control| control.focus.contains_focused(window, cx))
             || cache
                 .focus
                 .as_ref()
@@ -371,7 +417,7 @@ impl Element for MeasuredTranscriptSlot {
         }
         let cache = self.cache.borrow();
         let owner = cache.owner.as_ref().and_then(WeakEntity::upgrade);
-        let cached_size = (!eager && !cache.pending)
+        let cached_size = (!eager && !cache.pending && !cache.was_visible)
             .then_some(cache.size)
             .flatten()
             .filter(|_| {
@@ -477,6 +523,7 @@ impl Element for MeasuredTranscriptSlot {
         #[cfg(test)]
         let _phase = phases::Section::prepaint();
         let visible = bounds.intersects(&window.content_mask().bounds);
+        self.cache.borrow_mut().was_visible = visible;
         let width_changed = layout
             .cached_size
             .is_some_and(|size| size.width != bounds.size.width);
@@ -695,11 +742,8 @@ impl Element for MeasuredResponseFooter {
             .on_key_down(move |event, _, cx| {
                 if action_key(event) {
                     let _ = view.update(cx, |view, cx| {
-                        view.copy_message(
-                            key.clone(),
-                            prepared.response_groups[group_index].copy_text.clone(),
-                            cx,
-                        );
+                        let text = view.response_copy_text(&prepared.response_groups[group_index]);
+                        view.copy_message(key.clone(), text, cx);
                     });
                     cx.stop_propagation();
                 }

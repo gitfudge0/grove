@@ -4,10 +4,14 @@
 use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, Instant};
 
+type Wake = Arc<dyn Fn() + Send + Sync>;
+type Notifier = Arc<Mutex<Option<Wake>>>;
+
 pub enum Sender<T> {
     Latest {
         slot: Arc<Mutex<Option<T>>>,
         wake: mpsc::SyncSender<()>,
+        notify: Notifier,
     },
     Channel(mpsc::Sender<T>),
 }
@@ -16,6 +20,7 @@ pub enum Receiver<T> {
     Latest {
         slot: Arc<Mutex<Option<T>>>,
         wake: mpsc::Receiver<()>,
+        notify: Notifier,
     },
     Channel(mpsc::Receiver<T>),
 }
@@ -23,14 +28,17 @@ pub enum Receiver<T> {
 pub fn channel<T>() -> (Sender<T>, Receiver<T>) {
     let slot = Arc::new(Mutex::new(None));
     let (send, receive) = mpsc::sync_channel(1);
+    let notify = Arc::new(Mutex::new(None));
     (
         Sender::Latest {
             slot: slot.clone(),
             wake: send,
+            notify: notify.clone(),
         },
         Receiver::Latest {
             slot,
             wake: receive,
+            notify,
         },
     )
 }
@@ -49,13 +57,21 @@ impl<T> Sender<T> {
     pub fn send(&self, value: T) -> Result<(), mpsc::SendError<T>> {
         match self {
             Self::Channel(send) => send.send(value),
-            Self::Latest { slot, wake } => {
+            Self::Latest { slot, wake, notify } => {
                 let mut slot = slot
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
                 match wake.try_send(()) {
                     Ok(()) | Err(mpsc::TrySendError::Full(())) => {
                         *slot = Some(value);
+                        drop(slot);
+                        if let Some(notify) = notify
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .as_ref()
+                        {
+                            notify();
+                        }
                         Ok(())
                     }
                     Err(mpsc::TrySendError::Disconnected(())) => {
@@ -68,10 +84,24 @@ impl<T> Sender<T> {
     }
 }
 impl<T> Receiver<T> {
+    /// Register the foreground wake before its first drain. An initial wake also
+    /// covers snapshots published before registration. Standard-channel fixtures
+    /// retain their polling adapter.
+    pub fn set_wake(&self, callback: Arc<dyn Fn() + Send + Sync>) -> bool {
+        let Self::Latest { notify, .. } = self else {
+            return false;
+        };
+        *notify
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(callback.clone());
+        callback();
+        true
+    }
+
     pub fn try_recv(&self) -> Result<T, mpsc::TryRecvError> {
         match self {
             Self::Channel(receive) => receive.try_recv(),
-            Self::Latest { slot, wake } => loop {
+            Self::Latest { slot, wake, .. } => loop {
                 wake.try_recv()?;
                 if let Some(value) = slot
                     .lock()
@@ -86,7 +116,7 @@ impl<T> Receiver<T> {
     pub fn recv_timeout(&self, timeout: Duration) -> Result<T, mpsc::RecvTimeoutError> {
         match self {
             Self::Channel(receive) => receive.recv_timeout(timeout),
-            Self::Latest { slot, wake } => {
+            Self::Latest { slot, wake, .. } => {
                 let started = Instant::now();
                 loop {
                     wake.recv_timeout(timeout.saturating_sub(started.elapsed()))?;
@@ -107,6 +137,24 @@ impl<T> Receiver<T> {
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[test]
+    fn wake_registration_catches_existing_snapshot_and_future_bursts() {
+        let (send, receive) = channel();
+        send.send(1).unwrap();
+        let count = Arc::new(AtomicUsize::new(0));
+        let seen = count.clone();
+        assert!(receive.set_wake(Arc::new(move || {
+            seen.fetch_add(1, Ordering::SeqCst);
+        })));
+        assert_eq!(count.load(Ordering::SeqCst), 1);
+        assert_eq!(receive.try_recv().unwrap(), 1);
+        for value in 2..100 {
+            send.send(value).unwrap();
+        }
+        assert_eq!(receive.try_recv().unwrap(), 99);
+        assert_eq!(count.load(Ordering::SeqCst), 99);
+    }
 
     #[test]
     fn burst_keeps_one_snapshot_and_delivers_latest_before_disconnect() {

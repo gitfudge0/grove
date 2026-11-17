@@ -1,14 +1,9 @@
 //! Refresh the launch environment independently of settings panel lifetime.
 
-use std::{
-    sync::Arc,
-    time::{Duration, Instant},
-};
+use std::{sync::Arc, time::Instant};
 
 use futures::future::BoxFuture;
 use gpui::{AppContext as _, Context, Task};
-
-pub const REFRESH_INTERVAL: Duration = Duration::from_mins(10);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RefreshState {
@@ -38,13 +33,8 @@ impl ShellEnvironment {
         )
     }
 
-    fn with_operation(operation: RefreshOperation, cx: &mut Context<Self>) -> Self {
-        let timer = cx.spawn(async move |this, cx| loop {
-            cx.background_executor().timer(REFRESH_INTERVAL).await;
-            if this.update(cx, Self::refresh).is_err() {
-                return;
-            }
-        });
+    fn with_operation(operation: RefreshOperation, _cx: &mut Context<Self>) -> Self {
+        let timer = Task::ready(());
         Self {
             state: RefreshState::Idle,
             refresh_operation: operation,
@@ -121,6 +111,7 @@ impl ShellEnvironment {
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Duration;
 
     #[gpui::test]
     fn confirmation_expires_and_new_work_supersedes_it(cx: &mut gpui::TestAppContext) {
@@ -196,7 +187,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn periodic_refresh_waits_ten_minutes_and_stops_with_entity(cx: &mut gpui::TestAppContext) {
+    fn environment_refresh_is_on_demand_and_stops_with_entity(cx: &mut gpui::TestAppContext) {
         let calls = Arc::new(AtomicUsize::new(0));
         let environment = cx.new({
             let calls = calls.clone();
@@ -211,26 +202,19 @@ mod tests {
             }
         });
         cx.run_until_parked();
-        cx.executor().advance_clock(
-            REFRESH_INTERVAL
-                .checked_sub(Duration::from_secs(1))
-                .unwrap(),
-        );
+        cx.executor().advance_clock(Duration::from_hours(24));
         cx.run_until_parked();
         assert_eq!(calls.load(Ordering::SeqCst), 0);
-        cx.executor().advance_clock(Duration::from_secs(1));
+        environment.update(cx, ShellEnvironment::refresh);
         cx.run_until_parked();
         assert_eq!(calls.load(Ordering::SeqCst), 1);
         environment.read_with(cx, |environment, _| {
             assert_eq!(environment.state(), RefreshState::Error);
         });
-        cx.executor().advance_clock(REFRESH_INTERVAL);
-        cx.run_until_parked();
-        assert_eq!(calls.load(Ordering::SeqCst), 2);
         drop(environment);
         cx.run_until_parked();
-        cx.executor().advance_clock(REFRESH_INTERVAL);
+        cx.executor().advance_clock(Duration::from_hours(24));
         cx.run_until_parked();
-        assert_eq!(calls.load(Ordering::SeqCst), 2);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
     }
 }

@@ -5,9 +5,9 @@ use std::{
     io::{Read, Seek, SeekFrom},
     path::Path,
     process::{Command, Stdio},
-    thread,
-    time::{Duration, Instant},
+    time::Duration,
 };
+use wait_timeout::ChildExt as _;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CheckoutGitState {
@@ -100,6 +100,10 @@ pub(crate) fn git(path: &Path, args: &[&str]) -> Result<String, String> {
     git_with_index(path, args, None)
 }
 
+pub(crate) fn git_limited(path: &Path, args: &[&str], limit: usize) -> Result<String, String> {
+    git_with_index_limit(path, args, None, Some(limit))
+}
+
 fn git_with_index(path: &Path, args: &[&str], index: Option<&Path>) -> Result<String, String> {
     git_with_index_limit(path, args, index, None)
 }
@@ -110,9 +114,20 @@ fn git_with_index_limit(
     index: Option<&Path>,
     limit: Option<usize>,
 ) -> Result<String, String> {
+    git_with_input(path, args, index, limit, None)
+}
+
+fn git_with_input(
+    path: &Path,
+    args: &[&str],
+    index: Option<&Path>,
+    limit: Option<usize>,
+    input: Option<File>,
+) -> Result<String, String> {
     let output = tempfile::tempfile().map_err(|_| "Could not prepare Git operation".to_string())?;
     let errors = tempfile::tempfile().map_err(|_| "Could not prepare Git operation".to_string())?;
     let mut command = Command::new("git");
+    command.env("GIT_OPTIONAL_LOCKS", "0");
     if let Some(index) = index {
         command.env("GIT_INDEX_FILE", index);
     }
@@ -136,7 +151,7 @@ fn git_with_index_limit(
         .env("GIT_TERMINAL_PROMPT", "0")
         .env("GIT_EDITOR", "true")
         .env("GIT_SEQUENCE_EDITOR", "true")
-        .stdin(Stdio::null())
+        .stdin(input.map_or_else(Stdio::null, Stdio::from))
         .stdout(Stdio::from(
             output
                 .try_clone()
@@ -155,60 +170,54 @@ fn git_with_index_limit(
     let mut child = command
         .spawn()
         .map_err(|_| "Could not start Git. Check that Git is installed".to_string())?;
-    let started = Instant::now();
-    loop {
-        match child.try_wait() {
-            Ok(Some(status)) => {
-                if !status.success() {
-                    let mut errors = errors;
-                    let _ = errors.seek(SeekFrom::Start(0));
-                    let mut detail = String::new();
-                    let _ = errors.take(65536).read_to_string(&mut detail);
-                    let message = git_failure_message(args, &detail);
-                    return Err(message.into());
-                }
-                let mut output: File = output;
+    match child.wait_timeout(Duration::from_secs(30)) {
+        Ok(Some(status)) => {
+            if !status.success() {
+                let mut errors = errors;
+                let _ = errors.seek(SeekFrom::Start(0));
+                let mut detail = String::new();
+                let _ = errors.take(65536).read_to_string(&mut detail);
+                let message = git_failure_message(args, &detail);
+                return Err(message.into());
+            }
+            let mut output: File = output;
+            output
+                .seek(SeekFrom::Start(0))
+                .map_err(|_| "Could not read Git output")?;
+            if let Some(limit) = limit {
+                let mut bytes = Vec::new();
                 output
-                    .seek(SeekFrom::Start(0))
+                    .take((limit + 1) as u64)
+                    .read_to_end(&mut bytes)
                     .map_err(|_| "Could not read Git output")?;
-                if let Some(limit) = limit {
-                    let mut bytes = Vec::new();
-                    output
-                        .take((limit + 1) as u64)
-                        .read_to_end(&mut bytes)
-                        .map_err(|_| "Could not read Git output")?;
-                    let truncated = bytes.len() > limit;
-                    bytes.truncate(limit);
-                    let mut text = String::from_utf8_lossy(&bytes).into_owned();
-                    let marker = "\n[context truncated]";
-                    if truncated || text.len() > limit {
-                        let mut end = limit.saturating_sub(marker.len()).min(text.len());
-                        while !text.is_char_boundary(end) {
-                            end -= 1;
-                        }
-                        text.truncate(end);
-                        text.push_str(marker);
+                let truncated = bytes.len() > limit;
+                bytes.truncate(limit);
+                let mut text = String::from_utf8_lossy(&bytes).into_owned();
+                let marker = "\n[context truncated]";
+                if truncated || text.len() > limit {
+                    let mut end = limit.saturating_sub(marker.len()).min(text.len());
+                    while !text.is_char_boundary(end) {
+                        end -= 1;
                     }
-                    return Ok(text);
+                    text.truncate(end);
+                    text.push_str(marker);
                 }
-                let mut text = String::new();
-                output
-                    .read_to_string(&mut text)
-                    .map_err(|_| "Could not read Git output")?;
-                return Ok(text.trim_end().to_string());
+                return Ok(text);
             }
-            Ok(None) if started.elapsed() < Duration::from_secs(30) => {
-                thread::sleep(Duration::from_millis(20));
+            let mut text = String::new();
+            output
+                .read_to_string(&mut text)
+                .map_err(|_| "Could not read Git output")?;
+            Ok(text.trim_end().to_string())
+        }
+        _ => {
+            #[cfg(unix)]
+            unsafe {
+                libc::kill(-(child.id() as i32), libc::SIGKILL);
             }
-            _ => {
-                #[cfg(unix)]
-                unsafe {
-                    libc::kill(-(child.id() as i32), libc::SIGKILL);
-                }
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err("Git operation timed out. Check connectivity and retry".into());
-            }
+            let _ = child.kill();
+            let _ = child.wait();
+            Err("Git operation timed out. Check connectivity and retry".into())
         }
     }
 }
@@ -248,8 +257,55 @@ fn changed_files(path: &Path) -> Result<Vec<String>, String> {
     Ok(files)
 }
 
+/// Git accepts C-quoted newline-delimited paths; octal quoting also preserves
+/// control bytes and Unicode without assuming JSON's unsupported \u escapes.
+pub(crate) fn hash_input(names: &[String]) -> Result<File, String> {
+    let mut input = tempfile::tempfile().map_err(|_| "Could not prepare file hashes")?;
+    for name in names {
+        input
+            .write_all(b"\"")
+            .map_err(|_| "Could not prepare file hashes")?;
+        for byte in name.bytes() {
+            match byte {
+                b'"' | b'\\' => write!(input, "\\{}", char::from(byte)),
+                32..=126 => write!(input, "{}", char::from(byte)),
+                _ => write!(input, "\\{byte:03o}"),
+            }
+            .map_err(|_| "Could not prepare file hashes")?;
+        }
+        input
+            .write_all(b"\"\n")
+            .map_err(|_| "Could not prepare file hashes")?;
+    }
+    input
+        .seek(SeekFrom::Start(0))
+        .map_err(|_| "Could not prepare file hashes")?;
+    Ok(input)
+}
+
 fn working_snapshot(path: &Path) -> Result<[u8; 32], String> {
     let files = changed_files(path)?;
+    let regular: Vec<String> = files
+        .iter()
+        .filter(|name| fs_err::symlink_metadata(path.join(name)).is_ok_and(|meta| meta.is_file()))
+        .cloned()
+        .collect();
+    let hashes = if regular.is_empty() {
+        String::new()
+    } else {
+        git_with_input(
+            path,
+            &["hash-object", "--stdin-paths"],
+            None,
+            None,
+            Some(hash_input(&regular)?),
+        )?
+    };
+    let hashes: std::collections::HashMap<_, _> = regular
+        .iter()
+        .zip(hashes.lines())
+        .map(|(name, hash)| (name.as_str(), hash))
+        .collect();
     let mut context = ring::digest::Context::new(&ring::digest::SHA256);
     for name in files {
         context.update(name.as_bytes());
@@ -273,7 +329,12 @@ fn working_snapshot(path: &Path) -> Result<[u8; 32], String> {
                     context.update(&metadata.permissions().mode().to_be_bytes());
                 }
                 // Git streams the file rather than loading large untracked files into memory.
-                context.update(git(path, &["hash-object", "--", &name])?.as_bytes());
+                context.update(
+                    hashes
+                        .get(name.as_str())
+                        .ok_or("Changed files changed while hashing; retry")?
+                        .as_bytes(),
+                );
             }
             Ok(_) => {
                 return Err(
@@ -495,64 +556,104 @@ fn commit_snapshot(
     Ok(())
 }
 
+#[derive(Default)]
+struct ParsedStatus {
+    branch: Option<String>,
+    head: Option<String>,
+    upstream: Option<String>,
+    counts: Option<(usize, usize)>,
+    dirty: bool,
+    staged_files: Vec<String>,
+    changed_files: Vec<String>,
+}
+
+/// NUL records preserve spaces, tabs and newlines in checkout paths. Renames
+/// are deliberately disabled, matching the previous name-only staged probe.
+fn parse_status(status: &str) -> ParsedStatus {
+    let mut parsed = ParsedStatus::default();
+    for record in status.split('\0') {
+        if let Some(head) = record.strip_prefix("# branch.oid ") {
+            if head != "(initial)" {
+                parsed.head = Some(head.to_owned());
+            }
+        } else if let Some(branch) = record.strip_prefix("# branch.head ") {
+            if branch != "(detached)" {
+                parsed.branch = Some(branch.to_owned());
+            }
+        } else if let Some(upstream) = record.strip_prefix("# branch.upstream ") {
+            parsed.upstream = Some(upstream.to_owned());
+        } else if let Some(counts) = record.strip_prefix("# branch.ab ") {
+            let mut fields = counts.split_whitespace();
+            parsed.counts = fields
+                .next()
+                .and_then(|a| a.strip_prefix('+')?.parse().ok())
+                .zip(
+                    fields
+                        .next()
+                        .and_then(|b| b.strip_prefix('-')?.parse().ok()),
+                );
+        } else {
+            let (path, staged) = match record.as_bytes().first() {
+                Some(b'1') => (
+                    record.splitn(9, ' ').nth(8),
+                    record.as_bytes().get(2).is_some_and(|x| *x != b'.'),
+                ),
+                Some(b'u') => (record.splitn(11, ' ').nth(10), true),
+                Some(b'?') => (record.strip_prefix("? "), false),
+                _ => continue,
+            };
+            if let Some(path) = path {
+                parsed.dirty = true;
+                parsed.changed_files.push(path.to_owned());
+                if staged {
+                    parsed.staged_files.push(path.to_owned());
+                }
+            }
+        }
+    }
+    parsed.changed_files.sort();
+    parsed.changed_files.dedup();
+    parsed.staged_files.sort();
+    parsed.staged_files.dedup();
+    parsed
+}
+
 pub fn inspect(path: &Path) -> Result<CheckoutGitState, String> {
+    inspect_with_status_age(path, Duration::ZERO)
+}
+
+/// Polling reads may reuse the tree's recent status. Action guards always use
+/// `inspect` and therefore revalidate against Git.
+pub fn inspect_for_poll(path: &Path) -> Result<CheckoutGitState, String> {
+    inspect_with_status_age(path, Duration::from_secs(5))
+}
+
+fn inspect_with_status_age(path: &Path, max_age: Duration) -> Result<CheckoutGitState, String> {
     let root = git(path, &["rev-parse", "--show-toplevel"])?;
     let path = Path::new(&root);
-    if git(path, &["rev-parse", "--is-inside-work-tree"])? != "true" {
-        return Err("This folder is not a Git checkout".into());
-    }
-    let branch = git(path, &["symbolic-ref", "--quiet", "--short", "HEAD"]).ok();
-    let head = git(path, &["rev-parse", "--verify", "HEAD"]).ok();
-    let upstream = git(
-        path,
-        &[
-            "rev-parse",
-            "--abbrev-ref",
-            "--symbolic-full-name",
-            "@{upstream}",
-        ],
-    )
-    .ok();
+    let status = crate::git::worktree_status(path, max_age)?;
+    let parsed = parse_status(&status);
     let remotes = git(path, &["remote"])?.lines().map(str::to_owned).collect();
-    let counts = upstream
-        .as_ref()
-        .and_then(|_| {
-            git(
-                path,
-                &["rev-list", "--left-right", "--count", "HEAD...@{upstream}"],
-            )
-            .ok()
-        })
-        .and_then(|s| {
-            let mut values = s.split_whitespace();
-            Some((values.next()?.parse().ok()?, values.next()?.parse().ok()?))
-        });
     // Keep destination and exact tracking configuration out of UI/debug output.
     let config = git(path, &["config", "--get-regexp", "^(remote|branch)\\."]).unwrap_or_default();
     let mut configuration_identity = [0; 32];
     configuration_identity
         .copy_from_slice(ring::digest::digest(&ring::digest::SHA256, config.as_bytes()).as_ref());
-    let staged_files = nul_files(&git(
-        path,
-        &["diff", "--cached", "--name-only", "--no-renames", "-z"],
-    )?);
     let staged_identity = digest(git(path, &["ls-files", "--stage", "-z"])?.as_bytes());
-    let status = git(path, &["status", "--porcelain", "--untracked-files=normal"])?;
-    let changed_files = changed_files(path)?;
     let working_identity = None;
     Ok(CheckoutGitState {
-        staged_files,
-        changed_files,
+        staged_files: parsed.staged_files,
+        changed_files: parsed.changed_files,
         staged_identity,
         working_identity,
         configuration_identity,
-        branch,
-        head,
-        upstream,
+        branch: parsed.branch,
+        head: parsed.head,
+        upstream: parsed.upstream,
         remotes,
-        ahead: counts.map(|v| v.0),
-        behind: counts.map(|v| v.1),
-        dirty: !status.is_empty(),
+        ahead: parsed.counts.map(|v| v.0),
+        behind: parsed.counts.map(|v| v.1),
+        dirty: parsed.dirty,
     })
 }
 
@@ -982,6 +1083,51 @@ pub fn execute(path: &Path, expected: &CheckoutGitState, action: GitAction) -> R
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
+    #[test]
+    fn batched_hashes_preserve_unusual_paths_and_filter_semantics() {
+        let dir = fixture();
+        let names = vec![
+            "space name".to_owned(),
+            "tab\tname".to_owned(),
+            "newline\nname".to_owned(),
+            "quote\"slash\\name".to_owned(),
+            "日本語".to_owned(),
+        ];
+        for name in &names {
+            fs_err::write(dir.path().join(name), b"hello\n").unwrap();
+        }
+        let batch = git_with_input(
+            dir.path(),
+            &["hash-object", "--no-filters", "--stdin-paths"],
+            None,
+            None,
+            Some(hash_input(&names).unwrap()),
+        )
+        .unwrap();
+        let individual: Vec<_> = names
+            .iter()
+            .map(|name| git(dir.path(), &["hash-object", "--no-filters", "--", name]).unwrap())
+            .collect();
+        assert_eq!(
+            batch.lines().collect::<Vec<_>>(),
+            individual.iter().map(String::as_str).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn porcelain_records_preserve_paths_and_staged_unmerged_state() {
+        let status = "# branch.oid (initial)\0# branch.head main\0# branch.upstream origin/main\0# branch.ab +3 -2\x001 M. N... 100644 100644 100644 abc def space\nname\0u UU N... 100644 100644 100644 100644 a b c conflict\0? untracked\tname\0";
+        let parsed = parse_status(status);
+        assert_eq!(parsed.branch.as_deref(), Some("main"));
+        assert!(parsed.head.is_none());
+        assert_eq!(parsed.counts, Some((3, 2)));
+        assert_eq!(parsed.staged_files, vec!["conflict", "space\nname"]);
+        assert_eq!(
+            parsed.changed_files,
+            vec!["conflict", "space\nname", "untracked\tname"]
+        );
+    }
+
     fn run(path: &Path, args: &[&str]) {
         assert!(
             Command::new("git")

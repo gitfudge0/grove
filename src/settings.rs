@@ -7,9 +7,16 @@
 //! `src/gui/update/mod.rs:52-56`); spec §4 replaces that with a single 250ms
 //! timer shared by every setting, not just zoom.
 
-use std::time::Duration;
+use std::{
+    cell::RefCell,
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc, Mutex,
+    },
+    time::Duration,
+};
 
-use gpui::{BorrowAppContext as _, Task};
+use gpui::{AppContext as _, BorrowAppContext as _, Task};
 use grove_core::storage::{self, Store};
 
 #[cfg(test)]
@@ -53,14 +60,15 @@ pub const PERSIST_DEBOUNCE: Duration = Duration::from_millis(250);
 
 pub struct SettingsState {
     pub store: Store,
-    dirty: bool,
+    written: Arc<AtomicU64>,
+    write_lock: Arc<Mutex<()>>,
     /// Bumped by every `update`. A pending flush that wakes up to find a newer
     /// epoch has been superseded and does nothing, so a burst of mutations
     /// costs exactly one write.
-    epoch: u64,
+    epoch: Arc<AtomicU64>,
     /// Dropping a `Task` cancels it, so the previous timer dies the moment
     /// this is overwritten — that is the debounce's re-arm.
-    flush: Option<Task<()>>,
+    flush: RefCell<Option<Task<()>>>,
 }
 
 impl gpui::Global for SettingsState {}
@@ -72,9 +80,10 @@ impl SettingsState {
         store.normalize_workspaces();
         Self {
             store,
-            dirty: false,
-            epoch: 0,
-            flush: None,
+            written: Arc::new(AtomicU64::new(0)),
+            write_lock: Arc::new(Mutex::new(())),
+            epoch: Arc::new(AtomicU64::new(0)),
+            flush: RefCell::new(None),
         }
     }
 
@@ -84,20 +93,47 @@ impl SettingsState {
         let epoch = cx.update_global::<Self, _>(|this, _| this.mark(f));
         let task = cx.spawn(async move |cx| {
             cx.background_executor().timer(PERSIST_DEBOUNCE).await;
-            cx.update(|cx| {
-                if cx.global::<Self>().epoch == epoch {
-                    Self::flush_now(cx);
+            let work = cx.update(|cx| {
+                let this = cx.global::<Self>();
+                if this.epoch.load(Ordering::Acquire) != epoch {
+                    return None;
                 }
+                Some((
+                    this.store.clone(),
+                    this.epoch.clone(),
+                    this.written.clone(),
+                    this.write_lock.clone(),
+                ))
             });
+            let Some((store, current, written, lock)) = work else {
+                return;
+            };
+            cx.background_spawn(async move {
+                // Serialize with quit and checked writes. Superseded snapshots
+                // never overwrite a newer store, even if their worker starts late.
+                let _guard = lock
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                if current.load(Ordering::Acquire) != epoch {
+                    return;
+                }
+                match storage::save(&store) {
+                    Ok(()) => {
+                        written.fetch_max(epoch, Ordering::Release);
+                    }
+                    Err(error) => tracing::warn!(%error, "could not persist settings"),
+                }
+            })
+            .await;
         });
-        cx.update_global::<Self, _>(|this, _| this.flush = Some(task));
+        *cx.global::<Self>().flush.borrow_mut() = Some(task);
     }
 
     /// Synchronous write of any pending change. Every quit path must call
     /// this before the process exits (spec §7 `flush_ui_zoom_save`) — and does,
     /// through the single `Workspace::shutdown`.
     pub fn flush_now(cx: &mut gpui::App) {
-        cx.update_global::<Self, _>(|this, _| this.persist_if_dirty());
+        cx.global::<Self>().persist_if_dirty();
     }
 
     /// Applies one deliberate action and reports its synchronous disk write.
@@ -108,17 +144,24 @@ impl SettingsState {
     ) -> (R, grove_core::storage::Result<()>) {
         cx.update_global::<Self, _>(|this, _| {
             let before = this.store.clone();
-            let was_dirty = this.dirty;
+            let was_dirty =
+                this.written.load(Ordering::Acquire) != this.epoch.load(Ordering::Acquire);
             let result = f(&mut this.store);
             this.store.normalize_workspaces();
-            this.dirty = true;
-            this.epoch += 1;
+            let epoch = this.epoch.fetch_add(1, Ordering::AcqRel) + 1;
+            let _guard = this
+                .write_lock
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             let saved = storage::save(&this.store);
             if saved.is_ok() {
-                this.dirty = false;
+                this.written.store(epoch, Ordering::Release);
             } else {
                 this.store = before;
-                this.dirty = was_dirty;
+                if !was_dirty {
+                    this.written.store(epoch, Ordering::Release);
+                }
+                // A prior pending mutation retains its dirty state for quit.
             }
             (result, saved)
         })
@@ -129,27 +172,36 @@ impl SettingsState {
     fn mark(&mut self, f: impl FnOnce(&mut Store)) -> u64 {
         f(&mut self.store);
         self.store.normalize_workspaces();
-        self.dirty = true;
-        self.epoch += 1;
-        self.epoch
+        self.epoch.fetch_add(1, Ordering::AcqRel) + 1
     }
 
     /// The write itself. Returns whether anything was written, which is what
     /// makes the quit path's idempotence assertable: the second call in a row
     /// writes nothing.
-    fn persist_if_dirty(&mut self) -> bool {
-        if !self.dirty {
+    fn persist_if_dirty(&self) -> bool {
+        if self.written.load(Ordering::Acquire) == self.epoch.load(Ordering::Acquire) {
             return false;
         }
-        storage::persist(&self.store);
-        self.dirty = false;
+        let _guard = self
+            .write_lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        match storage::save(&self.store) {
+            Ok(()) => self
+                .written
+                .store(self.epoch.load(Ordering::Acquire), Ordering::Release),
+            Err(error) => {
+                tracing::warn!(%error, "could not persist settings");
+                return false;
+            }
+        }
         true
     }
 
     /// Whether a write is pending. Exposed for persistence tests.
     #[cfg(test)]
     pub fn is_dirty(&self) -> bool {
-        self.dirty
+        self.written.load(Ordering::Acquire) != self.epoch.load(Ordering::Acquire)
     }
 
     /// Whether the stored telemetry preference is on. **The default is `true`**

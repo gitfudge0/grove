@@ -16,6 +16,20 @@ pub(super) mod backend;
 #[path = "inline_html_linux.rs"]
 pub(super) mod backend;
 
+#[cfg(all(target_os = "linux", not(test)))]
+pub(crate) fn prepare_event_wait() -> usize {
+    backend::prepare_event_wait()
+}
+#[cfg(all(target_os = "linux", not(test)))]
+pub(crate) fn wait_events(wait: usize) {
+    backend::wait_events(wait);
+}
+
+#[cfg(all(target_os = "linux", not(test)))]
+pub(crate) fn finish_event_wait() {
+    backend::finish_event_wait();
+}
+
 pub struct NativeDocument {
     #[cfg(all(any(target_os = "windows", target_os = "linux"), not(test)))]
     backend: backend::Document,

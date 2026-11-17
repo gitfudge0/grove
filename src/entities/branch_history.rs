@@ -1,4 +1,6 @@
 //! Immutable HEAD snapshots; background results belong to an entity and request generation.
+use std::rc::Rc;
+
 use gpui::{AppContext as _, Context};
 use grove_core::{
     diff::{FileChange, Patch},
@@ -16,16 +18,19 @@ pub enum HistoryDiffMode {
 #[derive(Clone)]
 pub struct BranchHistoryState {
     pub checkout: String,
-    pub snapshot: Option<BranchHistory>,
+    pub snapshot: Option<Rc<BranchHistory>>,
     pub loading: bool,
     pub error: Option<String>,
     pub selected: Option<String>,
-    pub details: Option<CommitDetails>,
+    pub details: Option<Rc<CommitDetails>>,
     pub detail_error: Option<String>,
     pub detail_loading: bool,
     pub selected_file: Option<String>,
-    pub patch: Option<Patch>,
+    pub patch: Option<Rc<Patch>>,
     pub patch_error: Option<String>,
+    pub paired_rows: Rc<Vec<grove_core::diff::PairedRow>>,
+    pub unified_rows: Rc<Vec<grove_core::render_rows::UnifiedRenderRow>>,
+    pub width_cache: Rc<std::cell::RefCell<Option<(gpui::Pixels, f32, f32)>>>,
     pub patch_loading: bool,
     pub expanded: bool,
     pub diff_mode: HistoryDiffMode,
@@ -62,6 +67,9 @@ impl BranchHistoryState {
             selected_file: None,
             patch: None,
             patch_error: None,
+            paired_rows: Rc::default(),
+            unified_rows: Rc::default(),
+            width_cache: Rc::default(),
             patch_loading: false,
             expanded: false,
             diff_mode: HistoryDiffMode::default(),
@@ -127,7 +135,7 @@ impl BranchHistoryState {
                 }
                 this.loading = false;
                 match result {
-                    Ok(snapshot) => this.snapshot = Some(snapshot),
+                    Ok(snapshot) => this.snapshot = Some(Rc::new(snapshot)),
                     Err(error) => this.error = Some(error),
                 }
                 cx.notify();
@@ -217,7 +225,7 @@ impl BranchHistoryState {
         self.detail_loading = false;
         match result {
             Ok(details) => {
-                self.details = Some(details);
+                self.details = Some(Rc::new(details));
                 self.select_first_file(cx);
             }
             Err(error) => self.detail_error = Some(error),
@@ -240,11 +248,22 @@ impl BranchHistoryState {
         }
         self.patch_loading = false;
         match result {
-            Ok(patch) => self.patch = Some(patch),
+            Ok(patch) => self.install_patch(patch),
             Err(error) => self.patch_error = Some(error),
         }
         cx.notify();
     }
+    pub(crate) fn install_patch(&mut self, patch: Patch) {
+        self.paired_rows = Rc::new(patch.paired_rows());
+        self.unified_rows = Rc::new(grove_core::render_rows::unified_render_rows(
+            &patch,
+            &[],
+            &[],
+        ));
+        self.width_cache = Rc::default();
+        self.patch = Some(Rc::new(patch));
+    }
+
     pub fn file(&mut self, file: FileChange, cx: &mut Context<Self>) {
         let Some(id) = self.selected.clone() else {
             return;
@@ -327,7 +346,7 @@ mod tests {
             assert_eq!(state.selected.as_deref(), Some(id.as_str()));
             assert_eq!(state.selected_file.as_deref(), Some("alpha.txt"));
             assert!(
-                matches!(state.patch, Some(Patch::Text { ref hunks, .. }) if !hunks.is_empty())
+                matches!(state.patch.as_deref(), Some(Patch::Text { hunks, .. }) if !hunks.is_empty())
             );
             let beta = state
                 .details
@@ -353,7 +372,9 @@ mod tests {
         });
         cx.run_until_parked();
         state.read_with(cx, |state, _| {
-            assert!(matches!(state.patch, Some(Patch::Text {ref hunks, ..}) if !hunks.is_empty()));
+            assert!(
+                matches!(state.patch.as_deref(), Some(Patch::Text {hunks, ..}) if !hunks.is_empty())
+            );
         });
     }
 
@@ -412,7 +433,7 @@ mod tests {
                 }),
                 cx,
             );
-            assert!(matches!(state.patch, Some(Patch::Text { .. })));
+            assert!(matches!(state.patch.as_deref(), Some(Patch::Text { .. })));
             assert!(!state.patch_loading);
             state.pan_x = 100.0;
             state.select("b".repeat(40), cx);

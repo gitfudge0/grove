@@ -17,7 +17,7 @@ use ropey::Rope;
 use crate::{
     ActiveTheme as _, Icon, IconName, StyledExt, WindowExt as _, h_flex,
     highlighter::{HighlightTheme, LanguageRegistry, SyntaxHighlighter},
-    input::{InputEdit, Point, RopeExt as _},
+    input::{InputEdit, RopeExt as _},
     scroll::horizontal_scroll_area,
     text::{
         CodeBlockActionsFn, MarkdownExtensions, MarkdownNode,
@@ -604,12 +604,13 @@ impl Paragraph {
 struct CachedCodeBlockStyles {
     /// The theme used to compute `styles`.
     highlight_theme: Arc<HighlightTheme>,
-    styles: Vec<(Range<usize>, HighlightStyle)>,
+    styles: Arc<[(Range<usize>, HighlightStyle)]>,
 }
 
 #[derive(Debug, Clone)]
 pub struct CodeBlock {
     lang: Option<SharedString>,
+    highlighting_enabled: bool,
     styles: Arc<Mutex<Option<CachedCodeBlockStyles>>>,
     state: Arc<Mutex<InlineState>>,
     pub span: Option<Span>,
@@ -617,7 +618,10 @@ pub struct CodeBlock {
 
 impl PartialEq for CodeBlock {
     fn eq(&self, other: &Self) -> bool {
-        self.lang == other.lang && self.code() == other.code() && self.span == other.span
+        self.lang == other.lang
+            && self.highlighting_enabled == other.highlighting_enabled
+            && self.code() == other.code()
+            && self.span == other.span
     }
 }
 
@@ -645,22 +649,31 @@ impl CodeBlock {
 
         Self {
             lang,
+            highlighting_enabled: true,
             styles: Arc::new(Mutex::new(None)),
             state,
             span: span.map(|s| s.into()),
         }
     }
 
+    pub(crate) fn defer_highlighting(mut self, defer: bool) -> Self {
+        self.highlighting_enabled = !defer;
+        self
+    }
+
     pub(crate) fn styles(
         &self,
         highlight_theme: &Arc<HighlightTheme>,
-    ) -> Vec<(Range<usize>, HighlightStyle)> {
+    ) -> Arc<[(Range<usize>, HighlightStyle)]> {
+        if !self.highlighting_enabled {
+            return Arc::from([]);
+        }
         let Some(lang) = &self.lang else {
-            return Vec::new();
+            return Arc::from([]);
         };
 
         let Ok(mut styles) = self.styles.lock() else {
-            return Vec::new();
+            return Arc::from([]);
         };
 
         // Pointer identity is the fast path; a reallocated-but-equivalent theme adopts its Arc so later renders also hit it.
@@ -676,34 +689,48 @@ impl CodeBlock {
         }
 
         let code = self.code();
-        let computed_styles = CODE_BLOCK_HIGHLIGHTERS.with(|cache| {
-            let mut cache = cache.borrow_mut();
-            let highlighter = cache
-                .entry(lang.clone())
-                .or_insert_with(|| SyntaxHighlighter::new(lang));
+        let computed_styles: Arc<[_]> = CODE_BLOCK_HIGHLIGHTERS
+            .with(|cache| {
+                let mut cache = cache.borrow_mut();
+                let highlighter = cache
+                    .entry(lang.clone())
+                    .or_insert_with(|| SyntaxHighlighter::new(lang));
 
-            if let Some(config) = LanguageRegistry::singleton().language(lang)
-                && highlighter.language() != &config.name
-            {
-                *highlighter = SyntaxHighlighter::new(lang);
-            }
+                if let Some(config) = LanguageRegistry::singleton().language(lang)
+                    && highlighter.language() != &config.name
+                {
+                    *highlighter = SyntaxHighlighter::new(lang);
+                }
 
-            let old_end_byte = highlighter.text().len();
-            let old_end_position = highlighter.text().offset_to_point(old_end_byte);
-            let code_rope = Rope::from_str(code.as_str());
+                let old_end_byte = highlighter.text().len();
+                let old_end_position = highlighter.text().offset_to_point(old_end_byte);
+                let code_rope = Rope::from_str(code.as_str());
 
-            let edit = InputEdit {
-                start_byte: 0,
-                old_end_byte,
-                new_end_byte: code.len(),
-                start_position: Point::new(0, 0),
-                old_end_position,
-                new_end_position: code_rope.offset_to_point(code.len()),
-            };
+                let prefix = highlighter
+                    .text()
+                    .bytes()
+                    .zip(code.bytes())
+                    .take_while(|(a, b)| a == b)
+                    .count();
+                // Never split a UTF-8 scalar when the changed suffix starts inside it.
+                let mut prefix = prefix;
+                while !code.is_char_boundary(prefix) {
+                    prefix -= 1;
+                }
+                let start_position = highlighter.text().offset_to_point(prefix);
+                let edit = InputEdit {
+                    start_byte: prefix,
+                    old_end_byte,
+                    new_end_byte: code.len(),
+                    start_position,
+                    old_end_position,
+                    new_end_position: code_rope.offset_to_point(code.len()),
+                };
 
-            highlighter.update(Some(edit), &code_rope, None);
-            highlighter.styles(&(0..code.len()), highlight_theme)
-        });
+                highlighter.update(Some(edit), &code_rope, None);
+                highlighter.styles(&(0..code.len()), highlight_theme)
+            })
+            .into();
         *styles = Some(CachedCodeBlockStyles {
             highlight_theme: highlight_theme.clone(),
             styles: computed_styles.clone(),

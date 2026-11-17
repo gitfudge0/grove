@@ -15,6 +15,7 @@ use super::{MarkdownExtensions, TextViewState, TextViewStyle, node::BlockNode};
 pub(super) struct DocumentCodeBlocks {
     blocks: Option<Arc<Vec<BlockNode>>>,
     contains_code: bool,
+    code_blocks: Vec<super::node::CodeBlock>,
     #[cfg(test)]
     scans: usize,
 }
@@ -28,26 +29,36 @@ impl DocumentCodeBlocks {
         {
             return;
         }
-        self.contains_code = blocks.iter().any(contains_code_block);
+        self.code_blocks.clear();
+        fn collect(block: &BlockNode, output: &mut Vec<super::node::CodeBlock>) {
+            match block {
+                BlockNode::CodeBlock(code) => output.push(code.clone()),
+                BlockNode::Root { children, .. }
+                | BlockNode::Blockquote { children, .. }
+                | BlockNode::List { children, .. }
+                | BlockNode::ListItem { children, .. } => {
+                    for child in children {
+                        collect(child, output);
+                    }
+                }
+                _ => {}
+            }
+        }
+        for block in blocks.iter() {
+            collect(block, &mut self.code_blocks);
+        }
+        self.contains_code = !self.code_blocks.is_empty();
         self.blocks = Some(blocks.clone());
         #[cfg(test)]
         {
             self.scans += 1;
         }
     }
+    pub(super) fn code_blocks(&self) -> &[super::node::CodeBlock] {
+        &self.code_blocks
+    }
     pub(super) fn contains_code(&self) -> bool {
         self.contains_code
-    }
-}
-
-fn contains_code_block(block: &BlockNode) -> bool {
-    match block {
-        BlockNode::CodeBlock(_) => true,
-        BlockNode::Root { children, .. }
-        | BlockNode::Blockquote { children, .. }
-        | BlockNode::List { children, .. }
-        | BlockNode::ListItem { children, .. } => children.iter().any(contains_code_block),
-        _ => false,
     }
 }
 
@@ -276,7 +287,8 @@ impl Element for MeasuredBody {
             .map(|old| old.size);
         // Tab stops are registered during paint. Unknown/currently dynamic
         // bodies keep their full tree, including custom and code-block actions.
-        let force_eager = current_extent.is_none()
+        let force_eager = state.has_code_block_actions()
+            || current_extent.is_none()
             || window.is_a11y_active()
             || state.has_view_selection()
             || state.is_selecting

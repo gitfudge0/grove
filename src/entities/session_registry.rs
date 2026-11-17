@@ -6,7 +6,7 @@
 use std::collections::HashMap;
 use std::time::Instant;
 
-use gpui::Entity;
+use gpui::{AppContext as _, Context, Entity, Subscription};
 use grove_core::agent::Agent;
 use grove_core::attention::{self, AttentionFiles};
 use grove_core::session_meta;
@@ -136,6 +136,11 @@ pub fn home_dir() -> String {
 pub struct SessionRegistry {
     /// Insertion order is the tree's within-worktree order.
     order: Vec<SessionMeta>,
+    order_index: HashMap<SessionId, usize>,
+    revision: u64,
+    term_observers: HashMap<SessionId, Subscription>,
+    /// Registry removal must cancel pending startup even while a cached view retains the entity.
+    startup_cancellations: HashMap<SessionId, std::sync::Arc<std::sync::atomic::AtomicBool>>,
     terms: HashMap<SessionId, Entity<TerminalSession>>,
     codex: HashMap<
         SessionId,
@@ -153,6 +158,8 @@ pub struct SessionRegistry {
     /// Awaiting the spawn call that consumes them ([`Self::take_attention_args`]).
     attention_args: HashMap<SessionId, Vec<String>>,
     stopped_codex: Vec<std::sync::mpsc::Receiver<()>>,
+    pending_cleanup: Vec<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+    cleanup_errors: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
     history_outcomes: Vec<std::sync::mpsc::Receiver<Result<(), String>>>,
     pending_cli_history: Vec<session_meta::ClosedCliSession>,
     history_warnings: Vec<String>,
@@ -238,6 +245,8 @@ impl SessionRegistry {
             None => (Vec::new(), None),
         };
         self.attention_args.insert(id, args);
+        self.revision = self.revision.wrapping_add(1);
+        self.order_index.insert(id, self.order.len());
         self.order.push(SessionMeta {
             id,
             project,
@@ -276,7 +285,18 @@ impl SessionRegistry {
                 tmux_name: Some(d.name.clone()),
             },
         );
+        self.reindex();
         id
+    }
+
+    fn reindex(&mut self) {
+        self.revision = self.revision.wrapping_add(1);
+        self.order_index = self
+            .order
+            .iter()
+            .enumerate()
+            .map(|(index, meta)| (meta.id, index))
+            .collect();
     }
 
     /// Taken, not borrowed: used exactly once, by the spawn that follows [`Self::insert_meta`].
@@ -291,12 +311,47 @@ impl SessionRegistry {
     }
 
     /// `tmux_name` is the actual backend; the requested one can differ (missing `$PATH` falls back to native).
+    pub fn attach_observed(
+        &mut self,
+        id: SessionId,
+        term: Entity<TerminalSession>,
+        tmux_name: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(previous) = self
+            .startup_cancellations
+            .insert(id, term.read(cx).startup_cancellation())
+        {
+            previous.store(true, std::sync::atomic::Ordering::Release);
+        }
+        self.term_observers.insert(
+            id,
+            cx.observe(&term, move |this, term, cx| {
+                let name = match term.read(cx).backend() {
+                    super::terminal_session::Backend::Tmux { name } => Some(name.clone()),
+                    super::terminal_session::Backend::Native => None,
+                };
+                if let Some(index) = this.order_index.get(&id).copied() {
+                    let meta = &mut this.order[index];
+                    if meta.tmux_name != name {
+                        meta.tmux = name.is_some();
+                        meta.tmux_name = name;
+                        this.revision = this.revision.wrapping_add(1);
+                        cx.notify();
+                    }
+                }
+            }),
+        );
+        self.attach(id, term, tmux_name);
+    }
+
     pub fn attach(
         &mut self,
         id: SessionId,
         term: Entity<TerminalSession>,
         tmux_name: Option<String>,
     ) {
+        self.revision = self.revision.wrapping_add(1);
         self.terms.insert(id, term);
         if let Some(m) = self.order.iter_mut().find(|m| m.id == id) {
             m.tmux = tmux_name.is_some();
@@ -322,6 +377,7 @@ impl SessionRegistry {
         session: Entity<super::codex_session::CodexSession>,
         handle: grove_core::codex::Handle,
     ) {
+        self.revision = self.revision.wrapping_add(1);
         self.codex.insert(id, (session, handle));
     }
     #[cfg(test)]
@@ -339,6 +395,23 @@ impl SessionRegistry {
         })
     }
 
+    /// Destructive checkout operations wait for both provider stops and PTY cleanup.
+    pub fn session_cleanup_error(&self) -> Option<String> {
+        let errors = self
+            .cleanup_errors
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        (!errors.is_empty()).then(|| errors.join("; "))
+    }
+
+    pub fn has_pending_session_cleanup(&self) -> bool {
+        self.has_stopping_provider_sessions()
+            || self
+                .pending_cleanup
+                .iter()
+                .any(|done| !done.load(std::sync::atomic::Ordering::Acquire))
+    }
+
     pub fn codex(&self, id: SessionId) -> Option<&Entity<super::codex_session::CodexSession>> {
         self.codex.get(&id).map(|(session, _)| session)
     }
@@ -351,12 +424,160 @@ impl SessionRegistry {
             return false;
         }
         meta.restored_title = title;
+        self.revision = self.revision.wrapping_add(1);
         true
     }
 
     /// Also cleans up attention files, so a killed session leaves no `.state` for the next GC to guess at (`session.rs:530-535`).
     pub fn remove(&mut self, id: SessionId) -> Option<SessionMeta> {
-        if !cfg!(test) {
+        self.remove_impl(id, true)
+    }
+
+    pub fn remove_background(
+        &mut self,
+        id: SessionId,
+        cx: &mut Context<Self>,
+    ) -> Option<SessionMeta> {
+        self.remove_async(id, !cfg!(test), cx)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn remove_background_for_test(
+        &mut self,
+        id: SessionId,
+        cx: &mut Context<Self>,
+    ) -> Option<SessionMeta> {
+        self.remove_async(id, false, cx)
+    }
+
+    fn remove_async(
+        &mut self,
+        id: SessionId,
+        persist_history: bool,
+        cx: &mut Context<Self>,
+    ) -> Option<SessionMeta> {
+        let record = self.meta(id).filter(|_| persist_history).and_then(|meta| {
+            closed_cli_record(
+                meta,
+                self.codex.contains_key(&id),
+                std::time::SystemTime::now(),
+            )
+        });
+        let terminal = self.terms.get(&id).cloned();
+        let meta = self.remove_impl(id, false)?;
+        let cleanup = meta.clone();
+        self.queue_cleanup(terminal, cleanup, record, persist_history, cx);
+        Some(meta)
+    }
+
+    fn queue_cleanup(
+        &mut self,
+        terminal: Option<Entity<TerminalSession>>,
+        cleanup: SessionMeta,
+        record: Option<session_meta::ClosedCliSession>,
+        persist_history: bool,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(terminal) = &terminal {
+            terminal
+                .read(cx)
+                .startup_cancellation()
+                .store(true, std::sync::atomic::Ordering::Release);
+        }
+        self.pending_cleanup
+            .retain(|done| !done.load(std::sync::atomic::Ordering::Acquire));
+        let finished = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        self.pending_cleanup.push(finished.clone());
+        let cleanup_errors = self.cleanup_errors.clone();
+        let (done, outcome) = std::sync::mpsc::channel();
+        self.history_outcomes.push(outcome);
+        cx.spawn(async move |this, cx| {
+            if let Some(terminal) = &terminal {
+                while terminal.read_with(cx, |terminal, _| terminal.is_starting()) {
+                    cx.background_executor()
+                        .timer(std::time::Duration::from_millis(10))
+                        .await;
+                }
+            }
+            let earlier_error = terminal.as_ref().and_then(|terminal| {
+                terminal.read_with(cx, |terminal, _| {
+                    terminal
+                        .spawn_error()
+                        .filter(|error| error.starts_with("Terminal cleanup failed:"))
+                        .map(str::to_owned)
+                })
+            });
+            let owned = terminal
+                .map(|terminal| terminal.update(cx, |terminal, _| terminal.take_for_removal()));
+            let result = cx
+                .background_spawn(async move {
+                    let (pty, actual_name) = match owned {
+                        Some((pty, super::terminal_session::Backend::Tmux { name })) => {
+                            (pty, Some(name))
+                        }
+                        Some((pty, super::terminal_session::Backend::Native)) => (pty, None),
+                        None => (None, cleanup.tmux_name.clone()),
+                    };
+                    if let Some(name) = actual_name.as_deref().filter(|_| tmux_teardown_enabled()) {
+                        tmux::with_lifecycle_lock(|| {
+                            tmux::kill_session(name);
+                            session_meta::delete(name);
+                        });
+                    }
+                    let stopped = pty
+                        .map_or(Ok(()), |pty| {
+                            pty.terminate_and_wait()
+                                .map_err(|error| format!("Terminal cleanup failed: {error}"))
+                        })
+                        .and_then(|()| earlier_error.map_or(Ok(()), Err));
+                    if let Err(error) = &stopped {
+                        cleanup_errors
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .push(error.clone());
+                    }
+                    let stopped_ok = stopped.is_ok();
+                    let result = stopped.and_then(|()| {
+                        record
+                            .as_ref()
+                            .map_or(Ok(()), session_meta::archive_cli_session)
+                    });
+                    if let Some(files) = cleanup
+                        .attention
+                        .as_ref()
+                        .filter(|_| persist_history && stopped_ok)
+                    {
+                        attention::cleanup(files);
+                    }
+                    if let Some(path) = cleanup
+                        .temp_bundle_path
+                        .as_deref()
+                        .filter(|_| persist_history && stopped_ok)
+                    {
+                        grove_core::multi_root::cleanup_path(std::path::Path::new(path));
+                    }
+                    finished.store(true, std::sync::atomic::Ordering::Release);
+                    let _ = done.send(result.clone());
+                    (record, result)
+                })
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                match result {
+                    (Some(record), Err(error)) => this.retain_cli_history(record, |_| Err(error)),
+                    (None, Err(error)) => this.history_warnings.push(error),
+                    (_, Ok(())) => return,
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    fn remove_impl(&mut self, id: SessionId, teardown: bool) -> Option<SessionMeta> {
+        if let Some(cancel) = self.startup_cancellations.remove(&id) {
+            cancel.store(true, std::sync::atomic::Ordering::Release);
+        }
+        if teardown && !cfg!(test) {
             if let Some(record) = self.meta(id).and_then(|meta| {
                 closed_cli_record(
                     meta,
@@ -367,6 +588,7 @@ impl SessionRegistry {
                 self.retain_cli_history(record, session_meta::archive_cli_session);
             }
         }
+        self.term_observers.remove(&id);
         self.terms.remove(&id);
         if let Some((session, handle)) = self.codex.remove(&id) {
             let (done, outcome) = handle.stop_archiving();
@@ -377,8 +599,9 @@ impl SessionRegistry {
             drop(session);
         }
         self.attention_args.remove(&id);
-        let pos = self.order.iter().position(|m| m.id == id)?;
+        let pos = self.order_index.get(&id).copied()?;
         let meta = self.order.remove(pos);
+        self.reindex();
         // Reported here so no kill path can miss it (`src/gui/update/sessions.rs:261-269`).
         crate::telemetry::track(
             "session_ended",
@@ -391,20 +614,24 @@ impl SessionRegistry {
                 ("tmux", meta.tmux.into()),
             ],
         );
-        if let Some(files) = meta.attention.as_ref() {
-            attention::cleanup(files);
-        }
-        if let Some(path) = meta.temp_bundle_path.as_deref() {
-            grove_core::multi_root::cleanup_path(std::path::Path::new(path));
-        }
-        // Without this the tmux session outlives grove and gets reattached on the next launch (`crates/grove-core/src/session.rs:522-534`); unlike iced, native children are not killpg'd here.
-        if let Some(name) = meta
-            .tmux_name
-            .as_deref()
-            .filter(|_| tmux_teardown_enabled())
-        {
-            tmux::kill_session(name);
-            session_meta::delete(name);
+        if teardown {
+            if let Some(files) = meta.attention.as_ref() {
+                attention::cleanup(files);
+            }
+            if let Some(path) = meta.temp_bundle_path.as_deref() {
+                grove_core::multi_root::cleanup_path(std::path::Path::new(path));
+            }
+            // Without this the tmux session outlives grove and gets reattached on the next launch (`crates/grove-core/src/session.rs:522-534`); unlike iced, native children are not killpg'd here.
+            if let Some(name) = meta
+                .tmux_name
+                .as_deref()
+                .filter(|_| tmux_teardown_enabled())
+            {
+                tmux::with_lifecycle_lock(|| {
+                    tmux::kill_session(name);
+                    session_meta::delete(name);
+                });
+            }
         }
         Some(meta)
     }
@@ -417,12 +644,37 @@ impl SessionRegistry {
 
     #[must_use]
     pub fn meta(&self, id: SessionId) -> Option<&SessionMeta> {
-        self.order.iter().find(|m| m.id == id)
+        self.order_index
+            .get(&id)
+            .and_then(|index| self.order.get(*index))
     }
 
     #[must_use]
     pub fn session(&self, id: SessionId) -> Option<&Entity<TerminalSession>> {
         self.terms.get(&id)
+    }
+
+    /// A hidden terminal retains scrollback/model state, but not shaped GPU rows.
+    pub fn release_hidden_scenes(
+        &self,
+        visible: &std::collections::HashSet<SessionId>,
+        cx: &mut gpui::App,
+    ) {
+        for (id, term) in self.terms.iter().chain(&self.wt_terms) {
+            if !visible.contains(id) {
+                term.update(cx, |term, _| term.release_scene_cache());
+            }
+        }
+        for (meta, term) in self.home.iter().zip(&self.home_terms) {
+            if !visible.contains(&meta.id) {
+                term.update(cx, |term, _| term.release_scene_cache());
+            }
+        }
+    }
+
+    /// Cheap reconciliation key even when a caller batches mutation notifications.
+    pub fn revision(&self) -> u64 {
+        self.revision
     }
 
     pub fn all(&self) -> &[SessionMeta] {
@@ -573,6 +825,29 @@ impl SessionRegistry {
         Some(std::mem::replace(&mut self.home_terms[i], term))
     }
 
+    pub fn replace_home_background(
+        &mut self,
+        i: usize,
+        term: Entity<TerminalSession>,
+        cx: &mut Context<Self>,
+    ) -> Option<Entity<TerminalSession>> {
+        let meta = self.home.get(i)?.clone();
+        let old = self.replace_home(i, term)?;
+        self.queue_cleanup(Some(old.clone()), meta, None, false, cx);
+        Some(old)
+    }
+
+    pub fn close_home_background(
+        &mut self,
+        i: usize,
+        cx: &mut Context<Self>,
+    ) -> Option<Entity<TerminalSession>> {
+        let meta = self.home.get(i)?.clone();
+        let old = self.close_home(i);
+        self.queue_cleanup(old.clone(), meta, None, false, cx);
+        old
+    }
+
     /// Closing the last terminal leaves the home panel empty.
     pub fn close_home(&mut self, i: usize) -> Option<Entity<TerminalSession>> {
         if i >= self.home.len() {
@@ -603,6 +878,41 @@ impl SessionRegistry {
 
     pub fn worktree_shells(&self) -> impl Iterator<Item = &SessionMeta> {
         self.wt.values().flat_map(|shells| shells.iter())
+    }
+
+    pub fn remove_worktree_shells_matching_background(
+        &mut self,
+        matches: impl Fn(&SessionMeta) -> bool,
+        cx: &mut Context<Self>,
+    ) {
+        let targets: Vec<_> = self
+            .wt
+            .iter()
+            .flat_map(|(path, shells)| {
+                shells
+                    .iter()
+                    .enumerate()
+                    .rev()
+                    .filter(|(_, meta)| matches(meta))
+                    .map(|(idx, _)| (path.clone(), idx))
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        for (path, idx) in targets {
+            self.close_wt_shell_background(&path, idx, cx);
+        }
+    }
+
+    pub fn close_wt_shell_background(
+        &mut self,
+        wt_path: &str,
+        idx: usize,
+        cx: &mut Context<Self>,
+    ) -> Option<Entity<TerminalSession>> {
+        let meta = self.wt.get(wt_path)?.get(idx)?.clone();
+        let old = self.close_wt_shell(wt_path, idx);
+        self.queue_cleanup(old.clone(), meta, None, false, cx);
+        old
     }
 
     /// Project/worktree removal also owns shells that are hidden in the UI.
@@ -731,6 +1041,53 @@ impl SessionRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[gpui::test]
+    fn removal_cancels_pending_startup_even_when_a_view_retains_the_terminal(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let directory = tempfile::tempdir().unwrap();
+        cx.update(|cx| cx.set_global(crate::zoom::CurrentPtyDims::default()));
+        let mut target = SpawnTarget::home("cancelled pending terminal".into());
+        target.cwd = directory.path().to_str().unwrap().into();
+        target.use_tmux = false;
+        target.args = vec!["-c".into(), "printf executed > forbidden.txt".into()];
+        let terminal = cx
+            .new(|cx| TerminalSession::spawn_checked(&target, &[], None, Box::new(|| Ok(())), cx));
+        let registry = cx.new(|_| SessionRegistry::new());
+        let id = registry.update(cx, |registry, cx| {
+            let id = registry.insert_meta("test".into(), target.cwd.clone(), Agent::Terminal);
+            registry.attach_observed(id, terminal.clone(), None, cx);
+            id
+        });
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        registry.update(cx, |registry, cx| {
+            registry.remove_background_for_test(id, cx);
+        });
+        assert!(registry.read_with(cx, |registry, _| registry.has_pending_session_cleanup()));
+        // This strong handle models a cached TerminalView surviving registry removal.
+        assert!(terminal.read_with(cx, |terminal, _| terminal
+            .startup_cancellation()
+            .load(std::sync::atomic::Ordering::Acquire)));
+        while terminal.read_with(cx, |terminal, _| terminal.is_starting()) {
+            assert!(std::time::Instant::now() < deadline);
+            cx.run_until_parked();
+            cx.executor()
+                .advance_clock(std::time::Duration::from_millis(10));
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        while registry.read_with(cx, |registry, _| registry.has_pending_session_cleanup()) {
+            assert!(std::time::Instant::now() < deadline);
+            cx.run_until_parked();
+            cx.executor()
+                .advance_clock(std::time::Duration::from_millis(10));
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        assert!(!directory.path().join("forbidden.txt").exists());
+        assert!(terminal.read_with(cx, |terminal, _| terminal.has_exited()));
+        assert!(terminal.read_with(cx, |terminal, _| terminal.spawn_error().is_none()));
+    }
 
     #[test]
     fn cli_history_write_failure_preserves_record_after_close_until_retry_succeeds() {
@@ -1044,5 +1401,81 @@ mod tests {
         r.close_wt_shell("/b", 0);
         assert_eq!(r.wt_shells("/a").len(), 1);
         assert_eq!(r.active_wt_shell_idx("/a"), Some(0));
+    }
+}
+
+#[cfg(test)]
+mod hidden_scene_tests {
+    use super::*;
+    use crate::terminal_element::{GeomKey, TermScene, TermSceneKey};
+    use std::rc::Rc;
+
+    #[gpui::test]
+    fn hidden_scene_release_covers_agent_home_and_worktree_terminals(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let mut registry = SessionRegistry::new();
+        let mut entries = Vec::new();
+        for index in 0..6 {
+            let id = registry.insert_meta("fixture".into(), "/fixture".into(), Agent::Terminal);
+            let terminal = cx.new(TerminalSession::native_for_test);
+            let scene = Rc::new(TermScene { rows: Vec::new() });
+            terminal.update(cx, |terminal, _| {
+                terminal.set_scene_cache(
+                    TermSceneKey {
+                        geom: GeomKey {
+                            width_bits: 0,
+                            height_bits: 0,
+                            zoom_bits: 0,
+                            theme: "fixture".into(),
+                            theme_generation: 0,
+                            background_bits: [0; 4],
+                        },
+                        damage_gen: 0,
+                        display_offset: 0,
+                    },
+                    scene.clone(),
+                );
+            });
+            match index {
+                0 | 1 => {
+                    registry.terms.insert(id, terminal.clone());
+                }
+                2 | 3 => {
+                    registry.wt_terms.insert(id, terminal.clone());
+                }
+                _ => {
+                    registry.home.push(registry.meta(id).unwrap().clone());
+                    registry.home_terms.push(terminal.clone());
+                }
+            }
+            entries.push((id, terminal, scene));
+        }
+        let visible = [entries[0].0, entries[2].0, entries[4].0]
+            .into_iter()
+            .collect();
+        cx.update(|cx| registry.release_hidden_scenes(&visible, cx));
+        for (index, (_, terminal, scene)) in entries.iter().enumerate() {
+            terminal.read_with(cx, |terminal, _| {
+                if index % 2 == 0 {
+                    assert!(
+                        Rc::ptr_eq(&terminal.scene_cache().unwrap().1, scene),
+                        "visible scene is retained for every terminal owner"
+                    );
+                } else {
+                    assert!(
+                        terminal.scene_cache().is_none(),
+                        "hidden scene is released for every terminal owner"
+                    );
+                }
+                assert!(
+                    !terminal.has_exited(),
+                    "cache release never ends the process/model lifetime"
+                );
+            });
+        }
+        cx.update(|cx| registry.release_hidden_scenes(&std::collections::HashSet::new(), cx));
+        assert!(entries.iter().all(|(_, terminal, _)| terminal
+            .read_with(cx, |terminal, _| terminal.scene_cache().is_none())));
     }
 }

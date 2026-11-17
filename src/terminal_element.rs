@@ -154,10 +154,6 @@ impl Element for TerminalElement {
             }
         });
 
-        let (cur_row, cur_col, cur_hidden) = self.session.read(cx).cursor();
-        let scrollback = self.session.read(cx).display_offset();
-        let damage_gen = self.session.read(cx).damage_generation();
-
         let regular = gpui::font(fonts::MONO_FAMILY);
         let bold_font = gpui::font(fonts::MONO_FAMILY).bold();
         let font_size = px(zoom.font_size());
@@ -166,18 +162,17 @@ impl Element for TerminalElement {
         let background = terminal_background();
         let theme_name =
             grove_core::theme::with_current(|t| SharedString::from(t.name.to_string()));
-        let key = TermSceneKey {
-            geom: GeomKey {
-                width_bits: f32::from(bounds.size.width).to_bits(),
-                height_bits: f32::from(bounds.size.height).to_bits(),
-                zoom_bits: self.zoom.to_bits(),
-                theme: theme_name,
-                theme_generation: cx.global::<c::ThemeState>().generation,
-                background_bits: background_bits(background),
-            },
-            damage_gen,
-            display_offset: scrollback,
+        let geom = GeomKey {
+            width_bits: f32::from(bounds.size.width).to_bits(),
+            height_bits: f32::from(bounds.size.height).to_bits(),
+            zoom_bits: self.zoom.to_bits(),
+            theme: theme_name,
+            theme_generation: cx.global::<c::ThemeState>().generation,
+            background_bits: background_bits(background),
         };
+        let (key, (cur_row, cur_col, cur_hidden), snapshot) =
+            self.session.read(cx).render_frame(geom);
+        let scrollback = key.display_offset;
         // Cheapest first: full key match reuses the whole scene; `geom`-only match re-keys rows by content hash; else discard everything.
         let (cached, reusable_rows) = match self.session.read(cx).scene_cache() {
             Some((k, scene)) if *k == key => (Some(scene.clone()), None),
@@ -188,7 +183,7 @@ impl Element for TerminalElement {
         let scene = match cached {
             Some(scene) => scene,
             None => {
-                let snapshot = self.session.read(cx).snapshot();
+                let snapshot = snapshot.unwrap_or_else(|| self.session.read(cx).snapshot());
                 // Content-addressed pool of the previous frame's rows, rebuilt per miss.
                 let pool: std::collections::HashMap<u64, Rc<RowScene>> = reusable_rows
                     .iter()

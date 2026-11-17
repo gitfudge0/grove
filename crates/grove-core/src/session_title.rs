@@ -49,6 +49,7 @@ pub struct Generation {
 pub(crate) struct Generator {
     job: Option<Job>,
     last_status: Option<Status>,
+    fork_user_count: Option<(u64, usize)>,
 }
 struct Job {
     child: Child,
@@ -316,11 +317,20 @@ impl Generator {
         }
         let mut changed = false;
         if let Some(origin) = &saved.fork_origin {
-            let users = saved
-                .items
-                .iter()
-                .filter(|item| item["type"] == "userMessage")
-                .count();
+            let revision = saved.items.revision();
+            let users = match self.fork_user_count {
+                Some((old, users)) if old == revision => users,
+                _ => {
+                    let users = saved
+                        .items
+                        .iter()
+                        .filter(|item| item["type"] == "userMessage")
+                        .take(origin.users.saturating_add(1))
+                        .count();
+                    self.fork_user_count = Some((revision, users));
+                    users
+                }
+            };
             if users <= origin.users {
                 return false;
             }
@@ -874,6 +884,7 @@ mod tests {
         let child = Command::new("sleep").arg("30").spawn().unwrap();
         let pid = child.id();
         let mut generator = Generator {
+            fork_user_count: None,
             last_status: None,
             job: Some(Job {
                 child,

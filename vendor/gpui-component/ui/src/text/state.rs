@@ -59,6 +59,7 @@ pub struct TextViewState {
     pub(super) scrollable: bool,
     pub(super) text_view_style: TextViewStyle,
     pub(super) code_block_actions: Option<std::sync::Arc<CodeBlockActionsFn>>,
+    pub(super) code_block_layout_projection: bool,
     pub(super) code_block_footer: Option<std::sync::Arc<CodeBlockActionsFn>>,
     pub(super) markdown_extensions: Arc<MarkdownExtensions>,
 
@@ -148,6 +149,7 @@ impl TextViewState {
             list_state: ListState::new(0, gpui::ListAlignment::Top, px(1000.)).measure_all(),
             text_view_style: TextViewStyle::default(),
             code_block_actions: None,
+            code_block_layout_projection: false,
             code_block_footer: None,
             markdown_extensions: Arc::default(),
             is_selecting: false,
@@ -186,6 +188,11 @@ impl TextViewState {
 
     pub fn layout_projection_focused(&self, window: &Window, cx: &App) -> bool {
         self.focus_handle.contains_focused(window, cx)
+    }
+
+    /// Accepted code blocks, cached when the document changes.
+    pub fn code_blocks(&self) -> &[super::node::CodeBlock] {
+        self.document_code_blocks.code_blocks()
     }
 
     pub fn layout_bounds(&self) -> Bounds<Pixels> {
@@ -326,7 +333,9 @@ impl TextViewState {
     }
 
     pub(super) fn body_measurement_supported(&self) -> bool {
-        !self.scrollable && self.parsed_error.is_none() && !self.has_code_block_actions()
+        !self.scrollable
+            && self.parsed_error.is_none()
+            && (self.code_block_layout_projection || !self.has_code_block_actions())
     }
 
     pub(super) fn update_bounds(&mut self, bounds: Bounds<Pixels>) {
@@ -535,10 +544,27 @@ impl Render for TextViewState {
     }
 }
 
-#[derive(Clone, PartialEq, Default)]
+#[derive(Default)]
 pub(crate) struct ParsedContent {
     pub(crate) document: ParsedDocument,
     pub(crate) node_cx: node::NodeContext,
+    // Owned by the parser. Published clones share the immutable document but
+    // never copy the growable append buffer.
+    append_source: String,
+}
+impl PartialEq for ParsedContent {
+    fn eq(&self, other: &Self) -> bool {
+        self.document == other.document && self.node_cx == other.node_cx
+    }
+}
+impl Clone for ParsedContent {
+    fn clone(&self) -> Self {
+        Self {
+            document: self.document.clone(),
+            node_cx: self.node_cx.clone(),
+            append_source: String::new(),
+        }
+    }
 }
 
 struct UpdateFuture {
@@ -573,10 +599,13 @@ impl Future for UpdateFuture {
                     let hit_coalesce_budget =
                         merge_pending_options(&mut options, self.rx.as_ref().get_ref());
 
-                    let res = parse_content(self.format, self.content.clone(), &options);
-                    if let Ok(content) = &res {
-                        self.content = content.clone();
-                    }
+                    let base = std::mem::take(&mut self.content);
+                    let res = parse_content(self.format, base, &options);
+                    let res = res.map(|content| {
+                        let published = content.clone();
+                        self.content = content;
+                        published
+                    });
                     _ = self.tx_result.try_send(ParsedUpdate {
                         revision: options.revision,
                         append: options.append,
@@ -649,8 +678,11 @@ fn parse_content(
     // HTML nodes do not carry Markdown source spans. Reparse the complete HTML
     // document on append rather than dropping its last block and parsing a suffix.
     if options.append && format == TextViewFormat::Html {
-        let source = format!("{}{}", content.document.source, options.pending_text);
-        content.document = format::html::parse(&source, &mut node_cx)?;
+        if content.append_source.is_empty() {
+            content.append_source.push_str(&content.document.source);
+        }
+        content.append_source.push_str(&options.pending_text);
+        content.document = format::html::parse(&content.append_source, &mut node_cx)?;
         return Ok(content);
     }
 
@@ -673,11 +705,15 @@ fn parse_content(
     }?;
 
     if options.append {
-        content.document.source =
-            format!("{}{}", content.document.source, options.pending_text).into();
+        if content.append_source.is_empty() {
+            content.append_source.push_str(&content.document.source);
+        }
+        content.append_source.push_str(&options.pending_text);
+        content.document.source = content.append_source.clone().into();
         Arc::make_mut(&mut content.document.blocks)
             .extend(Arc::unwrap_or_clone(new_document.blocks));
     } else {
+        content.append_source = source;
         content.document = new_document;
     }
 

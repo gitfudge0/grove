@@ -1,4 +1,5 @@
 //! Session-owned, read-only checkout browsing. Disk work is bounded and never blocks paint.
+mod explorer_slot;
 use super::{
     components::{
         header_control_frame, header_control_with_label_tooltip, project_field_well,
@@ -148,9 +149,38 @@ enum Content {
     Text {
         text: SharedString,
         language: &'static str,
+        source_body: SharedString,
+        gutter: SharedString,
+        lines: usize,
     },
     Image(Arc<gpui::Image>),
     Error(String),
+}
+impl Content {
+    fn text(text: SharedString, language: &'static str) -> Self {
+        let fence = "`".repeat(
+            text.split(|c| c != '`')
+                .map(str::len)
+                .max()
+                .unwrap_or(0)
+                .max(2)
+                + 1,
+        );
+        let source_body = format!("{fence}{language}\n{text}\n{fence}").into();
+        let lines = text.split('\n').count();
+        let gutter = (1..=lines)
+            .map(|n| n.to_string())
+            .collect::<Vec<_>>()
+            .join("\n")
+            .into();
+        Self::Text {
+            text,
+            language,
+            source_body,
+            gutter,
+            lines,
+        }
+    }
 }
 fn language(path: &Path) -> &'static str {
     match path
@@ -256,19 +286,27 @@ fn read_content(root: &Path, path: &Path, transcript_link: bool) -> Result<Conte
     if text.lines().count() > 20_000 {
         return Err("Preview unavailable: this file has more than 20,000 lines.".into());
     }
-    Ok(Content::Text {
-        text: text.into(),
-        language: language(&path),
-    })
+    Ok(Content::text(text.into(), language(&path)))
 }
 
 pub(super) enum FileBrowserEvent {
     Opened,
     Closed,
 }
+#[derive(Clone)]
+struct ExplorerEntry {
+    path: PathBuf,
+    directory: bool,
+    depth: usize,
+}
+enum ExplorerRow {
+    File(ExplorerEntry),
+    Message(String, bool),
+}
+
 pub(super) struct FileBrowser {
     pub(super) root: PathBuf,
-    directories: HashMap<PathBuf, Result<Vec<Entry>, String>>,
+    directories: HashMap<PathBuf, Result<Arc<Vec<Entry>>, String>>,
     expanded: HashSet<PathBuf>,
     pending: HashSet<PathBuf>,
     pub target: Option<FileTarget>,
@@ -285,6 +323,8 @@ pub(super) struct FileBrowser {
     explorer_seen: std::time::Instant,
     return_focus: Option<FocusHandle>,
     row_focus: HashMap<PathBuf, FocusHandle>,
+    explorer_revealed_focus: Option<(PathBuf, gpui::Pixels, gpui::Size<gpui::Pixels>)>,
+    explorer_rows: Option<Arc<Vec<ExplorerRow>>>,
     scroll: ScrollHandle,
     explorer_scroll: ScrollHandle,
     pending_line: Option<usize>,
@@ -311,6 +351,8 @@ impl FileBrowser {
             explorer_seen: std::time::Instant::now(),
             return_focus: None,
             row_focus: HashMap::new(),
+            explorer_revealed_focus: None,
+            explorer_rows: None,
             scroll: ScrollHandle::new(),
             explorer_scroll: ScrollHandle::new(),
             pending_line: None,
@@ -355,6 +397,8 @@ impl FileBrowser {
         self.pending.clear();
         self.expanded = HashSet::from([root.clone()]);
         self.row_focus.clear();
+        self.explorer_revealed_focus = None;
+        self.explorer_rows = None;
         self.load_directory(root, cx);
         cx.notify();
     }
@@ -370,12 +414,13 @@ impl FileBrowser {
             .spawn(async move { read_directory(&root, &path) });
         // The generation belongs to this entity/root; a removed browser cannot receive results.
         cx.spawn(async move |this, cx| {
-            let result = work.await;
+            let result = work.await.map(Arc::new);
             let _ = this.update(cx, |this, cx| {
                 if this.root_generation == generation {
                     this.pending.remove(&requested);
                     if this.directories.get(&requested) != Some(&result) {
                         this.directories.insert(requested, result);
+                        this.explorer_rows = None;
                         cx.notify();
                     }
                 }
@@ -397,7 +442,9 @@ impl FileBrowser {
                     .skip(1)
                     .take_while(|p| p.starts_with(&root))
                 {
-                    self.expanded.insert(parent.to_path_buf());
+                    if self.expanded.insert(parent.to_path_buf()) {
+                        self.explorer_rows = None;
+                    }
                     self.load_directory(parent.to_path_buf(), cx);
                 }
             }
@@ -439,150 +486,197 @@ impl FileBrowser {
         cx.notify();
     }
     fn toggle_directory(&mut self, path: PathBuf, cx: &mut Context<Self>) {
+        self.explorer_rows = None;
         if !self.expanded.remove(&path) {
             self.expanded.insert(path.clone());
             self.load_directory(path, cx);
         }
         cx.notify();
     }
-    fn rows(&mut self, path: &Path, depth: usize, cx: &mut Context<Self>) -> Vec<AnyElement> {
-        let Some(entries) = self.directories.get(path).cloned() else {
-            return vec![div()
-                .px(rpx(SPACE_LG))
-                .text_color(c::FG_DIM())
-                .child("Loading files…")
-                .into_any_element()];
-        };
-        let entries = match entries {
-            Ok(entries) => entries,
-            Err(error) => {
-                return vec![div()
-                    .p(rpx(SPACE_LG))
-                    .text_color(c::FORM_ERROR())
-                    .child(error)
-                    .into_any_element()]
-            }
-        };
-        let mut rows = Vec::new();
-        for entry in entries {
-            let name = entry
-                .path
-                .file_name()
-                .unwrap_or_default()
-                .to_string_lossy()
-                .into_owned();
-            let expanded = self.expanded.contains(&entry.path);
-            let focus = self
-                .row_focus
-                .entry(entry.path.clone())
-                .or_insert_with(|| cx.focus_handle())
-                .clone();
-            let path = entry.path.clone();
-            let keyboard_path = path.clone();
-            let directory = entry.directory;
-            let mouse_focus = focus.clone();
-            let selected = self
-                .target
-                .as_ref()
-                .is_some_and(|target| target.path == path);
-            let (glyph, color) = file_icon(&path, directory, expanded);
-            let row = header_control_frame(
-                SharedString::from(format!("file-row-{}", path.display())),
-                SharedString::from(name.clone()),
-                c::BG_HOVER(),
-            )
-            .debug_selector(move || format!("file-row-{name}"))
-            .track_focus(&focus)
-            .tab_index(0)
-            .focus_visible(|s| s.bg(c::BG_HOVER()))
-            .w_full()
-            .h_auto()
-            .min_h(rpx(CONTROL_H))
-            .pl(rpx(SPACE_LG + depth as f32 * SPACE_2XL))
-            .pr(rpx(SPACE_LG))
-            .gap(rpx(SPACE_SM))
-            .justify_start()
-            .when(selected, |row| row.bg(c::BG_HOVER()))
-            .when(directory, |row| row.aria_expanded(expanded))
-            .child(icon(glyph, ICON_MD, color))
-            .child(
-                div().flex_1().min_w_0().truncate().child(
-                    entry
-                        .path
-                        .file_name()
-                        .unwrap_or_default()
-                        .to_string_lossy()
-                        .into_owned(),
-                ),
-            )
-            .on_mouse_down(gpui::MouseButton::Left, move |_, window, cx| {
-                mouse_focus.focus(window, cx);
-            })
-            .on_click(cx.listener(move |this, _, window, cx| {
-                if directory {
-                    this.toggle_directory(path.clone(), cx);
-                } else {
-                    this.open(
-                        FileTarget {
-                            path: path.clone(),
-                            line: None,
-                            transcript_link: false,
-                        },
-                        window,
-                        cx,
-                    );
-                }
-            }))
-            .on_key_down(cx.listener(
-                move |this, event: &gpui::KeyDownEvent, window, cx| {
-                    if matches!(event.keystroke.key.as_str(), "enter" | "space") && !event.is_held {
-                        if directory {
-                            this.toggle_directory(keyboard_path.clone(), cx);
-                        } else {
-                            this.open(
-                                FileTarget {
-                                    path: keyboard_path.clone(),
-                                    line: None,
-                                    transcript_link: false,
-                                },
-                                window,
-                                cx,
-                            );
-                        }
-                        window.prevent_default();
-                        cx.stop_propagation();
+    fn collect_explorer_rows(&self, path: &Path, depth: usize, rows: &mut Vec<ExplorerRow>) {
+        match self.directories.get(path) {
+            None => rows.push(ExplorerRow::Message("Loading files…".into(), false)),
+            Some(Err(error)) => rows.push(ExplorerRow::Message(error.clone(), true)),
+            Some(Ok(entries)) => {
+                for entry in entries.iter() {
+                    rows.push(ExplorerRow::File(ExplorerEntry {
+                        path: entry.path.clone(),
+                        directory: entry.directory,
+                        depth,
+                    }));
+                    if entry.directory && self.expanded.contains(&entry.path) {
+                        self.collect_explorer_rows(&entry.path, depth + 1, rows);
                     }
-                },
-            ));
-            rows.push(row.into_any_element());
-            if directory && expanded {
-                rows.extend(self.rows(&entry.path, depth + 1, cx));
+                }
             }
         }
-        rows
+    }
+    fn render_explorer_row(&mut self, entry: &ExplorerEntry, cx: &mut Context<Self>) -> AnyElement {
+        let name = entry
+            .path
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .into_owned();
+        let expanded = self.expanded.contains(&entry.path);
+        let focus = self
+            .row_focus
+            .entry(entry.path.clone())
+            .or_insert_with(|| cx.focus_handle().tab_stop(true).tab_index(0))
+            .clone();
+        let path = entry.path.clone();
+        let keyboard_path = path.clone();
+        let directory = entry.directory;
+        let mouse_focus = focus.clone();
+        let selected = self
+            .target
+            .as_ref()
+            .is_some_and(|target| target.path == path);
+        let (glyph, color) = file_icon(&path, directory, expanded);
+        let row = header_control_frame(
+            SharedString::from(format!("file-row-{}", path.display())),
+            SharedString::from(name.clone()),
+            c::BG_HOVER(),
+        )
+        .debug_selector(move || format!("file-row-{name}"))
+        .track_focus(&focus)
+        .tab_index(0)
+        .focus_visible(|s| s.bg(c::BG_HOVER()))
+        .w_full()
+        .h(rpx(CONTROL_H))
+        .pl(rpx(SPACE_LG + entry.depth as f32 * SPACE_2XL))
+        .pr(rpx(SPACE_LG))
+        .gap(rpx(SPACE_SM))
+        .justify_start()
+        .when(selected, |row| row.bg(c::BG_HOVER()))
+        .when(directory, |row| row.aria_expanded(expanded))
+        .child(icon(glyph, ICON_MD, color))
+        .child(
+            div().flex_1().min_w_0().truncate().child(
+                entry
+                    .path
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .into_owned(),
+            ),
+        )
+        .on_mouse_down(gpui::MouseButton::Left, move |_, window, cx| {
+            mouse_focus.focus(window, cx);
+        })
+        .on_click(cx.listener(move |this, _, window, cx| {
+            if directory {
+                this.toggle_directory(path.clone(), cx);
+            } else {
+                this.open(
+                    FileTarget {
+                        path: path.clone(),
+                        line: None,
+                        transcript_link: false,
+                    },
+                    window,
+                    cx,
+                );
+            }
+        }))
+        .on_key_down(
+            cx.listener(move |this, event: &gpui::KeyDownEvent, window, cx| {
+                if matches!(event.keystroke.key.as_str(), "enter" | "space") && !event.is_held {
+                    if directory {
+                        this.toggle_directory(keyboard_path.clone(), cx);
+                    } else {
+                        this.open(
+                            FileTarget {
+                                path: keyboard_path.clone(),
+                                line: None,
+                                transcript_link: false,
+                            },
+                            window,
+                            cx,
+                        );
+                    }
+                    window.prevent_default();
+                    cx.stop_propagation();
+                }
+            }),
+        );
+        row.into_any_element()
+    }
+    fn rows(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        let rows = if let Some(rows) = &self.explorer_rows {
+            rows.clone()
+        } else {
+            let mut rows = Vec::new();
+            self.collect_explorer_rows(&self.root, 0, &mut rows);
+            let rows = Arc::new(rows);
+            self.explorer_rows = Some(rows.clone());
+            rows
+        };
+        let live: HashSet<_> = rows
+            .iter()
+            .filter_map(|row| match row {
+                ExplorerRow::File(entry) => Some(entry.path.clone()),
+                ExplorerRow::Message(..) => None,
+            })
+            .collect();
+        self.row_focus.retain(|path, _| live.contains(path));
+        if self
+            .explorer_revealed_focus
+            .as_ref()
+            .is_some_and(|(path, _, _)| {
+                self.row_focus
+                    .get(path)
+                    .is_none_or(|focus| !focus.is_focused(window))
+            })
+        {
+            self.explorer_revealed_focus = None;
+        }
+        rows.iter().map(|row| match row {
+            ExplorerRow::Message(text, error) => div().px(rpx(SPACE_LG)).text_color(if *error { c::FORM_ERROR() } else { c::FG_DIM() }).child(text.clone()).into_any_element(),
+            ExplorerRow::File(entry) => {
+                let focus = self.row_focus.entry(entry.path.clone()).or_insert_with(|| cx.focus_handle().tab_stop(true).tab_index(0)).clone();
+                if focus.is_focused(window) {
+                    let signature = (entry.path.clone(), window.rem_size(), self.explorer_scroll.bounds().size);
+                    if self.explorer_revealed_focus.as_ref() != Some(&signature) {
+                    if let Some(index) = rows.iter().position(|row| matches!(row, ExplorerRow::File(other) if other.path == entry.path)) {
+                        self.explorer_scroll.scroll_to_item(index);
+                        self.explorer_revealed_focus = Some(signature);
+                    }
+                    }
+                }
+                explorer_slot::ExplorerSlot::new(cx.entity().downgrade(), entry.clone(), focus).into_any_element()
+            }
+        }).collect()
     }
     pub fn explorer(
         &mut self,
         project: String,
         worktree: String,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         self.explorer_seen = std::time::Instant::now();
         if self.refresh_task.is_none() {
             // Poll only expanded directories while the explorer is being displayed.
             // Retaining the task cancels it with the browser; root generations reject stale reads.
+            let window_handle = window.window_handle();
             self.refresh_task = Some(cx.spawn(async move |this, cx| loop {
                 cx.background_executor()
                     .timer(std::time::Duration::from_secs(1))
                     .await;
+                let focused = window_handle
+                    .update(cx, |_, window, _| window.is_window_active())
+                    .unwrap_or(false);
+                if !focused {
+                    let _ = this.update(cx, |this, _| this.refresh_task = None);
+                    break;
+                }
                 let active = this
                     .update(cx, |this, cx| {
                         if this.explorer_seen.elapsed() > std::time::Duration::from_secs(2) {
                             this.refresh_task = None;
                             return false;
                         }
-                        cx.notify();
                         for path in this.expanded.clone() {
                             this.load_directory(path, cx);
                         }
@@ -597,8 +691,7 @@ impl FileBrowser {
                 self.load_directory(path, cx);
             }
         }
-        let root = self.root.clone();
-        let rows = self.rows(&root, 0, cx);
+        let rows = self.rows(window, cx);
         div()
             .debug_selector(|| "file-explorer".into())
             .size_full()
@@ -721,19 +814,17 @@ impl Render for FileBrowser {
                         .object_fit(gpui::ObjectFit::Contain),
                 )
                 .into_any_element(),
-            Content::Text { text, language } => {
+            Content::Text {
+                text,
+                language,
+                source_body,
+                gutter,
+                lines,
+            } => {
                 let body = if *language == "markdown" && !self.source {
-                    text.to_string()
+                    text.clone()
                 } else {
-                    let fence = "`".repeat(
-                        text.split(|c| c != '`')
-                            .map(str::len)
-                            .max()
-                            .unwrap_or(0)
-                            .max(2)
-                            + 1,
-                    );
-                    format!("{fence}{language}\n{text}\n{fence}")
+                    source_body.clone()
                 };
                 if let Some(line) = self.pending_line.take() {
                     if *language != "markdown" || self.source {
@@ -762,22 +853,35 @@ impl Render for FileBrowser {
                     let view = TextView::markdown("file-content-text", body)
                         .style(style)
                         .selectable(true);
+                    let selected_line = self
+                        .target
+                        .as_ref()
+                        .and_then(|target| target.line)
+                        .filter(|line| *line <= *lines);
                     let gutter = div()
+                        .relative()
                         .flex_shrink_0()
                         .text_size(rpx(TEXT_CODE))
+                        .line_height(rpx(SOURCE_LINE_HEIGHT))
                         .font_family(crate::fonts::MONO_FAMILY)
                         .text_color(c::FG_DIM())
                         .pr(rpx(SPACE_2XL))
-                        .children((1..=text.split('\n').count()).map(|n| {
-                            div()
-                                .h(rpx(SOURCE_LINE_HEIGHT))
-                                .text_right()
-                                .when(
-                                    self.target.as_ref().and_then(|t| t.line) == Some(n),
-                                    |row| row.bg(c::BG_HOVER()).text_color(c::BLUE()),
-                                )
-                                .child(n.to_string())
-                        }));
+                        .text_right()
+                        .child(div().relative().whitespace_nowrap().child(gutter.clone()))
+                        .when_some(selected_line, |gutter, line| {
+                            gutter.child(
+                                div()
+                                    .absolute()
+                                    .left_0()
+                                    .right(rpx(SPACE_2XL))
+                                    .top(rpx((line - 1) as f32 * SOURCE_LINE_HEIGHT))
+                                    .h(rpx(SOURCE_LINE_HEIGHT))
+                                    .bg(c::BG_HOVER())
+                                    .text_color(c::BLUE())
+                                    .child(line.to_string()),
+                            )
+                        });
+
                     div()
                         .p(rpx(SPACE_3XL))
                         .flex()
@@ -947,6 +1051,84 @@ impl Render for FileBrowser {
 #[cfg(test)]
 mod tests {
     use super::*;
+    struct ExplorerFixture {
+        browser: gpui::Entity<FileBrowser>,
+        _observer: gpui::Subscription,
+    }
+    impl Render for ExplorerFixture {
+        fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            self.browser.update(cx, |browser, cx| {
+                browser.explorer("Fixture".into(), "Checkout".into(), window, cx)
+            })
+        }
+    }
+    #[gpui::test]
+    fn explorer_virtualizes_labels_and_reveals_offscreen_keyboard_focus(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        cx.update(gpui_component::init);
+        let root = tempfile::tempdir().unwrap();
+        for i in 0..200 {
+            fs_err::write(root.path().join(format!("{i:04}.rs")), "fn main() {}\n").unwrap();
+        }
+        let (fixture, cx) = cx.add_window_view(|window, cx| {
+            let browser = cx.new(|cx| FileBrowser::new(root.path().to_owned(), window, cx));
+            let observer = cx.observe(&browser, |_, _, cx| cx.notify());
+            ExplorerFixture {
+                browser,
+                _observer: observer,
+            }
+        });
+        cx.simulate_resize(gpui::size(gpui::px(300.), gpui::px(260.)));
+        cx.run_until_parked();
+        cx.update(|window, cx| window.draw(cx).clear());
+        assert!(cx.debug_bounds("file-row-0000.rs").is_some());
+        assert!(
+            cx.debug_bounds("file-row-0199.rs").is_none(),
+            "offscreen labels are not materialized"
+        );
+        let browser = fixture.read_with(cx, |fixture, _| fixture.browser.clone());
+        let last = root.path().join("0199.rs");
+        cx.update(|window, cx| {
+            browser.update(cx, |browser, cx| {
+                assert_eq!(
+                    browser.row_focus.len(),
+                    200,
+                    "every logical row retains Tab registration"
+                );
+                browser.row_focus[&last].focus(window, cx);
+            });
+        });
+        // Focus observers run after the frame's dispatch tree is complete;
+        // settle their reveal request before checking presented row geometry.
+        for _ in 0..3 {
+            cx.run_until_parked();
+            cx.update(|window, cx| window.draw(cx).clear());
+        }
+        let bounds = cx.debug_bounds("file-row-0199.rs").unwrap();
+        assert!(
+            bounds.top() >= gpui::px(0.) && bounds.bottom() <= gpui::px(260.),
+            "focused bounds {bounds:?}; scroll {:?}",
+            browser.read_with(cx, |browser, _| (
+                browser.explorer_scroll.offset(),
+                browser.explorer_scroll.max_offset(),
+                browser.explorer_scroll.bounds_for_item(199)
+            ))
+        );
+        cx.update(|window, _| window.set_rem_size(gpui::px(24.)));
+        for _ in 0..3 {
+            cx.run_until_parked();
+            cx.update(|window, cx| window.draw(cx).clear());
+        }
+        let zoomed = cx.debug_bounds("file-row-0199.rs").unwrap();
+        assert!(zoomed.top() >= gpui::px(0.) && zoomed.bottom() <= gpui::px(260.));
+        cx.simulate_keystrokes("enter");
+        cx.run_until_parked();
+        browser.read_with(cx, |browser, _| {
+            assert_eq!(browser.target.as_ref().unwrap().path, last);
+        });
+    }
+
     #[gpui::test]
     fn opening_reveals_nested_checkout_files_without_expanding_outside_root(
         cx: &mut gpui::TestAppContext,
@@ -1004,6 +1186,7 @@ mod tests {
             cx.add_window_view(|window, cx| FileBrowser::new(root_path, window, cx));
         cx.run_until_parked();
         cx.update(|window, cx| {
+            window.activate_window();
             browser.update(cx, |browser, cx| {
                 browser.toggle_directory(nested.clone(), cx);
                 let _ = browser.explorer("Project".into(), "Checkout".into(), window, cx);
@@ -1048,10 +1231,7 @@ mod tests {
                 line: None,
                 transcript_link: false,
             });
-            browser.content = Content::Text {
-                text: "# Narrow header".into(),
-                language: "markdown",
-            };
+            browser.content = Content::text("# Narrow header".into(), "markdown");
             browser.visible = true;
             browser
         });
@@ -1088,10 +1268,7 @@ mod tests {
                 line: None,
                 transcript_link: false,
             });
-            browser.content = Content::Text {
-                text: "# Narrow header".into(),
-                language: "html",
-            };
+            browser.content = Content::text("# Narrow header".into(), "html");
             browser.visible = true;
             browser
         });

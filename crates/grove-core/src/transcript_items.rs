@@ -21,6 +21,9 @@ fn next_revision() -> u64 {
 #[serde(transparent)]
 pub struct TranscriptItem(Arc<Value>);
 impl TranscriptItem {
+    pub(crate) fn same_storage(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
     pub fn into_value(self) -> Value {
         Arc::try_unwrap(self.0).unwrap_or_else(|value| value.as_ref().clone())
     }
@@ -195,6 +198,45 @@ impl<'a> IntoIterator for &'a mut TranscriptItems {
     type IntoIter = std::slice::IterMut<'a, TranscriptItem>;
     fn into_iter(self) -> Self::IntoIter {
         self.deref_mut().iter_mut()
+    }
+}
+
+/// Copy-on-write provider capability lists. Snapshots share immutable catalogs;
+/// an explicit refresh takes a private list without copying on every emission.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+#[serde(transparent)]
+pub struct SharedValues(Arc<Vec<Value>>);
+impl Deref for SharedValues {
+    type Target = Vec<Value>;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+impl DerefMut for SharedValues {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        Arc::make_mut(&mut self.0)
+    }
+}
+impl From<Vec<Value>> for SharedValues {
+    fn from(values: Vec<Value>) -> Self {
+        Self(Arc::new(values))
+    }
+}
+impl FromIterator<Value> for SharedValues {
+    fn from_iter<T: IntoIterator<Item = Value>>(iter: T) -> Self {
+        iter.into_iter().collect::<Vec<_>>().into()
+    }
+}
+impl<'a> IntoIterator for &'a SharedValues {
+    type Item = &'a Value;
+    type IntoIter = std::slice::Iter<'a, Value>;
+    fn into_iter(self) -> Self::IntoIter {
+        self.iter()
+    }
+}
+impl PartialEq<Vec<Value>> for SharedValues {
+    fn eq(&self, other: &Vec<Value>) -> bool {
+        self.0.as_ref() == other
     }
 }
 

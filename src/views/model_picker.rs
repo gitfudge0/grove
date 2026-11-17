@@ -103,7 +103,7 @@ impl ModelPicker {
         let mut catalogs = [Catalog::Unloaded, Catalog::Unloaded];
         if !state.models.is_empty() {
             catalogs[index(state.saved.provider)] =
-                Catalog::Ready(models(state.saved.provider, state.models.clone()));
+                Catalog::Ready(models(state.saved.provider, state.models.to_vec()));
         }
         let has_scoped_favorites = cx
             .global::<SettingsState>()

@@ -298,19 +298,40 @@ pub(crate) fn discover_composer(
 }
 
 pub fn connect(saved: SavedSession, args: Vec<String>) -> Connection {
-    let (handle, input) = Handle::channel();
+    connect_deferred(saved, args, provider::deferred_connection(Arc::new(|| {})))
+}
+pub(crate) fn connect_deferred(
+    saved: SavedSession,
+    args: Vec<String>,
+    deferred: provider::DeferredConnection,
+) -> Connection {
+    connect_deferred_with_validation(saved, args, deferred, None)
+}
+pub(crate) fn connect_deferred_with_validation(
+    saved: SavedSession,
+    args: Vec<String>,
+    deferred: provider::DeferredConnection,
+    validation: Option<provider::StartupValidation>,
+) -> Connection {
+    let provider::DeferredConnection {
+        handle,
+        receiver,
+        thread,
+    } = deferred;
     let (updates, output) = crate::latest::channel();
     let pid = handle.1.clone();
     let stopping = handle.2.clone();
     std::thread::spawn(move || {
-        Actor::new(saved, args, input, updates, pid, stopping).run();
+        let _ = thread.set(std::thread::current());
+        let mut actor = Actor::new(saved, args, receiver, updates, pid, stopping);
+        actor.startup_validation = validation;
+        actor.run();
     });
     Connection {
         handle,
         updates: output,
     }
 }
-
 /// Subscription-authenticated side conversation using the regular SDK transport.
 pub(crate) fn connect_side_chat(mut saved: SavedSession) -> Connection {
     saved.composer = provider::ComposerSettings {
@@ -335,11 +356,12 @@ pub(crate) fn connect_side_chat(mut saved: SavedSession) -> Connection {
     ];
     saved.config_args.clone_from(&args);
     saved.native_config_version = 1;
-    let (handle, input) = Handle::channel();
+    let (handle, input, actor_thread) = Handle::actor_channel();
     let (updates, output) = crate::latest::channel();
     let pid = handle.1.clone();
     let stopping = handle.2.clone();
     std::thread::spawn(move || {
+        let _ = actor_thread.set(std::thread::current());
         let mut actor = Actor::new(saved, args, input, updates, pid, stopping);
         actor.side_chat = true;
         actor.run();
@@ -636,6 +658,7 @@ fn spawn_profile(
     let capture = crate::provider_diagnostics::Capture::from_env("claude");
     let incoming_capture = capture.clone();
     let (send, lines) = mpsc::channel();
+    let actor_thread = std::thread::current();
     std::thread::spawn(move || {
         for line in BufReader::new(stdout).lines() {
             let parsed = line.map_err(|e| e.to_string()).and_then(|line| {
@@ -647,6 +670,7 @@ fn spawn_profile(
             if send.send(parsed).is_err() {
                 return;
             }
+            actor_thread.unpark();
         }
         let detail = tail.lock().map(|v| v.trim().to_owned()).unwrap_or_default();
         let _ = send.send(Err(if detail.is_empty() {
@@ -654,6 +678,7 @@ fn spawn_profile(
         } else {
             format!("Claude Code disconnected: {detail}")
         }));
+        actor_thread.unpark();
     });
     Ok(Process {
         activity,
@@ -1091,14 +1116,10 @@ impl ChildTranscript {
                     }
                     Some("content_block_delta") => {
                         if let Some(text) = event["delta"]["text"].as_str() {
-                            if let Some(item) = self
-                                .blocks
-                                .get(&index)
-                                .and_then(|id| self.items.iter_mut().find(|item| item["id"] == *id))
-                            {
-                                let mut full = item["text"].as_str().unwrap_or_default().to_owned();
-                                full.push_str(text);
-                                item["text"] = json!(full);
+                            if let Some(item) = self.blocks.get(&index).and_then(|id| {
+                                self.items.iter_mut().rev().find(|item| item["id"] == *id)
+                            }) {
+                                provider::append_json_text(&mut item["text"], text);
                             }
                         }
                     }
@@ -1188,6 +1209,8 @@ impl ChildTranscript {
 }
 struct Actor {
     side_chat: bool,
+    startup_validation: Option<provider::StartupValidation>,
+    startup_error: Option<String>,
     model_catalog_key: Option<crate::model_catalog::Key>,
     state: Snapshot,
     args: Vec<String>,
@@ -1238,6 +1261,11 @@ struct Actor {
     message_id: String,
     title_generator: crate::session_title::Generator,
     last_persist: Instant,
+    last_emit: Instant,
+    publication_pending: bool,
+    persistence: provider::BackgroundPersistence,
+    last_work_active: bool,
+    last_activity_context: Option<(u64, Option<String>)>,
     dirty: bool,
 }
 impl Actor {
@@ -1292,6 +1320,8 @@ impl Actor {
             .collect();
         Self {
             side_chat: false,
+            startup_validation: None,
+            startup_error: None,
             model_catalog_key: None,
             state,
             args,
@@ -1340,6 +1370,11 @@ impl Actor {
             message_id: String::new(),
             title_generator: crate::session_title::Generator::default(),
             last_persist: Instant::now(),
+            last_emit: Instant::now(),
+            publication_pending: false,
+            persistence: provider::BackgroundPersistence::default(),
+            last_work_active: false,
+            last_activity_context: None,
             dirty: false,
         }
     }
@@ -1352,6 +1387,7 @@ impl Actor {
         self.process.take();
         self.pid.store(0, Ordering::SeqCst);
         let outcome = if forget && !self.side_chat {
+            self.save();
             provider::archive_closed_session(&self.state.saved)
         } else {
             self.save();
@@ -1367,13 +1403,15 @@ impl Actor {
         let _ = done.send(());
     }
     fn run(mut self) {
-        if let Err(error) = self.start() {
-            self.fail(error);
+        if !self.stopping.load(Ordering::SeqCst) {
+            if let Err(error) = self.start() {
+                self.fail(error);
+            }
         }
         self.save();
         self.publish();
         loop {
-            match self.input.recv_timeout(Duration::from_millis(20)) {
+            match self.input.try_recv() {
                 Ok(Action::Stop {
                     forget,
                     done,
@@ -1383,14 +1421,18 @@ impl Actor {
                     break;
                 }
                 Ok(action) => {
+                    std::thread::current().unpark();
                     if let Err(error) = self.action(action) {
                         self.state.error = Some(error);
                     }
-                    self.save();
+                    self.dirty = true;
                     self.publish();
                 }
-                Err(mpsc::RecvTimeoutError::Disconnected) => break,
-                Err(mpsc::RecvTimeoutError::Timeout) => {}
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    self.save();
+                    break;
+                }
+                Err(mpsc::TryRecvError::Empty) => {}
             }
             // stop_completion kills the process immediately; do not recreate it or
             // write recovery while its Stop action is still in flight.
@@ -1399,6 +1441,7 @@ impl Actor {
                 if self.title_generator.update_pending(&mut self.state, true) {
                     self.publish();
                 }
+                std::thread::park_timeout(Duration::from_secs(1));
                 continue;
             }
             // The UI consumes complete state, so intermediate protocol deltas
@@ -1413,9 +1456,17 @@ impl Actor {
             self.poll_context_query();
             self.poll_mcp_status();
             if self.receive_batch() {
+                std::thread::current().unpark();
+                self.publication_pending = true;
+            }
+            if self.publication_pending
+                && (self.last_emit.elapsed() >= Duration::from_millis(16)
+                    || !self.state.provider_work_active())
+            {
                 self.publish();
             }
             let title_changed = !self.side_chat
+                && self.startup_error.is_none()
                 && self
                     .title_generator
                     .tick(&mut self.state.saved, self.state.status, false);
@@ -1424,8 +1475,17 @@ impl Actor {
                 self.dirty = true;
                 self.publish();
             }
-            if self.dirty && self.last_persist.elapsed() >= Duration::from_millis(250) {
-                self.save();
+            if self.dirty && self.last_persist.elapsed() >= Duration::from_secs(2) {
+                if let Err(error) = self.persistence.schedule(&self.state.saved) {
+                    self.state.error = Some(error);
+                }
+                self.dirty = false;
+                self.last_persist = Instant::now();
+            }
+            if let Some(error) = self.persistence.take_error() {
+                self.state.error = Some(error);
+                self.dirty = true;
+                self.publish();
             }
             if self.process.is_some()
                 && !self.initialized
@@ -1438,6 +1498,12 @@ impl Actor {
                 self.save();
                 self.publish();
             }
+            let wait = if self.publication_pending {
+                Duration::from_millis(16).saturating_sub(self.last_emit.elapsed())
+            } else {
+                Duration::from_secs(1)
+            };
+            std::thread::park_timeout(wait);
         }
         self.process.take();
         self.pid.store(0, Ordering::SeqCst);
@@ -1492,7 +1558,7 @@ impl Actor {
             return;
         }
         self.last_persist = Instant::now();
-        if let Err(error) = provider::persist(&self.state.saved) {
+        if let Err(error) = self.persistence.flush(&self.state.saved) {
             self.state.error = Some(error);
         } else {
             self.dirty = false;
@@ -1587,6 +1653,11 @@ impl Actor {
         }
     }
     fn publish(&mut self) {
+        let active = self.state.provider_work_active();
+        if self.last_work_active && !active {
+            self.save();
+        }
+        self.last_work_active = active;
         if self.process.is_none()
             || (!self.state.provider_work_active()
                 && self.in_flight.is_none()
@@ -1597,9 +1668,16 @@ impl Actor {
             self.provider_use.take();
         }
         if let Some(process) = &self.process {
-            process
-                .activity
-                .set_context_items(&self.state.saved.items, self.state.turn_id.clone());
+            let context = (
+                self.state.saved.items.revision(),
+                self.state.turn_id.clone(),
+            );
+            if self.last_activity_context.as_ref() != Some(&context) {
+                process
+                    .activity
+                    .set_context_items(&self.state.saved.items, self.state.turn_id.clone());
+                self.last_activity_context = Some(context);
+            }
             process.visuals.sync(&mut self.state, self.side_chat);
         }
         let mut snapshot = self.state.clone();
@@ -1616,6 +1694,8 @@ impl Actor {
             && !self.redirect_pending
             && self.state.saved.pending_edit.is_none();
         let _ = self.updates.send(snapshot);
+        self.last_emit = Instant::now();
+        self.publication_pending = false;
     }
     fn fail(&mut self, error: String) {
         if !self.initialized {
@@ -1729,6 +1809,18 @@ impl Actor {
         self.write(json!({"type":"control_request","request_id":id,"request":request}))
     }
     fn start(&mut self) -> Result<(), String> {
+        crate::env_path::wait_for_initial_environment();
+        self.startup_error = None;
+        if let Some(validate) = &self.startup_validation {
+            if let Err(error) = validate() {
+                self.startup_error = Some(error.clone());
+                self.title_generator.cancel();
+                self.state.status = Status::Disconnected;
+                self.state.error = Some(error.clone());
+                return Err(error);
+            }
+        }
+        self.last_activity_context = None;
         self.state.context_measurement_live = false;
         // Every startup attempt retires steering state, including an early stop.
         self.redirect_pending = false;
@@ -2026,7 +2118,7 @@ impl Actor {
         });
         // Persist the complete original transcript and recovery snapshot before
         // touching files. Fork failure cannot destroy the original conversation.
-        provider::persist(&self.state.saved)?;
+        self.persistence.flush(&self.state.saved)?;
         if restore_files {
             if let Err(error) = checkpoint
                 .files
@@ -2094,7 +2186,7 @@ impl Actor {
         }
         let mut saved = self.state.saved.clone();
         saved.pending_edit = None;
-        if let Err(error) = provider::persist(&saved) {
+        if let Err(error) = self.persistence.flush(&saved) {
             self.state.status = Status::Disconnected;
             return Err(format!(
                 "Edit recovery could not be saved. Reconnect to reconcile: {error}"
@@ -2152,7 +2244,7 @@ impl Actor {
         saved.pending_edit = None;
         saved.context = None;
         saved.context_details = None;
-        if let Err(error) = provider::persist(&saved) {
+        if let Err(error) = self.persistence.flush(&saved) {
             self.state.status = Status::Disconnected;
             return Err(format!(
                 "Edit recovery could not be saved. Reconnect to reconcile: {error}"
@@ -2372,6 +2464,7 @@ impl Actor {
         approve: bool,
         persist_saved: impl Fn(&SavedSession) -> Result<(), String>,
     ) -> Result<(), String> {
+        self.persistence.drain()?;
         if crate::connections::credentials_busy(crate::agent::Agent::Claude) {
             return Err(
                 "Wait for provider authentication to finish before sending plan actions.".into(),
@@ -2409,6 +2502,17 @@ impl Actor {
         Ok(())
     }
     fn action(&mut self, action: Action) -> Result<(), String> {
+        if let (Some(error), Some(submission)) =
+            (&self.startup_error, provider::startup_submission(&action))
+        {
+            if let Some(id) = submission {
+                self.state.rejected_submission = Some(id);
+            }
+            return Err(format!(
+                "{error}. Request was not sent; reconnect after resolving checkout validation."
+            ));
+        }
+
         if self.side_chat
             && !matches!(
                 &action,
@@ -2453,8 +2557,8 @@ impl Actor {
             Action::MarkReviewed { work_period } => {
                 self.state.mark_reviewed(work_period)?;
             }
-            Action::UpdateSkills(skills) => self.state.skills = skills,
-            Action::UpdateModels(models) => self.state.models = models,
+            Action::UpdateSkills(skills) => self.state.skills = (skills).into(),
+            Action::UpdateModels(models) => self.state.models = (models).into(),
             Action::Interaction { epoch, action } => {
                 if epoch != self.state.interaction_epoch {
                     return Err("This interaction belongs to a previous connection".into());
@@ -2470,11 +2574,11 @@ impl Actor {
                     .saved
                     .rich_plans
                     .update_review(&plan_id, &revision_id, *review)?;
-                provider::persist(&self.state.saved)?;
+                self.persistence.flush(&self.state.saved)?;
             }
             Action::RetryPlanImport { message_id, source } => {
                 crate::rich_plan::retry_import(&mut self.state.saved, &message_id, &source)?;
-                provider::persist(&self.state.saved)?;
+                self.persistence.flush(&self.state.saved)?;
             }
             Action::ApprovePlan {
                 plan_id,
@@ -2528,7 +2632,7 @@ impl Actor {
             Action::RestoreRewindDraft { id } => {
                 let mut saved = self.state.saved.clone();
                 saved.restore_rewind_draft(&id)?;
-                provider::persist(&saved)?;
+                self.persistence.flush(&saved)?;
                 self.state.saved = saved;
                 self.state.edited_messages += 1;
             }
@@ -2554,6 +2658,7 @@ impl Actor {
                 self.state.saved.draft_images = draft.1;
             }
             Action::ClearConversation => {
+                self.persistence.flush(&self.state.saved)?;
                 self.clear_conversation(provider::persist)?;
                 if let Err(error) = self.start() {
                     self.fail(error);
@@ -3087,9 +3192,15 @@ impl Actor {
             .upsert_subagent(parent, None, None, SubagentStatus::Unknown);
         self.subagent_system_message(value);
         let child = self.child_transcripts.entry(parent.to_owned()).or_default();
+        let previous = child.items.clone();
         child.message(value, &self.state.saved.cwd);
-        for item in &child.items {
-            self.state.upsert_subagent_item(parent, item.clone());
+        for (index, item) in child.items.iter().enumerate() {
+            if previous
+                .get(index)
+                .is_none_or(|old| !old.same_storage(item))
+            {
+                self.state.upsert_subagent_item(parent, item.clone());
+            }
         }
         if value["type"] == "result" {
             if let Some(report) = value["result"].as_str() {
@@ -3616,7 +3727,7 @@ impl Actor {
                         .map(str::to_owned);
 
                     if let Some(models) = data["models"].as_array() {
-                        self.state.models=models.iter().map(|m| json!({"model":m["value"],"resolvedModel":m["resolvedModel"],"displayName":m["displayName"],"description":m["description"],"supportsFastMode":m["supportsFastMode"],"supportedReasoningEfforts":m["supportedEffortLevels"].as_array().map(|values| values.iter().map(|v| json!({"reasoningEffort":v})).collect::<Vec<_>>()).unwrap_or_default()})).collect();
+                        self.state.models=(models.iter().map(|m| json!({"model":m["value"],"resolvedModel":m["resolvedModel"],"displayName":m["displayName"],"description":m["description"],"supportsFastMode":m["supportsFastMode"],"supportedReasoningEfforts":m["supportedEffortLevels"].as_array().map(|values| values.iter().map(|v| json!({"reasoningEffort":v})).collect::<Vec<_>>()).unwrap_or_default()})).collect::<Vec<_>>()).into();
                     }
                     if let Some(key) = &self.model_catalog_key {
                         crate::model_catalog::remember(key, &self.state.models);
@@ -3631,10 +3742,11 @@ impl Actor {
                             .map(str::to_owned);
                     }
                     if let Some(commands) = data["commands"].as_array() {
-                        self.state.skills = commands
+                        self.state.skills = (commands
                             .iter()
                             .map(|v| json!({"name":v["name"],"description":v["description"]}))
-                            .collect();
+                            .collect::<Vec<_>>())
+                        .into();
                     }
                 }
             }
@@ -3738,10 +3850,11 @@ impl Actor {
                 self.state.resolved_effort = self.state.effort.clone();
                 if self.state.skills.is_empty() {
                     if let Some(commands) = value["slash_commands"].as_array() {
-                        self.state.skills = commands
+                        self.state.skills = (commands
                             .iter()
                             .map(|v| json!({"name":v,"description":"Claude Code command"}))
-                            .collect();
+                            .collect::<Vec<_>>())
+                        .into();
                     }
                 }
             }
@@ -4378,20 +4491,22 @@ impl Actor {
                     .saved
                     .items
                     .iter_mut()
+                    .rev()
                     .find(|item| item["id"] == *id)
                 else {
                     return;
                 };
                 let delta = &event["delta"];
                 if let Some(text) = delta["text"].as_str() {
-                    let mut text_all = item["text"].as_str().unwrap_or_default().to_owned();
-                    text_all.push_str(text);
-                    item["text"] = json!(text_all);
+                    provider::append_json_text(&mut item["text"], text);
                 }
                 if let Some(text) = delta["thinking"].as_str() {
-                    let mut text_all = item["content"][0].as_str().unwrap_or_default().to_owned();
-                    text_all.push_str(text);
-                    item["content"] = json!([text_all]);
+                    if !item["content"].is_array()
+                        || item["content"].as_array().is_some_and(Vec::is_empty)
+                    {
+                        item["content"] = json!([""]);
+                    }
+                    provider::append_json_text(&mut item["content"][0], text);
                 }
                 // Final assistant messages carry parsed tool input. Do not show
                 // partial JSON as a command that could be mistaken for complete.
@@ -4777,9 +4892,10 @@ mod tests {
         let mut actor = actor();
         let mut reader = transport(&mut actor);
         actor.state.resolved_model = Some("claude-opus-test".into());
-        actor.state.models = vec![
+        actor.state.models = (vec![
             json!({"model":"opus", "resolvedModel":"claude-opus-test", "supportsFastMode":true}),
-        ];
+        ])
+        .into();
         actor.state.saved.draft = "preserve".into();
         actor.state.resolved_access = Some("plan".into());
         actor
@@ -6064,8 +6180,7 @@ mod tests {
                 .as_deref(),
             Some("original")
         );
-        let durable: SavedSession =
-            serde_json::from_slice(&fs_err::read(&journal).unwrap()).unwrap();
+        let durable: SavedSession = provider::load_saved_session(&journal).unwrap();
         assert!(durable.pending_edit.is_none());
         assert!(durable.claude_resume.is_some());
         fs_err::remove_file(journal).unwrap();
@@ -6133,8 +6248,7 @@ mod tests {
         assert_eq!(actor.state.saved.rewind_drafts[0].text, "independent");
         assert_eq!(actor.state.saved.thread_id.as_deref(), Some("fork"));
         assert!(actor.in_flight.is_none());
-        let durable: SavedSession =
-            serde_json::from_slice(&fs_err::read(&journal).unwrap()).unwrap();
+        let durable: SavedSession = provider::load_saved_session(&journal).unwrap();
         assert_eq!(durable.draft, "original prompt");
         assert_eq!(
             durable.claude_resume.unwrap().assistant_uuid.as_deref(),

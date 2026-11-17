@@ -162,6 +162,8 @@ impl Sidebar {
             );
         }
         let stage_label = match stage {
+            Some(WorktreeRemovalStage::Checking) => Some("Checking worktree"),
+            Some(WorktreeRemovalStage::Stopping) => Some("Stopping sessions"),
             Some(WorktreeRemovalStage::RunningScript) => Some("Running teardown script"),
             Some(WorktreeRemovalStage::Removing) => Some("Removing worktree folder"),
             Some(WorktreeRemovalStage::Finished) => Some(if success {
@@ -345,6 +347,9 @@ impl Sidebar {
         cx.notify();
     }
     pub(super) fn submit_worktree(&mut self, cx: &mut Context<Self>) {
+        if self.worktree_creating {
+            return;
+        }
         let Some(idx) = self.pending_new_worktree else {
             return;
         };
@@ -357,12 +362,6 @@ impl Sidebar {
         else {
             return;
         };
-        if let Err(reason) = crate::project_service::worktree_prerequisite(&project.path) {
-            self.pending_new_worktree = None;
-            self.content_error = Some(reason.into());
-            cx.notify();
-            return;
-        }
         let name = self.worktree_name.read(cx).value().trim().to_string();
         let branch = self.worktree_branch.read(cx).value().trim().to_string();
         let base = self.worktree_base.read(cx).value().trim().to_string();
@@ -372,32 +371,49 @@ impl Sidebar {
             return;
         }
         let service = self.runtime.read(cx).projects.clone();
-        match service.update(cx, |service, cx| {
+        self.worktree_creating = true;
+        let creation = service.update(cx, |service, cx| {
             service.create_worktree_with_branch(&project, &name, &branch, Some(&base), cx)
-        }) {
-            Ok(path) => {
-                self.pending_new_worktree = None;
-                self.content_error = None;
-                if self.dashboard_open {
-                    if let Some(d) = &self.dashboard {
-                        d.tray.update(cx, |t, cx| {
-                            t.path.clone_from(&path);
-                            cx.notify();
-                        });
-                    }
-                    self.force_refresh_dashboard_worktrees(cx);
-                    self.refresh_dashboard_catalog(cx);
-                } else {
-                    self.select(Selection::Worktree(idx, path.clone()), cx);
+        });
+        cx.spawn(async move |this, cx| {
+            let result = creation.await;
+            let _ = this.update(cx, |this, cx| {
+                this.worktree_creating = false;
+                // A successful create remains discoverable through ProjectEvent
+                // even when the form was dismissed while the checkout ran.
+                if this.pending_new_worktree != Some(idx) {
+                    cx.notify();
+                    return;
                 }
-            }
-            Err(error) => {
-                let field = worktree_error_field(&error);
-                self.worktree_errors[field] = Some(error);
-            }
-        }
+                match result {
+                    Ok(path) => {
+                        this.pending_new_worktree = None;
+                        this.content_error = None;
+                        if this.dashboard_open {
+                            if let Some(d) = &this.dashboard {
+                                d.tray.update(cx, |t, cx| {
+                                    t.path.clone_from(&path);
+                                    cx.notify();
+                                });
+                            }
+                            this.force_refresh_dashboard_worktrees(cx);
+                            this.refresh_dashboard_catalog(cx);
+                        } else {
+                            this.select(Selection::Worktree(idx, path.clone()), cx);
+                        }
+                    }
+                    Err(error) => {
+                        let field = worktree_error_field(&error);
+                        this.worktree_errors[field] = Some(error);
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
         cx.notify();
     }
+
     pub(super) fn add_project(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.pending_new_worktree = None;
         self.project_return_path = None;
@@ -770,6 +786,10 @@ impl Sidebar {
     ) -> Option<AnyElement> {
         let native = self.runtime.read(cx).registry.read(cx).codex(id).cloned();
         let native_view = if let Some(session) = native.as_ref() {
+            session.update(
+                cx,
+                crate::entities::codex_session::CodexSession::ensure_connected,
+            );
             let newly_created = !self.codex_views.contains_key(&id);
             let view = self
                 .codex_views
@@ -1403,6 +1423,9 @@ impl Sidebar {
                 view.set_checkout_context(launch_location, branch.clone(), cx);
             });
         }
+        if native_view.is_none() && view.is_some() {
+            self.rendered_terminal_ids.insert(id);
+        }
         let body = native_view
             .map(gpui::IntoElement::into_any_element)
             .or_else(|| view.map(gpui::IntoElement::into_any_element));
@@ -2028,7 +2051,11 @@ impl Sidebar {
                                     .child(
                                         form_action(
                                             "create-worktree",
-                                            "Create worktree",
+                                            if self.worktree_creating {
+                                                "Creating worktree…"
+                                            } else {
+                                                "Create worktree"
+                                            },
                                             true,
                                             window,
                                             cx,
@@ -2036,7 +2063,7 @@ impl Sidebar {
                                         .icon(
                                             gpui_component::Icon::default().path("icons/plus.svg"),
                                         )
-                                        .disabled(!enabled)
+                                        .disabled(!enabled || self.worktree_creating)
                                         .on_click(
                                             cx.listener(|this, _, _, cx| this.submit_worktree(cx)),
                                         ),

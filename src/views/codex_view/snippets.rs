@@ -7,6 +7,91 @@ use gpui::AnyElement;
 
 const OUTPUT_HEIGHT: f32 = 240.0;
 const SHARED_OUTPUT_LINES: usize = 200;
+static SHELL: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+/// Source validity is independent of render preparation: session observers may
+/// arrive before the transcript's next render. Index once per item revision and
+/// hash a completed response only when a script from it actually needs validation.
+#[derive(Default)]
+pub(super) struct SnippetSources {
+    revision: Option<u64>,
+    thread: Option<String>,
+    sources: rustc_hash::FxHashMap<String, Rc<SnippetSource>>,
+    reconciled: Option<(u64, Option<String>)>,
+}
+
+struct SnippetSource {
+    item: codex::TranscriptItem,
+    signature: std::cell::OnceCell<Option<u64>>,
+}
+
+impl SnippetSources {
+    fn refresh(&mut self, state: &codex::Snapshot) {
+        let revision = state.saved.items.revision();
+        if self.revision == Some(revision) && self.thread == state.saved.thread_id {
+            return;
+        }
+        let mut previous = if self.thread == state.saved.thread_id {
+            std::mem::take(&mut self.sources)
+        } else {
+            rustc_hash::FxHashMap::default()
+        };
+        self.sources.clear();
+        for (index, item) in state.saved.items.iter().enumerate() {
+            if item["type"] != "agentMessage"
+                || (item["groveCompleted"] != true && item["status"] != "completed")
+                || item["status"] == "inProgress"
+            {
+                continue;
+            }
+            let id = item["id"].as_str().map_or_else(
+                || std::borrow::Cow::Owned(format!("message-{index}")),
+                std::borrow::Cow::Borrowed,
+            );
+            let (key, source) = previous
+                .remove_entry(id.as_ref())
+                .filter(|(_, source)| std::ptr::eq(source.item.as_ref(), item.as_ref()))
+                .unwrap_or_else(|| {
+                    (
+                        id.into_owned(),
+                        Rc::new(SnippetSource {
+                            item: item.clone(),
+                            signature: std::cell::OnceCell::new(),
+                        }),
+                    )
+                });
+            // Retain the original first-completed-match behavior for duplicate IDs.
+            self.sources.entry(key).or_insert(source);
+        }
+        self.revision = Some(revision);
+        self.thread.clone_from(&state.saved.thread_id);
+    }
+
+    fn signature(&mut self, state: &codex::Snapshot, key: &str) -> Option<u64> {
+        self.refresh(state);
+        let owner = key.rsplit_once(":code:")?.0;
+        let id = owner
+            .strip_prefix(self.thread.as_deref().unwrap_or(""))?
+            .strip_prefix(':')?;
+        let source = self.sources.get(id)?;
+        *source.signature.get_or_init(|| {
+            let mut hash = std::collections::hash_map::DefaultHasher::new();
+            source.item["text"].as_str()?.hash(&mut hash);
+            Some(hash.finish())
+        })
+    }
+
+    fn needs_reconciliation(&mut self, state: &codex::Snapshot) -> bool {
+        let revision = state.saved.items.revision();
+        if self.reconciled.as_ref().is_some_and(|(previous, thread)| {
+            *previous == revision && *thread == state.saved.thread_id
+        }) {
+            return false;
+        }
+        self.reconciled = Some((revision, state.saved.thread_id.clone()));
+        true
+    }
+}
 
 pub(super) struct SnippetRun {
     command: String,
@@ -24,17 +109,37 @@ pub(super) struct Snippet {
     source: String,
     source_signature: Option<u64>,
     cwd: String,
+    cwd_available: bool,
     editor: Option<Entity<InputState>>,
     editor_observer: Option<Subscription>,
     run_focus: FocusHandle,
     edit_focus: FocusHandle,
     review_focus: FocusHandle,
+    directory_focus: FocusHandle,
     review: Option<String>,
     error: Option<String>,
     pub(super) runs: Vec<SnippetRun>,
 }
 
+#[derive(Clone, Copy)]
+pub(super) enum SnippetControl {
+    Edit,
+    Run,
+    Directory,
+}
+
+pub(super) fn source_digest(source: &str) -> u64 {
+    let mut hash = std::collections::hash_map::DefaultHasher::new();
+    source.hash(&mut hash);
+    hash.finish()
+}
+
+#[cfg(test)]
 pub(super) fn key(owner: &str, offset: usize, code: &str, source: &str) -> String {
+    key_with_digest(owner, offset, code, source_digest(source))
+}
+
+pub(super) fn key_with_digest(owner: &str, offset: usize, code: &str, source: u64) -> String {
     let mut hash = std::collections::hash_map::DefaultHasher::new();
     code.hash(&mut hash);
     source.hash(&mut hash);
@@ -78,43 +183,104 @@ fn needs_terminal_review(command: &str) -> bool {
 
 impl CodexView {
     fn snippet_source_signature(&self, key: &str, cx: &App) -> Option<u64> {
-        let owner = key.rsplit_once(":code:")?.0;
-        let state = &self.session.read(cx).state;
-        let thread = state.saved.thread_id.as_deref().unwrap_or("");
-        for (index, item) in state.saved.items.iter().enumerate() {
-            let message = item["id"]
-                .as_str()
-                .map_or_else(|| format!("message-{index}"), str::to_owned);
-            if owner == format!("{thread}:{message}")
-                && item["type"] == "agentMessage"
-                && (item["groveCompleted"] == true || item["status"] == "completed")
-                && item["status"] != "inProgress"
-            {
-                let mut hash = std::collections::hash_map::DefaultHasher::new();
-                item["text"].as_str()?.hash(&mut hash);
-                return Some(hash.finish());
-            }
-        }
-        None
+        self.snippet_sources
+            .borrow_mut()
+            .signature(&self.session.read(cx).state, key)
     }
 
     fn ensure_snippet(&mut self, key: &str, source: &str, cwd: &str, cx: &App) -> &mut Snippet {
-        let source_signature = self.snippet_source_signature(key, cx);
+        // Split field borrows so the expensive source lookup belongs exclusively
+        // to insertion; unchanged controls do not revisit the response text.
+        let sources = &self.snippet_sources;
+        let state = &self.session.read(cx).state;
         self.snippets
             .entry(key.to_owned())
             .or_insert_with(|| Snippet {
                 source: source.to_owned(),
-                source_signature,
+                source_signature: sources.borrow_mut().signature(state, key),
                 cwd: cwd.to_owned(),
+                cwd_available: std::path::Path::new(cwd).is_dir(),
                 editor: None,
                 editor_observer: None,
                 run_focus: cx.focus_handle(),
                 edit_focus: cx.focus_handle(),
                 review_focus: cx.focus_handle(),
+                directory_focus: cx.focus_handle(),
                 review: None,
                 error: None,
                 runs: Vec::new(),
             })
+    }
+
+    /// Static script controls keep their original focus handles when their row
+    /// is projected offscreen. Dynamic editors/output retain the real row.
+    pub(super) fn snippet_requires_eager(&self, key: &str) -> bool {
+        self.snippets.get(key).is_some_and(|snippet| {
+            snippet.editor.is_some()
+                || snippet.review.is_some()
+                || snippet.error.is_some()
+                || !snippet.runs.is_empty()
+        })
+    }
+
+    pub(super) fn snippet_projection_controls(
+        &self,
+        key: &str,
+        cx: &App,
+    ) -> Vec<(FocusHandle, SnippetControl)> {
+        let Some(snippet) = self.snippets.get(key) else {
+            return Vec::new();
+        };
+        let running = snippet
+            .runs
+            .last()
+            .is_some_and(|run| !run.terminal.read(cx).has_exited());
+        let mut controls = Vec::new();
+        if !running && snippet.review.is_none() && snippet.editor.is_none() && snippet.cwd_available
+        {
+            controls.push((snippet.edit_focus.clone(), SnippetControl::Edit));
+            controls.push((snippet.run_focus.clone(), SnippetControl::Run));
+        }
+        if !running {
+            controls.push((snippet.directory_focus.clone(), SnippetControl::Directory));
+        }
+        controls
+    }
+
+    pub(super) fn activate_snippet_control(
+        &mut self,
+        key: &str,
+        kind: SnippetControl,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        // Recheck the real action's current availability after projection: source
+        // and process state may have changed since the alias was registered.
+        let Some(snippet) = self.snippets.get(key) else {
+            return;
+        };
+        let running = snippet
+            .runs
+            .last()
+            .is_some_and(|run| !run.terminal.read(cx).has_exited());
+        match kind {
+            SnippetControl::Directory if !running => {
+                self.choose_snippet_directory(key.to_owned(), window, cx);
+            }
+            SnippetControl::Edit | SnippetControl::Run
+                if !running
+                    && snippet.review.is_none()
+                    && snippet.editor.is_none()
+                    && std::path::Path::new(&snippet.cwd).is_dir() =>
+            {
+                match kind {
+                    SnippetControl::Edit => self.edit_snippet(key, window, cx),
+                    SnippetControl::Run => self.request_snippet_run(key, false, window, cx),
+                    SnippetControl::Directory => {}
+                }
+            }
+            _ => {}
+        }
     }
 
     pub(super) fn snippet_actions(
@@ -130,7 +296,7 @@ impl CodexView {
             .runs
             .last()
             .is_some_and(|run| !run.terminal.read(cx).has_exited());
-        let available = std::path::Path::new(&snippet.cwd).is_dir();
+        let available = snippet.cwd_available;
         let review = snippet.review.is_some();
         let edited = snippet.editor.is_some();
         let label = if running {
@@ -359,6 +525,7 @@ impl CodexView {
                 }
                 if let Some(snippet) = this.snippets.get_mut(&key) {
                     snippet.cwd = path.to_string_lossy().into_owned();
+                    snippet.cwd_available = true;
                     snippet.error = None;
                     snippet.review = None;
                     cx.notify();
@@ -369,6 +536,13 @@ impl CodexView {
     }
 
     pub(super) fn reconcile_snippets(&mut self, cx: &mut Context<Self>) {
+        if !self
+            .snippet_sources
+            .borrow_mut()
+            .needs_reconciliation(&self.session.read(cx).state)
+        {
+            return;
+        }
         let removed = self
             .snippets
             .iter()
@@ -389,7 +563,20 @@ impl CodexView {
                 snippet.editor = None;
                 snippet.editor_observer = None;
             }
+            self.snippets.remove(&key);
         }
+    }
+
+    pub(super) fn prune_idle_snippets(&mut self, owners: &HashSet<String>) {
+        self.snippets.retain(|key, snippet| {
+            !snippet.runs.is_empty()
+                || snippet.editor.is_some()
+                || snippet.review.is_some()
+                || snippet.error.is_some()
+                || key
+                    .rsplit_once(":code:")
+                    .is_some_and(|(owner, _)| owners.contains(owner))
+        });
     }
 
     fn can_share_snippet(&self, cx: &App) -> bool {
@@ -477,12 +664,12 @@ impl CodexView {
         let share_enabled = self.can_share_snippet(cx);
         let snippet = self.ensure_snippet(key, code, cwd, cx);
         let choose_key = key.to_owned();
-        let available = std::path::Path::new(&snippet.cwd).is_dir();
+        let available = snippet.cwd_available;
         let running = snippet
             .runs
             .last()
             .is_some_and(|run| !run.terminal.read(cx).has_exited());
-        let shell = grove_core::env_path::login_shell();
+        let shell = SHELL.get_or_init(grove_core::env_path::login_shell);
         let mut body = div()
             .flex()
             .flex_col()
@@ -516,6 +703,7 @@ impl CodexView {
                                 window,
                                 cx,
                             )
+                            .with_focus_handle(snippet.directory_focus.clone())
                             .icon(action_icon("folder"))
                             .map(|button| {
                                 bound_action(button, true, cx, move |this, window, cx| {
@@ -833,6 +1021,69 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    #[test]
+    fn source_index_reuses_unchanged_responses_and_invalidates_edits() {
+        for provider in [codex::Provider::Codex, codex::Provider::Claude] {
+            let mut state = super::super::tests::snapshot();
+            state.saved.provider = provider;
+            state.saved.thread_id = Some("thread:with:colons".into());
+            state.saved.items = vec![
+                json!({"id":"answer:one", "type":"agentMessage", "status":"completed", "text":"first"}),
+                json!({"id":"answer:two", "type":"agentMessage", "groveCompleted":true, "text":"second"}),
+            ].into();
+            let mut sources = SnippetSources::default();
+            sources.refresh(&state);
+            assert!(sources
+                .sources
+                .values()
+                .all(|source| source.signature.get().is_none()));
+            let key = "thread:with:colons:answer:one:code:0:hash";
+            let initial = sources.signature(&state, key).unwrap();
+            let retained = sources.sources["answer:one"].clone();
+            assert!(sources.needs_reconciliation(&state));
+            state.model = Some("metadata-only notification".into());
+            assert!(!sources.needs_reconciliation(&state));
+            state.saved.items[1]["text"] = json!("changed other response");
+            assert!(sources.needs_reconciliation(&state));
+            assert_eq!(sources.signature(&state, key), Some(initial));
+            assert!(Rc::ptr_eq(&retained, &sources.sources["answer:one"]));
+            assert!(sources.sources["answer:two"].signature.get().is_none());
+            state.saved.items[0]["text"] = json!("changed source");
+            assert_ne!(sources.signature(&state, key), Some(initial));
+            state.saved.items[0]["status"] = json!("inProgress");
+            assert_eq!(sources.signature(&state, key), None);
+            state.saved.items[0]["status"] = json!("completed");
+            state.saved.thread_id = Some("another-thread".into());
+            assert_eq!(sources.signature(&state, key), None);
+            assert!(sources
+                .signature(&state, "another-thread:answer:one:code:0:hash")
+                .is_some());
+        }
+    }
+
+    #[test]
+    fn source_index_retains_idless_fallback_and_first_completed_duplicate() {
+        let mut state = super::super::tests::snapshot();
+        state.saved.thread_id = None;
+        state.saved.items = vec![
+            json!({"type":"agentMessage", "status":"completed", "text":"idless"}),
+            json!({"id":"duplicate", "type":"agentMessage", "status":"inProgress", "text":"pending"}),
+            json!({"id":"duplicate", "type":"agentMessage", "status":"completed", "text":"first completed"}),
+            json!({"id":"duplicate", "type":"agentMessage", "status":"completed", "text":"later"}),
+        ].into();
+        let mut sources = SnippetSources::default();
+        assert!(sources
+            .signature(&state, ":message-0:code:0:hash")
+            .is_some());
+        assert!(sources
+            .signature(&state, ":duplicate:code:0:hash")
+            .is_some());
+        assert_eq!(sources.sources["duplicate"].item["text"], "first completed");
+        state.saved.items.clear();
+        assert!(sources.needs_reconciliation(&state));
+        assert_eq!(sources.signature(&state, ":message-0:code:0:hash"), None);
+    }
+
     fn prepare(
         view: &mut CodexView,
         command: &str,
@@ -898,6 +1149,7 @@ mod tests {
                 view.read_with(cx, |view, _| view.snippets[&key].runs[0].terminal.clone());
             let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
             while terminal.update(cx, |terminal, _| terminal.alive()) {
+                cx.run_until_parked();
                 assert!(std::time::Instant::now() < deadline);
                 std::thread::sleep(std::time::Duration::from_millis(10));
             }
@@ -905,7 +1157,7 @@ mod tests {
                 view.update(cx, |view, cx| {
                     assert_eq!(terminal.read(cx).exit_code(), Some(7));
                     terminal.update(cx, |terminal, cx| {
-                        terminal.ingest_for_test(b"fixture output\r\n", cx)
+                        terminal.ingest_for_test(b"fixture output\r\n", cx);
                     });
                     view.share_snippet(&key, 0, window, cx);
                     let draft = view.input.read(cx).value().to_string();
@@ -915,7 +1167,7 @@ mod tests {
                     view.share_snippet(&key, 0, window, cx);
                     assert_eq!(view.input.read(cx).value().as_ref(), draft);
                     view.session.update(cx, |session, _| {
-                        session.state.saved.thread_id = Some("another-thread".into())
+                        session.state.saved.thread_id = Some("another-thread".into());
                     });
                     view.request_snippet_run(&key, false, window, cx);
                     assert_eq!(view.snippets[&key].runs.len(), 1);
@@ -924,7 +1176,7 @@ mod tests {
                         .as_ref()
                         .unwrap()
                         .contains("response has changed"));
-                })
+                });
             });
             assert!(
                 !actions.try_iter().any(|action| matches!(
@@ -1004,7 +1256,7 @@ mod tests {
                     view.snippets[&key].runs[0]
                         .terminal
                         .update(cx, TerminalSession::stop_script);
-                })
+                });
             });
         }
     }
@@ -1014,19 +1266,32 @@ mod tests {
     fn inline_snippet_source_removal_stops_owned_process(cx: &mut gpui::TestAppContext) {
         for provider in [codex::Provider::Codex, codex::Provider::Claude] {
             let (view, cx, _actions, _updates) = fixture(cx);
-            cx.update(|window, cx| {
+            let terminal = cx.update(|window, cx| {
                 view.update(cx, |view, cx| {
                     let key = prepare(view, "sleep 30", provider, "/tmp", window, cx);
                     view.request_snippet_run(&key, false, window, cx);
-                    assert!(!view.snippets[&key].runs[0].terminal.read(cx).has_exited());
+                    let terminal = view.snippets[&key].runs[0].terminal.clone();
+                    assert!(!terminal.read(cx).has_exited());
                     view.session.update(cx, |session, _| {
-                        session.state.saved.items = Vec::new().into()
+                        session.state.saved.items = Vec::new().into();
                     });
                     view.reconcile_snippets(cx);
-                    assert!(view.snippets[&key].runs[0].terminal.read(cx).has_exited());
-                    assert!(view.snippets[&key].runs[0].stop_requested);
+                    assert!(
+                        !view.snippets.contains_key(&key),
+                        "removed source releases its snippet state"
+                    );
+                    terminal
                 })
             });
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            while !terminal.read_with(cx, |terminal, _| terminal.has_exited()) {
+                cx.run_until_parked();
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "cancelled startup must acknowledge before reporting exit"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
         }
     }
 

@@ -3239,6 +3239,7 @@ dependencies = [
  "tracing",
  "ureq",
  "url",
+ "wait-timeout",
  "windows-sys 0.61.2",
 ]
 

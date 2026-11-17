@@ -1,4 +1,5 @@
 //! Full-canvas, read-only commit graph. The conversation remains mounted underneath.
+mod commit_slot;
 use super::{Action, Sidebar};
 use crate::entities::branch_history::BranchHistoryState;
 use crate::{
@@ -325,6 +326,66 @@ fn diff_hunk(text: String) -> gpui::Div {
         .text_color(c::BLUE())
         .child(format!("@@ {text}"))
 }
+fn split_patch_row(row: &grove_core::diff::PairedRow, pan: f32, widest: f32) -> AnyElement {
+    match row {
+        grove_core::diff::PairedRow::HunkHeader(text) => diff_hunk(text.clone()).into_any_element(),
+        grove_core::diff::PairedRow::Lines { old, new } => div()
+            .flex()
+            .h(rpx(DIFF_BODY_LINE_H))
+            .child(
+                split_cell(old.as_ref(), true, pan, widest)
+                    .border_l_1()
+                    .border_color(c::alpha(c::BORDER(), 0.)),
+            )
+            .child(
+                split_cell(new.as_ref(), false, pan, widest)
+                    .border_l_1()
+                    .border_color(c::BORDER()),
+            )
+            .into_any_element(),
+    }
+}
+fn unified_patch_row(row: &grove_core::render_rows::UnifiedRenderRow, width: f32) -> AnyElement {
+    match row {
+        grove_core::render_rows::UnifiedRenderRow::HunkHeader(text) => {
+            diff_hunk(text.clone()).min_w(rpx(width)).into_any_element()
+        }
+        grove_core::render_rows::UnifiedRenderRow::Line { line, .. } => {
+            let (prefix, bg, color) = line_style(line.kind);
+            div()
+                .debug_selector(|| "history-unified-row".into())
+                .h(rpx(DIFF_BODY_LINE_H))
+                .min_w(rpx(width))
+                .whitespace_nowrap()
+                .px(rpx(SPACE_LG))
+                .bg(bg)
+                .text_color(color)
+                .flex()
+                .child(
+                    div()
+                        .w(rpx(DIFF_NUMBER_W))
+                        .flex_shrink_0()
+                        .text_right()
+                        .pr(rpx(SPACE_LG))
+                        .text_color(c::FG_DIM())
+                        .child(line.old_no.map_or(String::new(), |n| n.to_string())),
+                )
+                .child(
+                    div()
+                        .w(rpx(DIFF_NUMBER_W))
+                        .flex_shrink_0()
+                        .text_right()
+                        .pr(rpx(SPACE_LG))
+                        .text_color(c::FG_DIM())
+                        .child(line.new_no.map_or(String::new(), |n| n.to_string())),
+                )
+                .child(div().w(rpx(SPACE_2XL)).flex_shrink_0().child(prefix))
+                .child(line.text.clone())
+                .into_any_element()
+        }
+    }
+}
+
 fn split_cell(line: Option<&grove_core::diff::Line>, old: bool, pan: f32, width: f32) -> gpui::Div {
     let (bg, color) = line.map_or((c::BG_RAIL(), c::FG_DIM()), |line| {
         let (_, bg, color) = line_style(line.kind);
@@ -452,6 +513,19 @@ fn graph(commit: &Commit, incoming: &[GraphEdge], width: f32) -> impl IntoElemen
     .flex_shrink_0()
 }
 
+#[cfg(test)]
+thread_local! {
+    static COMMIT_FOCUS_TARGETS: std::cell::RefCell<Vec<gpui::FocusHandle>> = const { std::cell::RefCell::new(Vec::new()) };
+    static MATERIALIZED_COMMITS: std::cell::RefCell<Vec<usize>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+#[derive(Default)]
+struct CommitListControls {
+    focus: std::collections::HashMap<String, gpui::FocusHandle>,
+    scroll: gpui::ScrollHandle,
+    revealed: Option<(String, gpui::Pixels, gpui::Size<gpui::Pixels>)>,
+}
+
 impl Sidebar {
     pub(super) fn pin_history_card(&mut self) {
         self.history_hover.intent = None;
@@ -557,9 +631,195 @@ impl Sidebar {
             self.schedule_commit_dismiss(cx);
         }
     }
+    fn render_history_commit(
+        &self,
+        state: &BranchHistoryState,
+        index: usize,
+        graph_w: f32,
+        focus: &gpui::FocusHandle,
+        window: &gpui::Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let Some(snapshot) = &state.snapshot else {
+            return div().into_any_element();
+        };
+        #[cfg(test)]
+        MATERIALIZED_COMMITS.with(|rows| rows.borrow_mut().push(index));
+        let commit = &snapshot.commits[index];
+
+        let selected = state.selected.as_ref() == Some(&commit.id);
+        let id = commit.id.clone();
+        let hover_id = id.clone();
+        let incoming = index
+            .checked_sub(1)
+            .map_or(&[][..], |prev| snapshot.commits[prev].edges.as_slice());
+        let mut row = self
+            .control(
+                format!("history-commit-{id}"),
+                format!(
+                    "{} by {} <{}>. {}. Commit {}",
+                    commit.subject,
+                    commit.author_name,
+                    commit.author_email,
+                    readable_date(&commit.author_date, false),
+                    commit.id
+                ),
+                Action::SelectCommit(id.clone()),
+                cx,
+            )
+            .debug_selector(|| "history-commit-row".into())
+            .track_focus(focus)
+            .tab_index(0)
+            .relative()
+            .w_full()
+            .min_w(rpx(graph_w + ROW_CONTENT_MIN_W))
+            .h(rpx(COMMIT_ROW_H))
+            .justify_start()
+            .rounded_none()
+            .gap_0()
+            .when(selected, |row| row.bg(c::BG_HL()).text_color(c::FG()))
+            .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
+                this.commit_row_hover(hover_id.clone(), *hovered, cx);
+            }))
+            .child(
+                div()
+                    .debug_selector(|| "history-row-graph".into())
+                    .w(rpx(graph_w))
+                    .h(rpx(COMMIT_ROW_H))
+                    .flex_shrink_0()
+                    .child(graph(commit, incoming, graph_w)),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .pr(rpx(SPACE_2XL))
+                    .child(commit_identity(commit)),
+            );
+        if selected && !state.expanded {
+            let left = graph_w.min(PREVIEW_ANCHOR_MAX);
+            let available =
+                Self::logical_window_width(window) - self.rail_width(window, cx) - left - SPACE_2XL;
+            let mut card = div()
+                .id("history-commit-preview")
+                .debug_selector(|| "history-commit-preview".into())
+                .occlude()
+                .w(rpx(PREVIEW_W.min(available.max(PREVIEW_MIN_W))))
+                .max_w_full()
+                .rounded(rpx(RADIUS_PANEL))
+                .border_1()
+                .border_color(c::BORDER())
+                .bg(c::BG())
+                .shadow_md()
+                .cursor_default()
+                .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
+                    this.commit_card_hover(*hovered, cx);
+                }))
+                .on_mouse_down(
+                    gpui::MouseButton::Left,
+                    cx.listener(|this, _, _, cx| {
+                        this.pin_history_card();
+                        cx.stop_propagation();
+                    }),
+                )
+                .child(div().p(rpx(SPACE_2XL)).child(detailed_identity(
+                    &commit.author_name,
+                    &commit.author_email,
+                    &commit.author_date,
+                    None,
+                )))
+                .child(
+                    div()
+                        .id("history-preview-message")
+                        .max_h(rpx(PREVIEW_MESSAGE_H))
+                        .overflow_y_scroll()
+                        .px(rpx(SPACE_2XL))
+                        .pb(rpx(SPACE_2XL))
+                        .text_size(rpx(TEXT_BODY))
+                        .child(
+                            div()
+                                .text_size(rpx(TEXT_SMALL))
+                                .text_color(c::FG_DIM())
+                                .child(commit.id[..7].to_owned()),
+                        )
+                        .when(!commit.refs.is_empty(), |body| {
+                            body.child(
+                                div()
+                                    .py(rpx(SPACE_SM))
+                                    .text_size(rpx(TEXT_SMALL))
+                                    .text_color(c::FG_DIM())
+                                    .child(refs_label(commit)),
+                            )
+                        })
+                        .child(literal_message(
+                            "history-preview-message-line",
+                            &commit.message,
+                        )),
+                );
+            if let Some(details) = &state.details {
+                let (added, removed) = details.files.iter().fold((0u64, 0u64), |(a, r), f| {
+                    (a + u64::from(f.added), r + u64::from(f.removed))
+                });
+                card = card.child(
+                    self.control(
+                        "history-open-commit",
+                        "Open changed files and diff",
+                        Action::ExpandCommit,
+                        cx,
+                    )
+                    .w_full()
+                    .h_auto()
+                    .min_h(rpx(CONTROL_H))
+                    .justify_start()
+                    .px(rpx(SPACE_2XL))
+                    .py(rpx(SPACE_LG))
+                    .border_t_1()
+                    .border_color(c::BORDER())
+                    .child(icon("chev-right", ICON_SM, c::FG_DIM()))
+                    .child(format!(
+                        "{} {} changed",
+                        details.files.len(),
+                        if details.files.len() == 1 {
+                            "file"
+                        } else {
+                            "files"
+                        }
+                    ))
+                    .child(div().text_color(c::GREEN()).child(format!("+{added}")))
+                    .child(div().text_color(c::RED()).child(format!("−{removed}"))),
+                );
+            } else {
+                card = card.child(
+                    div()
+                        .px(rpx(SPACE_2XL))
+                        .pb(rpx(SPACE_LG))
+                        .text_size(rpx(TEXT_SMALL))
+                        .child(
+                            state
+                                .detail_error
+                                .clone()
+                                .unwrap_or_else(|| "Loading changed files…".into()),
+                        ),
+                );
+            }
+            // The bridge belongs to the row: crossing from subject to card keeps the preview open.
+            row = row.child(gpui::deferred(
+                div()
+                    .absolute()
+                    .left(rpx(left))
+                    .top(rpx(COMMIT_ROW_H - SPACE_SM))
+                    .pt(rpx(SPACE_SM))
+                    .max_w_full()
+                    .child(card),
+            ));
+        }
+
+        row.into_any_element()
+    }
+
     pub(super) fn render_history(
         &self,
-        window: &gpui::Window,
+        window: &mut gpui::Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let Some(entity) = &self.history else {
@@ -620,183 +880,60 @@ impl Sidebar {
                 .unwrap_or(0)
                 + 1;
             let graph_w = GRAPH_INSET * 2.0 + GRAPH_LANE_W * lane_count as f32;
-            for (index, commit) in snapshot.commits.iter().enumerate() {
-                let selected = state.selected.as_ref() == Some(&commit.id);
-                let id = commit.id.clone();
-                let hover_id = id.clone();
-                let incoming = index
-                    .checked_sub(1)
-                    .map_or(&[][..], |prev| snapshot.commits[prev].edges.as_slice());
-                let mut row = self
-                    .control(
-                        format!("history-commit-{id}"),
-                        format!(
-                            "{} by {} <{}>. {}. Commit {}",
-                            commit.subject,
-                            commit.author_name,
-                            commit.author_email,
-                            readable_date(&commit.author_date, false),
-                            commit.id
-                        ),
-                        Action::SelectCommit(id.clone()),
-                        cx,
-                    )
-                    .debug_selector(|| "history-commit-row".into())
-                    .relative()
-                    .w_full()
-                    .min_w(rpx(graph_w + ROW_CONTENT_MIN_W))
-                    .h(rpx(COMMIT_ROW_H))
-                    .justify_start()
-                    .rounded_none()
-                    .gap_0()
-                    .when(selected, |row| row.bg(c::BG_HL()).text_color(c::FG()))
-                    .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
-                        this.commit_row_hover(hover_id.clone(), *hovered, cx);
-                    }))
-                    .child(
-                        div()
-                            .debug_selector(|| "history-row-graph".into())
-                            .w(rpx(graph_w))
-                            .h(rpx(COMMIT_ROW_H))
-                            .flex_shrink_0()
-                            .child(graph(commit, incoming, graph_w)),
-                    )
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .pr(rpx(SPACE_2XL))
-                            .child(commit_identity(commit)),
+            let controls = window.use_keyed_state("history-commit-controls", cx, |_, _| {
+                CommitListControls::default()
+            });
+            let (focuses, scroll) = controls.update(cx, |controls, cx| {
+                let live: std::collections::HashSet<_> =
+                    snapshot.commits.iter().map(|commit| &commit.id).collect();
+                controls.focus.retain(|id, _| live.contains(id));
+                let focuses: Vec<_> = snapshot
+                    .commits
+                    .iter()
+                    .map(|commit| {
+                        controls
+                            .focus
+                            .entry(commit.id.clone())
+                            .or_insert_with(|| cx.focus_handle().tab_stop(true).tab_index(0))
+                            .clone()
+                    })
+                    .collect();
+                let focused = focuses.iter().position(|focus| focus.is_focused(window));
+                if let Some(index) = focused {
+                    let signature = (
+                        snapshot.commits[index].id.clone(),
+                        window.rem_size(),
+                        controls.scroll.bounds().size,
                     );
-                if selected && !state.expanded {
-                    let left = graph_w.min(PREVIEW_ANCHOR_MAX);
-                    let available = Self::logical_window_width(window)
-                        - self.rail_width(window, cx)
-                        - left
-                        - SPACE_2XL;
-                    let mut card = div()
-                        .id("history-commit-preview")
-                        .debug_selector(|| "history-commit-preview".into())
-                        .occlude()
-                        .w(rpx(PREVIEW_W.min(available.max(PREVIEW_MIN_W))))
-                        .max_w_full()
-                        .rounded(rpx(RADIUS_PANEL))
-                        .border_1()
-                        .border_color(c::BORDER())
-                        .bg(c::BG())
-                        .shadow_md()
-                        .cursor_default()
-                        .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
-                            this.commit_card_hover(*hovered, cx);
-                        }))
-                        .on_mouse_down(
-                            gpui::MouseButton::Left,
-                            cx.listener(|this, _, _, cx| {
-                                this.pin_history_card();
-                                cx.stop_propagation();
-                            }),
-                        )
-                        .child(div().p(rpx(SPACE_2XL)).child(detailed_identity(
-                            &commit.author_name,
-                            &commit.author_email,
-                            &commit.author_date,
-                            None,
-                        )))
-                        .child(
-                            div()
-                                .id("history-preview-message")
-                                .max_h(rpx(PREVIEW_MESSAGE_H))
-                                .overflow_y_scroll()
-                                .px(rpx(SPACE_2XL))
-                                .pb(rpx(SPACE_2XL))
-                                .text_size(rpx(TEXT_BODY))
-                                .child(
-                                    div()
-                                        .text_size(rpx(TEXT_SMALL))
-                                        .text_color(c::FG_DIM())
-                                        .child(commit.id[..7].to_owned()),
-                                )
-                                .when(!commit.refs.is_empty(), |body| {
-                                    body.child(
-                                        div()
-                                            .py(rpx(SPACE_SM))
-                                            .text_size(rpx(TEXT_SMALL))
-                                            .text_color(c::FG_DIM())
-                                            .child(refs_label(commit)),
-                                    )
-                                })
-                                .child(literal_message(
-                                    "history-preview-message-line",
-                                    &commit.message,
-                                )),
-                        );
-                    if let Some(details) = &state.details {
-                        let (added, removed) =
-                            details.files.iter().fold((0u64, 0u64), |(a, r), f| {
-                                (a + u64::from(f.added), r + u64::from(f.removed))
-                            });
-                        card = card.child(
-                            self.control(
-                                "history-open-commit",
-                                "Open changed files and diff",
-                                Action::ExpandCommit,
-                                cx,
-                            )
-                            .w_full()
-                            .h_auto()
-                            .min_h(rpx(CONTROL_H))
-                            .justify_start()
-                            .px(rpx(SPACE_2XL))
-                            .py(rpx(SPACE_LG))
-                            .border_t_1()
-                            .border_color(c::BORDER())
-                            .child(icon("chev-right", ICON_SM, c::FG_DIM()))
-                            .child(format!(
-                                "{} {} changed",
-                                details.files.len(),
-                                if details.files.len() == 1 {
-                                    "file"
-                                } else {
-                                    "files"
-                                }
-                            ))
-                            .child(div().text_color(c::GREEN()).child(format!("+{added}")))
-                            .child(div().text_color(c::RED()).child(format!("−{removed}"))),
-                        );
-                    } else {
-                        card = card.child(
-                            div()
-                                .px(rpx(SPACE_2XL))
-                                .pb(rpx(SPACE_LG))
-                                .text_size(rpx(TEXT_SMALL))
-                                .child(
-                                    state
-                                        .detail_error
-                                        .clone()
-                                        .unwrap_or_else(|| "Loading changed files…".into()),
-                                ),
-                        );
+                    if controls.revealed.as_ref() != Some(&signature) {
+                        controls.scroll.scroll_to_item(index);
+                        controls.revealed = Some(signature);
                     }
-                    // The bridge belongs to the row: crossing from subject to card keeps the preview open.
-                    row = row.child(gpui::deferred(
-                        div()
-                            .absolute()
-                            .left(rpx(left))
-                            .top(rpx(COMMIT_ROW_H - SPACE_SM))
-                            .pt(rpx(SPACE_SM))
-                            .max_w_full()
-                            .child(card),
-                    ));
+                } else {
+                    controls.revealed = None;
                 }
-                list = list.child(row);
+                (focuses, controls.scroll.clone())
+            });
+            #[cfg(test)]
+            COMMIT_FOCUS_TARGETS.with(|targets| targets.replace(focuses.clone()));
+            let row_state = std::rc::Rc::new(state.clone());
+            for (index, focus) in focuses.into_iter().enumerate() {
+                list = list.child(commit_slot::CommitSlot::new(
+                    cx.entity().downgrade(),
+                    row_state.clone(),
+                    index,
+                    graph_w,
+                    focus,
+                ));
             }
             if snapshot.has_more {
-                list = list.child(div().p(rpx(SPACE_2XL)).child(if state.limit < MAX_HISTORY {
+                list = list.child(div().h(rpx(COMMIT_ROW_H)).px(rpx(SPACE_2XL)).child(if state.limit < MAX_HISTORY {
                     self.history_action("history-load-more", "Load older commits", "chev-down", Action::MoreHistory, window, cx).into_any_element()
-                } else { div().text_color(c::FG_DIM()).child("Showing the newest 500 reachable commits. Parent lanes continue beyond this limit.").into_any_element() }));
+                } else { div().truncate().text_color(c::FG_DIM()).child("Showing the newest 500 reachable commits. Parent lanes continue beyond this limit.").into_any_element() }));
             }
-            // Space allows the last commit's floating preview to remain reachable inside the scroll pane.
-            list = list.child(div().h(rpx(PREVIEW_BOTTOM_SPACE)));
+            list = list
+                .track_scroll(&scroll)
+                .child(div().h(rpx(PREVIEW_BOTTOM_SPACE)));
         }
         let expanded = state.expanded;
         let mut canvas = div()
@@ -1377,7 +1514,7 @@ impl Sidebar {
         } else if state.patch_loading {
             patch = patch.child(div().p(rpx(SPACE_2XL)).child("Loading patch…"));
         } else if let Some(value) = &state.patch {
-            match value {
+            match value.as_ref() {
                 Patch::Binary => {
                     patch =
                         patch.child(div().p(rpx(SPACE_2XL)).child("Binary file · no text diff"));
@@ -1393,24 +1530,50 @@ impl Sidebar {
                     if hunks.is_empty() {
                         patch=patch.child(div().p(rpx(SPACE_2XL)).child("No text changes. This commit may only change the filename or file mode."));
                     }
-                    if state.diff_mode == HistoryDiffMode::Split {
-                        let mut widest = 0.0f32;
-                        for hunk in hunks {
-                            for line in &hunk.lines {
-                                let mut run = window.text_style().to_run(line.text.len());
-                                run.font.family = crate::fonts::UI_FAMILY.into();
-                                let width = window
+                    let font_size = rpx(TEXT_CODE_SMALL).to_pixels(window.rem_size());
+                    let cached_width = *state.width_cache.borrow();
+                    let (widest, unified_width) = if let Some((_, split, unified)) =
+                        cached_width.filter(|(key, _, _)| *key == font_size)
+                    {
+                        (split, unified)
+                    } else {
+                        let text_width = |text: &str| {
+                            let mut run = window.text_style().to_run(text.len());
+                            run.font.family = crate::fonts::UI_FAMILY.into();
+                            f32::from(
+                                window
                                     .text_system()
-                                    .shape_line(
-                                        line.text.clone().into(),
-                                        rpx(TEXT_CODE_SMALL).to_pixels(window.rem_size()),
-                                        &[run],
-                                        None,
-                                    )
-                                    .width();
-                                widest = widest.max(f32::from(width) / scale);
-                            }
-                        }
+                                    .shape_line(text.to_owned().into(), font_size, &[run], None)
+                                    .width(),
+                            ) / scale
+                        };
+                        let split = hunks
+                            .iter()
+                            .flat_map(|hunk| &hunk.lines)
+                            .map(|line| text_width(&line.text))
+                            .fold(0.0f32, f32::max);
+                        let unified = state
+                            .unified_rows
+                            .iter()
+                            .map(|row| match row {
+                                grove_core::render_rows::UnifiedRenderRow::HunkHeader(text) => {
+                                    text_width(&format!("@@ {text}")) + SPACE_LG * 2.
+                                }
+                                grove_core::render_rows::UnifiedRenderRow::Line {
+                                    line, ..
+                                } => {
+                                    text_width(&line.text)
+                                        + DIFF_NUMBER_W * 2.
+                                        + SPACE_2XL
+                                        + SPACE_LG * 2.
+                                }
+                            })
+                            .fold(0.0f32, f32::max);
+                        *state.width_cache.borrow_mut() = Some((font_size, split, unified));
+                        (split, unified)
+                    };
+                    let eager = window.is_a11y_active() || window.is_inspector_picking(cx);
+                    if state.diff_mode == HistoryDiffMode::Split {
                         let pan = grove_core::render_rows::clamp_split_pan(
                             state.pan_x,
                             widest,
@@ -1440,72 +1603,48 @@ impl Sidebar {
                                 }
                             },
                         ));
-                        for row in value.paired_rows() {
-                            patch = match row {
-                                grove_core::diff::PairedRow::HunkHeader(text) => {
-                                    patch.child(diff_hunk(text))
-                                }
-                                grove_core::diff::PairedRow::Lines { old, new } => patch.child(
-                                    div()
-                                        .flex()
-                                        .h(rpx(DIFF_BODY_LINE_H))
-                                        .child(
-                                            split_cell(old.as_ref(), true, pan, widest)
-                                                .border_l_1()
-                                                .border_color(c::alpha(c::BORDER(), 0.0)),
-                                        )
-                                        .child(
-                                            split_cell(new.as_ref(), false, pan, widest)
-                                                .border_l_1()
-                                                .border_color(c::BORDER()),
-                                        ),
-                                ),
-                            };
+                        let rows = state.paired_rows.clone();
+                        if eager {
+                            patch = patch
+                                .children(rows.iter().map(|row| split_patch_row(row, pan, widest)));
+                        } else {
+                            patch = patch.overflow_hidden().child(
+                                gpui::uniform_list(
+                                    "history-split-visible-lines",
+                                    rows.len(),
+                                    cx.processor(move |_, range: std::ops::Range<usize>, _, _| {
+                                        range
+                                            .map(|index| split_patch_row(&rows[index], pan, widest))
+                                            .collect::<Vec<_>>()
+                                    }),
+                                )
+                                .h_full(),
+                            );
                         }
                     } else {
-                        patch = patch.overflow_x_scroll();
-                        for hunk in hunks {
-                            patch = patch.child(diff_hunk(hunk.header.clone()));
-                            for line in &hunk.lines {
-                                let (prefix, bg, color) = line_style(line.kind);
-                                patch = patch.child(
-                                    div()
-                                        .h(rpx(DIFF_BODY_LINE_H))
-                                        .whitespace_nowrap()
-                                        .px(rpx(SPACE_LG))
-                                        .bg(bg)
-                                        .text_color(color)
-                                        .flex()
-                                        .child(
-                                            div()
-                                                .w(rpx(DIFF_NUMBER_W))
-                                                .flex_shrink_0()
-                                                .text_right()
-                                                .pr(rpx(SPACE_LG))
-                                                .text_color(c::FG_DIM())
-                                                .child(
-                                                    line.old_no
-                                                        .map_or(String::new(), |n| n.to_string()),
-                                                ),
-                                        )
-                                        .child(
-                                            div()
-                                                .w(rpx(DIFF_NUMBER_W))
-                                                .flex_shrink_0()
-                                                .text_right()
-                                                .pr(rpx(SPACE_LG))
-                                                .text_color(c::FG_DIM())
-                                                .child(
-                                                    line.new_no
-                                                        .map_or(String::new(), |n| n.to_string()),
-                                                ),
-                                        )
-                                        .child(
-                                            div().w(rpx(SPACE_2XL)).flex_shrink_0().child(prefix),
-                                        )
-                                        .child(line.text.clone()),
-                                );
-                            }
+                        let rows = state.unified_rows.clone();
+                        if eager {
+                            patch = patch.overflow_x_scroll().children(
+                                rows.iter().map(|row| unified_patch_row(row, unified_width)),
+                            );
+                        } else {
+                            patch = patch.overflow_hidden().child(
+                                gpui::uniform_list(
+                                    "history-unified-visible-lines",
+                                    rows.len(),
+                                    cx.processor(move |_, range: std::ops::Range<usize>, _, _| {
+                                        range
+                                            .map(|index| {
+                                                unified_patch_row(&rows[index], unified_width)
+                                            })
+                                            .collect::<Vec<_>>()
+                                    }),
+                                )
+                                .h_full()
+                                .with_horizontal_sizing_behavior(
+                                    gpui::ListHorizontalSizingBehavior::Unconstrained,
+                                ),
+                            );
                         }
                     }
                 }
@@ -1671,6 +1810,183 @@ mod typography_tests {
         assert_eq!(
             readable_date("2026-13-26T08:40:12Z", true),
             "2026-13-26T08:40:12Z"
+        );
+    }
+}
+
+#[cfg(test)]
+mod virtual_commit_tests {
+    use super::*;
+    use gpui::{Entity, Render, Window};
+
+    struct Fixture {
+        sidebar: Entity<Sidebar>,
+        _observer: gpui::Subscription,
+    }
+    impl Render for Fixture {
+        fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            div()
+                .size_full()
+                .on_key_down(crate::views::shell::traverse_unhandled_tab)
+                .child(
+                    self.sidebar
+                        .update(cx, |sidebar, cx| sidebar.render_history(window, cx)),
+                )
+        }
+    }
+    #[gpui::test]
+    fn offscreen_commit_tab_and_enter_preserve_logical_destinations(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            cx.set_global(crate::settings::SettingsState::new(
+                grove_core::storage::Store::default(),
+            ));
+            cx.set_global(crate::zoom::CurrentPtyDims::default());
+        });
+        let (fixture, cx) = cx.add_window_view(|window, cx| {
+            let runtime = cx.new(crate::runtime::Runtime::new);
+            let sidebar = cx.new(|cx| {
+                let mut sidebar = Sidebar::new(runtime, window, cx);
+                sidebar.history = Some(cx.new(|cx| BranchHistoryState::new("/tmp".into(), cx)));
+                sidebar
+            });
+            let observer = cx.observe(&sidebar, |_, _, cx| cx.notify());
+            Fixture {
+                sidebar,
+                _observer: observer,
+            }
+        });
+        cx.run_until_parked();
+        let sidebar = fixture.read_with(cx, |fixture, _| fixture.sidebar.clone());
+        let last = format!("{:040x}", 199);
+        let history = sidebar.read_with(cx, |sidebar, _| sidebar.history.as_ref().unwrap().clone());
+        cx.update(|_, cx| {
+            history.update(cx, |history, cx| {
+                history.loading = false;
+                history.error = None;
+                history.snapshot = Some(std::rc::Rc::new(grove_core::history::BranchHistory {
+                    head: HeadIdentity::Detached { oid: last.clone() },
+                    has_more: false,
+                    commits: (0..200)
+                        .map(|index| Commit {
+                            id: format!("{index:040x}"),
+                            parents: vec![],
+                            author_name: "Author".into(),
+                            author_email: "author@example.com".into(),
+                            timestamp: 0,
+                            author_date: "2026-11-17T00:00:00Z".into(),
+                            committer_name: "Author".into(),
+                            committer_email: "author@example.com".into(),
+                            committer_timestamp: 0,
+                            committer_date: "2026-11-17T00:00:00Z".into(),
+                            refs: vec![],
+                            subject: format!("Commit {index}"),
+                            message: format!("Commit {index}"),
+                            lane: 0,
+                            color_lane: 0,
+                            edges: vec![],
+                        })
+                        .collect(),
+                }));
+                cx.notify();
+            });
+        });
+        MATERIALIZED_COMMITS.with(|rows| rows.borrow_mut().clear());
+        for _ in 0..3 {
+            cx.run_until_parked();
+            cx.update(|window, cx| window.draw(cx).clear());
+        }
+        assert!(
+            !MATERIALIZED_COMMITS.with(|rows| rows.borrow().contains(&199)),
+            "cold offscreen rows do not build graphs and subjects"
+        );
+        let focuses = COMMIT_FOCUS_TARGETS.with(|targets| targets.borrow().clone());
+        assert_eq!(focuses.len(), 200);
+        cx.update(|window, cx| focuses[198].focus(window, cx));
+        for _ in 0..3 {
+            cx.run_until_parked();
+            cx.update(|window, cx| window.draw(cx).clear());
+        }
+        cx.simulate_keystrokes("tab");
+        for _ in 0..3 {
+            cx.run_until_parked();
+            cx.update(|window, cx| window.draw(cx).clear());
+        }
+        assert!(
+            cx.update(|window, _| focuses[199].is_focused(window)),
+            "Tab reaches the next original commit destination"
+        );
+        cx.simulate_keystrokes("enter");
+        cx.run_until_parked();
+        assert_eq!(
+            history.read_with(cx, |history, _| history.selected.clone()),
+            Some(last)
+        );
+        cx.update(|_, cx| {
+            history.update(cx, |history, cx| {
+                history.expanded = true;
+                history.diff_mode = crate::entities::branch_history::HistoryDiffMode::Unified;
+                history.detail_loading = false;
+                history.detail_error = None;
+                history.details = Some(std::rc::Rc::new(grove_core::history::CommitDetails {
+                    files: vec![grove_core::diff::FileChange {
+                        path: "wide.rs".into(),
+                        status: Status::Modified,
+                        added: 200,
+                        removed: 0,
+                    }],
+                    first_parent: None,
+                    rename_sources: std::collections::HashMap::new(),
+                }));
+                history.selected_file = Some("wide.rs".into());
+                history.patch_loading = false;
+                history.patch_error = None;
+                history.install_patch(Patch::Text {
+                    hunks: vec![grove_core::diff::Hunk {
+                        old_start: 0,
+                        new_start: 1,
+                        header: "Wide offscreen source".into(),
+                        lines: (0..200)
+                            .map(|index| grove_core::diff::Line {
+                                kind: LineKind::Add,
+                                text: if index == 199 {
+                                    "W".repeat(2000)
+                                } else {
+                                    "short".into()
+                                },
+                                old_no: None,
+                                new_no: Some(index + 1),
+                            })
+                            .collect(),
+                    }],
+                    no_newline_at_eof: false,
+                });
+                cx.notify();
+            });
+        });
+        for _ in 0..3 {
+            cx.run_until_parked();
+            cx.update(|window, cx| window.draw(cx).clear());
+        }
+        let viewport = cx.debug_bounds("history-patch").unwrap();
+        let row_before = cx.debug_bounds("history-unified-row").unwrap();
+        assert!(
+            row_before.size.width > viewport.size.width * 2.,
+            "offscreen longest text contributes to horizontal extent"
+        );
+        cx.simulate_event(gpui::ScrollWheelEvent {
+            position: viewport.center(),
+            delta: gpui::ScrollDelta::Pixels(gpui::point(gpui::px(-300.), gpui::px(0.))),
+            modifiers: gpui::Modifiers::default(),
+            touch_phase: gpui::TouchPhase::Moved,
+        });
+        for _ in 0..3 {
+            cx.run_until_parked();
+            cx.update(|window, cx| window.draw(cx).clear());
+        }
+        assert!(
+            cx.debug_bounds("history-unified-row").unwrap().left() < row_before.left(),
+            "the full unified text remains horizontally reachable"
         );
     }
 }

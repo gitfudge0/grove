@@ -3,7 +3,8 @@
 `grove-core::provider` owns shared session state, commands, questions, subagents,
 submission receipts, recovery and persistence. `codex` and `claude` own their
 native transports. Existing `codex` imports remain compatible through reexports;
-serialized sessions and the `codex-sessions` recovery directory keep their format.
+the `codex-sessions` recovery directory retains its location. Inline serialized
+sessions remain compatible; filesystem recovery uses the journal format below.
 
 Capabilities describe support represented by the current snapshot: Codex editing
 follows observed history mode, Claude editing uses native forks, and steering
@@ -85,6 +86,39 @@ unlinking cannot split ownership; closing or crashing the process releases the
 OS lock. This guard does not detect other native CLI clients or Grove instances
 using different configuration directories. Native resume errors preserve identity
 and never silently start a replacement conversation.
+
+## Recovery storage and durability
+
+Native recovery and archive files use a small atomic JSON head plus a private
+append-only transcript journal. The head's `grove_transcript_journal` reference
+commits a format version, a sibling filename and an exact byte boundary. Text
+appends record their suffix; unchanged item identities skip serialization. A
+versioned metadata prefix holds child transcripts, side conversations and rich
+plans, so those payloads also use journal patches rather than inflating the head.
+Recovery replays only committed bytes. An incomplete trailing append is ignored
+and removed before the next write; missing or truncated committed data produces
+a warning and preserves the damaged files. Compaction writes a new journal
+before replacing the head, and removes the old journal only after that commit.
+Truncating a transcript also compacts it. Files use private tempfile permissions.
+
+Readers of session files must use `provider::load_saved_session`,
+`load_history_session` or the bulk recovery loaders. Direct `SavedSession` JSON
+serialization remains the inline interchange representation; deserializing a
+filesystem head alone does not hydrate its transcript. Existing inline recovery
+files load and migrate on their next successful save. Older Grove versions do
+not understand journal heads; downgrade requires exporting an inline session
+through a journal-aware reader first. Copying or backing up a recovery directory
+must include its referenced journals.
+
+Routine provider saves coalesce on a disk worker at a two-second interval, and
+metadata-only updates do not rewrite the transcript. Title/status notifications
+with unchanged persisted inputs do not enqueue another save. Explicit checkpoint,
+rewind, plan-delivery, turn-completion and stop paths wait for durable completion;
+archival drains pending writes before removing the active record. Journal data
+is synced before committing its head; the replacement head and containing
+directory retain their existing durability syncs. Errors return to the actor and
+remain visible, and failed background saves become eligible for retry. Archive
+lists read heads, then hydrate a selected session or background search on demand.
 
 ## Opt-in protocol diagnostics
 

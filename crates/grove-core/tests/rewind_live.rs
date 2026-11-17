@@ -154,11 +154,7 @@ fn live(provider: Provider) {
             .stop_completion(false)
             .recv_timeout(Duration::from_secs(15))
             .map_err(|e| e.to_string())?;
-        let disk: SavedSession = serde_json::from_slice(
-            &fs_err::read(codex::recovery_dir().unwrap().join(format!("{key}.json")))
-                .map_err(|e| e.to_string())?,
-        )
-        .map_err(|e| e.to_string())?;
+        let disk = codex::load_saved_session(&codex::recovery_dir()?.join(format!("{key}.json")))?;
         if disk.draft != prompt || disk.rewind_drafts.len() != 1 {
             return Err("Draft handoff was not durable".into());
         }

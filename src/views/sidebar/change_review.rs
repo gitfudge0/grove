@@ -307,14 +307,17 @@ impl Sidebar {
         }
     }
     fn check_review(&mut self, key: &Key, cx: &mut Context<Self>) {
+        let interval = if self.window_active {
+            FRESHNESS_INTERVAL
+        } else {
+            Duration::from_mins(1)
+        };
         let Some(entry) = self.reviews.entries.get_mut(key) else {
             return;
         };
         if entry.cancel.is_some()
             || entry.checking
-            || entry
-                .checked_at
-                .is_some_and(|t| t.elapsed() < FRESHNESS_INTERVAL)
+            || entry.checked_at.is_some_and(|t| t.elapsed() < interval)
         {
             return;
         }
@@ -329,7 +332,7 @@ impl Sidebar {
             let expected_result = review.clone();
             let result = cx
                 .background_spawn(async move {
-                    domain::is_current(std::path::Path::new(&path), &review)
+                    domain::is_current_for_poll(std::path::Path::new(&path), &review)
                 })
                 .await;
             let _ = this.update(cx, |this, cx| {
@@ -346,7 +349,7 @@ impl Sidebar {
                     cx.notify();
                 }
             });
-            cx.background_executor().timer(FRESHNESS_INTERVAL).await;
+            cx.background_executor().timer(interval).await;
             let _ = this.update(cx, |_, cx| cx.notify());
         })
         .detach();

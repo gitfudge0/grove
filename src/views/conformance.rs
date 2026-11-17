@@ -794,7 +794,7 @@ fn subagents_stay_in_session_right_panel_and_preview_is_read_only() {
     assert!(transcript.contains("self.history_readonly || self.preview_child.is_some()"));
     assert!(transcript.contains("Self::new_with_history_mode(session, true, window, cx)"));
     let preview_return = transcript
-        .split("if self.transcript_only() {\n            self.message_slots.clear();")
+        .split("if self.transcript_only() {\n            self.message_slots")
         .nth(1)
         .expect("child preview and retained History use the common transcript rendering path")
         .split("        messages =\n            messages.children(self.question_blocks_at")

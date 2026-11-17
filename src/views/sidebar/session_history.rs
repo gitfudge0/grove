@@ -15,7 +15,7 @@ impl Sidebar {
         self.session_history_error = None;
         let load = cx.background_spawn(async move {
             (
-                grove_core::codex::load_session_history(),
+                grove_core::codex::load_session_history_metadata(),
                 grove_core::session_meta::load_cli_session_history(),
             )
         });
@@ -45,6 +45,7 @@ impl Sidebar {
                 if !this.runtime.read(cx).registry.read(cx).unpersisted_cli_history().is_empty() {
                     this.session_history_error=Some("Some CLI history records could not be saved. They remain available in this window; Refresh retries saving them.".into());
                 }
+                this.schedule_history_search(cx);
                 cx.notify();
             });
         })
@@ -57,23 +58,110 @@ impl Sidebar {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(saved) = self.session_history.iter().find(|s| s.key == key).cloned() else {
+        self.hydrate_history_session(key, true, window, cx);
+    }
+
+    pub(super) fn hydrate_history_session(
+        &mut self,
+        key: &str,
+        reopen: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(metadata) = self.session_history.iter().find(|s| s.key == key).cloned() else {
             return;
         };
-        let result = self
-            .runtime
-            .update(cx, |runtime, cx| runtime.reopen_session_history(saved, cx));
-        match result {
-            Ok(id) => {
-                self.session_history.retain(|s| s.key != key);
-                self.session_history_selected = None;
-                self.session_history_view = None;
-                self.navigate_to_session(id, window, cx);
+        self.history_load_generation = self.history_load_generation.wrapping_add(1);
+        let generation = self.history_load_generation;
+        let workspace = self.active_workspace;
+        let key = key.to_owned();
+        self.session_history_selected = Some(HistorySelection::Native(key.clone()));
+        self.session_history_view = None;
+        let load = cx.background_spawn(async move {
+            // Inline transcripts also support in-memory recovered records and test fixtures.
+            if !metadata.items.is_empty() {
+                Ok(metadata)
+            } else {
+                grove_core::codex::load_history_session(&metadata.key)
             }
-            Err(error) => self.session_history_error = Some(error),
-        }
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            let result = load.await;
+            let _ = this.update_in(cx, |this, window, cx| {
+                if this.history_load_generation != generation || this.active_workspace != workspace
+                    || !this.session_history.iter().any(|saved| saved.key == key)
+                    || !matches!(&this.session_history_selected, Some(HistorySelection::Native(selected)) if selected == &key) { return; }
+                match result {
+                    Ok(saved) if reopen => {
+                        match this.runtime.update(cx, |runtime, cx| runtime.reopen_session_history(saved, cx)) {
+                            Ok(id) => {
+                                this.session_history.retain(|s| s.key != key);
+                                this.session_history_selected = None;
+                                this.navigate_to_session(id, window, cx);
+                            }
+                            Err(error) => this.session_history_error = Some(error),
+                        }
+                    }
+                    Ok(saved) => {
+                        let session = cx.new(|cx| crate::entities::codex_session::CodexSession::history(saved, cx));
+                        this.session_history_view = Some(cx.new(|cx| super::super::codex_view::CodexView::history(session, window, cx)));
+                    }
+                    Err(error) => this.session_history_error = Some(error),
+                }
+                cx.notify();
+            });
+        }).detach();
         cx.notify();
     }
+
+    pub(super) fn schedule_history_search(&mut self, cx: &mut Context<Self>) {
+        let query = self.history_search.read(cx).value().trim().to_lowercase();
+        self.history_search_query.clone_from(&query);
+        self.history_search_results.clear();
+        self.history_search_task = None;
+        if query.is_empty() {
+            return;
+        }
+        let workspace = self.active_workspace;
+        let store = &cx.global::<SettingsState>().store;
+        let sessions = self
+            .session_history
+            .iter()
+            .filter(|saved| history_in_scope(store, workspace, &saved.project, &saved.cwd, None))
+            .cloned()
+            .collect::<Vec<_>>();
+        self.history_search_task = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(Duration::from_millis(200))
+                .await;
+            let search_query = query.clone();
+            let matches = cx
+                .background_spawn(async move {
+                    let mut matches = HashMap::new();
+                    for metadata in sessions {
+                        let saved = if metadata.items.is_empty() {
+                            grove_core::codex::load_history_session(&metadata.key).ok()
+                        } else {
+                            Some(metadata)
+                        };
+                        if let Some(saved) = saved {
+                            if let Some(excerpt) = transcript_match(&saved, &search_query) {
+                                matches.insert(saved.key, excerpt);
+                            }
+                        }
+                    }
+                    matches
+                })
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                if this.active_workspace == workspace && this.history_search_query == query {
+                    this.history_search_results = matches;
+                    cx.notify();
+                }
+            });
+        }));
+    }
+
     pub(super) fn open_history_filter(
         &mut self,
         project: bool,
@@ -258,12 +346,15 @@ impl Sidebar {
                     &s.project,
                     &s.cwd,
                     s.provider.agent(),
-                ) || (!query.is_empty() && transcript_match(s, &query).is_some() && {
-                    in_scope(&s.project, &s.cwd, true)
-                        && self
-                            .history_provider_filter
-                            .is_none_or(|filter| filter == s.provider.agent())
-                })
+                ) || (!query.is_empty()
+                    && self.history_search_query == query
+                    && self.history_search_results.contains_key(&s.key)
+                    && {
+                        in_scope(&s.project, &s.cwd, true)
+                            && self
+                                .history_provider_filter
+                                .is_none_or(|filter| filter == s.provider.agent())
+                    })
             })
             .collect::<Vec<_>>();
         let cli_records = all_cli
@@ -533,7 +624,7 @@ impl Sidebar {
                     matches!(&self.session_history_selected, Some(HistorySelection::Native(key)) if key == &s.key),
                     |d| d.bg(c::BG_HOVER()),
                 )
-                .child(history_card_content(title, &query, transcript_match(s, &query)));
+                .child(history_card_content(title, &query, self.history_search_results.get(&s.key).filter(|_| self.history_search_query == query).cloned()));
             rows = rows.child(row);
         }
         for s in &cli_records {
@@ -911,7 +1002,11 @@ fn transcript_match(saved: &grove_core::codex::SavedSession, query: &str) -> Opt
                 .filter(|(i, _)| *i < position)
                 .nth(24)
                 .map_or(0, |(i, _)| i);
-            format!("{}{}", if start > 0 { "…" } else { "" }, &text[start..])
+            format!(
+                "{}{}",
+                if start > 0 { "…" } else { "" },
+                text[start..].chars().take(240).collect::<String>()
+            )
         })
 }
 

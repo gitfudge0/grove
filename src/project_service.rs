@@ -6,6 +6,7 @@ use std::{
     process::Command,
 };
 
+use fs_err as fs;
 use gpui::{App, AppContext as _, Context, Entity, EventEmitter, Task};
 use grove_core::{git, storage};
 
@@ -16,6 +17,7 @@ use crate::entities::{
 };
 use crate::settings::SettingsState;
 
+#[derive(Clone)]
 pub enum ProjectEvent {
     TreeInvalidated,
     WorktreeAdded { path: String },
@@ -47,6 +49,8 @@ impl ProjectRemoval {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WorktreeRemovalStage {
+    Checking,
+    Stopping,
     RunningScript,
     Removing,
     Finished,
@@ -69,6 +73,8 @@ pub struct ProjectService {
     teardown_target: Option<(String, String)>,
     removals: BTreeMap<String, ProjectRemoval>,
     worktree_removals: BTreeMap<String, WorktreeRemoval>,
+    creations: BTreeMap<String, Task<()>>,
+    shell_owners: std::collections::HashMap<SessionId, String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -153,6 +159,8 @@ impl ProjectService {
             teardown_target: None,
             removals: BTreeMap::new(),
             worktree_removals: BTreeMap::new(),
+            creations: BTreeMap::new(),
+            shell_owners: std::collections::HashMap::new(),
         }
     }
 
@@ -419,7 +427,9 @@ impl ProjectService {
     }
 
     fn ensure_not_removing(&self, path: &str) -> Result<(), String> {
-        if self.is_removing(path) {
+        if self.creations.contains_key(path) {
+            Err("Wait for worktree creation to finish before changing this project.".into())
+        } else if self.is_removing(path) {
             Err("This project is already being removed.".into())
         } else if self.worktree_removals.values().any(|operation| {
             operation.project_path == path && operation.stage != WorktreeRemovalStage::Finished
@@ -437,28 +447,67 @@ impl ProjectService {
         branch: &str,
         base: Option<&str>,
         cx: &mut Context<Self>,
-    ) -> Result<String, String> {
-        self.ensure_not_removing(&project.path)?;
-        match git::add_worktree_with_branch(
-            &project.path,
-            project.worktree_dir(),
-            name,
-            branch,
-            base,
-        ) {
-            Ok(path) => {
-                if let Err(e) = git::copy_worktree_includes(&project.path, &path) {
-                    tracing::warn!("grove-gpui: worktree includes not copied: {e}");
-                }
-                crate::telemetry::track("worktree_created", vec![]);
-                cx.emit(ProjectEvent::WorktreeAdded { path: path.clone() });
-                Ok(path)
-            }
-            Err(e) => {
-                crate::telemetry::track("error", vec![("kind", "worktree_failed".into())]);
-                Err(format!("Worktree failed: {e}"))
-            }
+    ) -> Task<Result<String, String>> {
+        if let Err(error) = self.ensure_not_removing(&project.path) {
+            return Task::ready(Err(error));
         }
+        let project_path = project.path.clone();
+        let project = project.clone();
+        let name = name.to_owned();
+        let branch = branch.to_owned();
+        let base = base.map(str::to_owned);
+        let work = cx.background_spawn(async move {
+            worktree_prerequisite(&project.path).map_err(str::to_owned)?;
+            let path = git::add_worktree_with_branch(
+                &project.path,
+                project.worktree_dir(),
+                &name,
+                &branch,
+                base.as_deref(),
+            )
+            .map_err(|error| format!("Worktree failed: {error}"))?;
+            if let Err(error) = git::copy_worktree_includes(&project.path, &path) {
+                tracing::warn!("grove-gpui: worktree includes not copied: {error}");
+            }
+            Ok(path)
+        });
+        self.track_creation(project_path, work, cx)
+    }
+
+    fn track_creation(
+        &mut self,
+        project_path: String,
+        work: Task<Result<String, String>>,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<String, String>> {
+        let (reply, receive) = futures::channel::oneshot::channel();
+        let owner = project_path.clone();
+        let task = cx.spawn(async move |this, cx| {
+            let result = work.await;
+            let _ = this.update(cx, |this, cx| {
+                match &result {
+                    Ok(path) => {
+                        crate::telemetry::track("worktree_created", vec![]);
+                        cx.emit(ProjectEvent::WorktreeAdded { path: path.clone() });
+                    }
+                    Err(_) => {
+                        crate::telemetry::track("error", vec![("kind", "worktree_failed".into())]);
+                    }
+                }
+                // The service owns completion even when the form/result future
+                // has disappeared. Release only after the worker has finished.
+                let finished = this.creations.remove(&owner);
+                let _ = reply.send(result);
+                drop(finished);
+                cx.notify();
+            });
+        });
+        self.creations.insert(project_path, task);
+        cx.spawn(async move |_, _| {
+            receive
+                .await
+                .unwrap_or_else(|_| Err("Worktree creation owner is no longer available.".into()))
+        })
     }
 
     pub fn kill_sessions_for_project(&mut self, project: &str, cx: &mut Context<Self>) {
@@ -467,7 +516,7 @@ impl ProjectService {
 
     fn kill_sessions(&mut self, matches: impl Fn(&SessionMeta) -> bool, cx: &mut Context<Self>) {
         self.registry.update(cx, |registry, cx| {
-            registry.remove_worktree_shells_matching(&matches);
+            registry.remove_worktree_shells_matching_background(&matches, cx);
             cx.notify();
         });
         let ids: Vec<_> = self
@@ -483,7 +532,7 @@ impl ProjectService {
         }
         self.registry.update(cx, |r, cx| {
             for id in &ids {
-                r.remove(*id);
+                r.remove_background(*id, cx);
             }
             cx.notify();
         });
@@ -639,7 +688,12 @@ impl ProjectService {
             self.finish_removal(&path, cx);
             return Ok(());
         }
+        let registry = self.registry.clone();
         cx.spawn(async move |this, cx| {
+            if let Err(error) = wait_for_session_cleanup(&registry, cx).await {
+                let _ = this.update(cx, |this, cx| this.complete_project_removal(&path, Err(error), cx));
+                return;
+            }
             let repository = project.path.clone();
             let targets = cx
                 .background_executor()
@@ -734,27 +788,37 @@ impl ProjectService {
         self.kill_sessions_for_project_path(path, cx)
     }
 
+    /// The runtime records the project path once when it creates a panel shell.
+    /// This survives project renames and covers external Git worktree locations
+    /// without a new `git worktree list` during removal.
+    pub fn track_worktree_shell_owner(&mut self, id: SessionId, project_path: String) {
+        self.shell_owners.insert(id, project_path);
+    }
+
     pub fn kill_sessions_for_project_path(
         &mut self,
         path: &str,
         cx: &mut Context<Self>,
     ) -> Result<(), String> {
         let ids = self.archive_blockers(path, cx)?;
-        let mut checkouts: Vec<_> = git::list_worktrees(path)
-            .into_iter()
-            .map(|worktree| worktree.path)
+        let projects = cx.global::<SettingsState>().store.projects.clone();
+        let live: std::collections::HashSet<_> = self
+            .registry
+            .read(cx)
+            .worktree_shells()
+            .map(|meta| meta.id)
             .collect();
-        checkouts.push(path.to_owned());
+        self.shell_owners.retain(|id, _| live.contains(id));
+        let owned = &self.shell_owners;
         self.registry.update(cx, |registry, cx| {
-            registry.remove_worktree_shells_matching(|meta| {
-                checkouts.iter().any(|checkout| {
-                    path_within_worktree(
-                        &meta.wt_path,
-                        checkout,
-                        Path::new(checkout).canonicalize().ok().as_deref(),
-                    )
-                })
-            });
+            registry.remove_worktree_shells_matching_background(
+                |meta| {
+                    owned.get(&meta.id).is_some_and(|owner| owner == path)
+                        || grove_core::session_meta::project_owner(&projects, &meta.wt_path)
+                            .is_ok_and(|owner| owner.path == path)
+                },
+                cx,
+            );
             cx.notify();
         });
         self.kill_sessions(|meta| ids.contains(&meta.id), cx);
@@ -762,9 +826,28 @@ impl ProjectService {
     }
 
     fn finish_removal(&mut self, path: &str, cx: &mut Context<Self>) {
-        let result = self
-            .sweep_removal_sessions(path, cx)
-            .and_then(|()| self.unregister_project(path, cx));
+        let path = path.to_owned();
+        let sweep = self.sweep_removal_sessions(&path, cx);
+        let registry = self.registry.clone();
+        cx.spawn(async move |this, cx| {
+            let result = match sweep {
+                Ok(()) => wait_for_session_cleanup(&registry, cx).await,
+                Err(error) => Err(error),
+            };
+            let _ = this.update(cx, |this, cx| {
+                let result = result.and_then(|()| this.unregister_project(&path, cx));
+                this.complete_project_removal(&path, result, cx);
+            });
+        })
+        .detach();
+    }
+
+    fn complete_project_removal(
+        &mut self,
+        path: &str,
+        result: Result<(), String>,
+        cx: &mut Context<Self>,
+    ) {
         if let Some(operation) = self.removals.get_mut(path) {
             operation.finished = true;
             operation.current_target = None;
@@ -796,7 +879,10 @@ impl ProjectService {
         {
             return Err("Another worktree is already being removed.".into());
         }
-        let project = cx
+        if wt_path.ends_with("/.") {
+            return Err("Use the exact worktree path listed by Git.".into());
+        }
+        let _project = cx
             .global::<SettingsState>()
             .store
             .projects
@@ -804,41 +890,126 @@ impl ProjectService {
             .find(|project| project.path == project_path)
             .cloned()
             .ok_or_else(|| "Project no longer exists.".to_string())?;
-        let worktrees = git::list_worktrees_checked(project_path)
-            .map_err(|error| format!("Could not list worktrees: {error}"))?;
-        let Some(target) = worktrees.iter().find(|worktree| worktree.path == wt_path) else {
-            // Another Git client may have removed it since the sidebar cached its inventory.
-            // Refresh that inventory, but never touch an unlisted folder or its sessions.
-            cx.emit(ProjectEvent::TreeInvalidated);
-            return Err("Worktree is no longer listed by Git.".into());
-        };
-        if !removable_worktree(project_path, &target.path, target.is_main) {
+        if fs::canonicalize(project_path)
+            .ok()
+            .zip(fs::canonicalize(wt_path).ok())
+            .is_some_and(|(project, target)| project == target)
+        {
             return Err("The main project checkout cannot be removed.".into());
         }
-        let canonical_path = Path::new(&target.path)
-            .canonicalize()
+        let canonical_path = fs::canonicalize(wt_path)
             .map_err(|error| format!("Could not resolve worktree path: {error}"))?;
         if let Some(registered) = registered_project_at_path(
             &cx.global::<SettingsState>().store.projects,
-            &target.path,
+            wt_path,
             &canonical_path,
         ) {
-            return Err(format!(
-                "This worktree contains registered project '{}'. Remove that project registration before deleting its folder.",
-                registered.name
-            ));
+            return Err(format!("This worktree contains registered project '{}'. Remove that project registration before deleting its folder.", registered.name));
         }
         self.worktree_removals.insert(
-            wt_path.to_string(),
+            wt_path.to_owned(),
             WorktreeRemoval {
-                stage: WorktreeRemovalStage::RunningScript,
+                stage: WorktreeRemovalStage::Checking,
                 error: None,
-                project_path: project_path.to_string(),
-                canonical_path,
+                project_path: project_path.to_owned(),
+                canonical_path: canonical_path.clone(),
             },
         );
+        self.worktree_removal_changed(wt_path, cx);
+        let repository = project_path.to_owned();
+        let target = wt_path.to_owned();
+        let check = cx.background_spawn(async move {
+            let listed = git::list_worktrees_checked(&repository)
+                .map_err(|error| format!("Could not list worktrees: {error}"))?;
+            let worktree = listed
+                .iter()
+                .find(|worktree| worktree.path == target)
+                .ok_or("Worktree is no longer listed by Git.")?;
+            if !removable_worktree(&repository, &worktree.path, worktree.is_main) {
+                return Err("The main project checkout cannot be removed.".into());
+            }
+            let current = fs::canonicalize(&target)
+                .map_err(|error| format!("Could not resolve worktree path: {error}"))?;
+            if current != canonical_path {
+                return Err("Worktree identity changed while checking removal.".into());
+            }
+            Ok(current)
+        });
+        let target = wt_path.to_owned();
+        let repository = project_path.to_owned();
+        cx.spawn(async move |this, cx| {
+            let checked = check.await;
+            let _ = this.update(cx, |this, cx| {
+                let result = checked.and_then(|canonical| {
+                    let project = cx.global::<SettingsState>().store.projects.iter().find(|project| project.path == repository).cloned().ok_or("Project no longer exists.")?;
+                    if let Some(registered) = registered_project_at_path(&cx.global::<SettingsState>().store.projects, &target, &canonical) {
+                        return Err(format!("This worktree contains registered project '{}'. Remove that project registration before deleting its folder.", registered.name));
+                    }
+                    this.begin_worktree_removal(project, &target, canonical, cx)
+                });
+                if let Err(error) = result {
+                    if let Some(operation) = this.worktree_removals.get_mut(&target) {
+                        operation.stage = WorktreeRemovalStage::Finished;
+                        operation.error = Some(error);
+                    }
+                    cx.emit(ProjectEvent::TreeInvalidated);
+                    this.worktree_removal_changed(&target, cx);
+                }
+            });
+        }).detach();
+        Ok(())
+    }
+
+    fn begin_worktree_removal(
+        &mut self,
+        project: storage::Project,
+        wt_path: &str,
+        canonical_path: PathBuf,
+        cx: &mut Context<Self>,
+    ) -> Result<(), String> {
+        let Some(operation) = self
+            .worktree_removals
+            .get_mut(wt_path)
+            .filter(|operation| operation.stage == WorktreeRemovalStage::Checking)
+        else {
+            return Err("Removal is no longer pending.".into());
+        };
+        operation.stage = WorktreeRemovalStage::Stopping;
+        operation.canonical_path = canonical_path;
         self.kill_sessions_touching_worktree(wt_path, cx);
-        self.teardown_target = Some((project_path.to_string(), wt_path.to_string()));
+        self.worktree_removal_changed(wt_path, cx);
+        let target = wt_path.to_owned();
+        let registry = self.registry.clone();
+        cx.spawn(async move |this, cx| {
+            let result = wait_for_session_cleanup(&registry, cx).await;
+            let _ = this.update(cx, |this, cx| match result {
+                Ok(()) => this.start_worktree_teardown(project, &target, cx),
+                Err(error) => this.fail_worktree_removal(&target, error, cx),
+            });
+        })
+        .detach();
+        Ok(())
+    }
+
+    fn fail_worktree_removal(&mut self, target: &str, error: String, cx: &mut Context<Self>) {
+        if let Some(operation) = self.worktree_removals.get_mut(target) {
+            operation.stage = WorktreeRemovalStage::Finished;
+            operation.error = Some(error.clone());
+        }
+        cx.emit(ProjectEvent::WorktreeRemoved { result: Err(error) });
+        self.worktree_removal_changed(target, cx);
+    }
+
+    fn start_worktree_teardown(
+        &mut self,
+        project: storage::Project,
+        wt_path: &str,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(operation) = self.worktree_removals.get_mut(wt_path) {
+            operation.stage = WorktreeRemovalStage::RunningScript;
+        }
+        self.teardown_target = Some((project.path.clone(), wt_path.to_owned()));
         self.worktree_removal_changed(wt_path, cx);
 
         let Some(script) = project
@@ -849,7 +1020,7 @@ impl ProjectService {
             .filter(|script| !script.is_empty())
         else {
             self.skip_worktree_teardown(cx);
-            return Ok(());
+            return;
         };
         let session = cx.new(|cx| TerminalSession::spawn_script(script, wt_path, cx));
         if let Some(error) = session.read(cx).spawn_error() {
@@ -857,7 +1028,7 @@ impl ProjectService {
                 operation.error = Some(format!("Teardown could not start: {error}"));
             }
             self.worktree_removal_changed(wt_path, cx);
-            return Ok(());
+            return;
         }
         self.teardown_session = Some(session.clone());
         // TerminalSession exposes liveness but not an exit code; a script that starts and then
@@ -866,13 +1037,25 @@ impl ProjectService {
             cx.background_executor()
                 .timer(std::time::Duration::from_millis(120))
                 .await;
+            if let Some(error) =
+                session.read_with(cx, |session, _| session.spawn_error().map(str::to_owned))
+            {
+                let _ = this.update(cx, |this, cx| {
+                    if let Some((_, target)) = this.teardown_target.clone() {
+                        if let Some(operation) = this.worktree_removals.get_mut(&target) {
+                            operation.error = Some(format!("Teardown could not start: {error}"));
+                        }
+                        this.worktree_removal_changed(&target, cx);
+                    }
+                });
+                return;
+            }
             if session.update(cx, |session, _| session.alive()) {
                 continue;
             }
             let _ = this.update(cx, ProjectService::skip_worktree_teardown);
             return;
         }));
-        Ok(())
     }
 
     fn kill_sessions_touching_worktree(&mut self, path: &str, cx: &mut Context<Self>) {
@@ -921,16 +1104,52 @@ impl ProjectService {
             return;
         };
         self.teardown_poll = None;
-        self.teardown_session = None;
+        let script = self.teardown_session.take();
+        if let Some(session) = &script {
+            if let Err(error) = session.update(cx, TerminalSession::request_script_stop) {
+                self.fail_worktree_removal(&wt_path, error, cx);
+                return;
+            }
+        }
         if let Some(operation) = self.worktree_removals.get_mut(&wt_path) {
-            operation.stage = WorktreeRemovalStage::Removing;
+            operation.stage = WorktreeRemovalStage::Stopping;
             // An explicit skip acknowledges a script start failure; only Git removal errors
             // determine whether the finished operation failed.
             operation.error = None;
         }
         self.worktree_removal_changed(&wt_path, cx);
         self.kill_sessions_touching_worktree(&wt_path, cx);
+        let registry = self.registry.clone();
         cx.spawn(async move |this, cx| {
+            let mut result = wait_for_session_cleanup(&registry, cx).await;
+            while result.is_ok()
+                && script.as_ref().is_some_and(|session| {
+                    !session.read_with(cx, |session, _| session.has_exited())
+                })
+            {
+                if let Some(error) = script.as_ref().and_then(|session| {
+                    session.read_with(cx, |session, _| session.spawn_error().map(str::to_owned))
+                }) {
+                    result = Err(format!("Teardown process could not stop safely: {error}"));
+                    break;
+                }
+                cx.background_executor()
+                    .timer(std::time::Duration::from_millis(20))
+                    .await;
+                result = wait_for_session_cleanup(&registry, cx).await;
+            }
+            if let Err(error) = result {
+                let _ = this.update(cx, |this, cx| {
+                    this.fail_worktree_removal(&wt_path, error, cx);
+                });
+                return;
+            }
+            let _ = this.update(cx, |this, cx| {
+                if let Some(operation) = this.worktree_removals.get_mut(&wt_path) {
+                    operation.stage = WorktreeRemovalStage::Removing;
+                }
+                this.worktree_removal_changed(&wt_path, cx);
+            });
             let project = project_path.clone();
             let target = wt_path.clone();
             let result = cx
@@ -957,6 +1176,29 @@ impl ProjectService {
             });
         })
         .detach();
+    }
+}
+
+async fn wait_for_session_cleanup(
+    registry: &Entity<SessionRegistry>,
+    cx: &mut gpui::AsyncApp,
+) -> Result<(), String> {
+    loop {
+        let (error, pending) = registry.read_with(cx, |registry, _| {
+            (
+                registry.session_cleanup_error(),
+                registry.has_pending_session_cleanup(),
+            )
+        });
+        if let Some(error) = error {
+            return Err(format!("Sessions could not stop safely: {error}"));
+        }
+        if !pending {
+            return Ok(());
+        }
+        cx.background_executor()
+            .timer(std::time::Duration::from_millis(20))
+            .await;
     }
 }
 
@@ -1186,6 +1428,65 @@ mod tests {
     }
 
     #[gpui::test]
+    fn pending_creation_survives_dismissal_and_guards_project_changes(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (release, wait) = futures::channel::oneshot::channel();
+        let service = cx.update(|cx| {
+            cx.set_global(SettingsState::new(storage::Store {
+                projects: vec![project("fixture", "/pending-creation-fixture")],
+                ..Default::default()
+            }));
+            let registry = cx.new(|_| SessionRegistry::new());
+            let state = cx.new(|_| WorkspaceState::default());
+            let service = cx.new(|_| ProjectService::new(registry, state));
+            let result = service.update(cx, |service, cx| {
+                let work = cx.background_spawn(async move {
+                    wait.await
+                        .unwrap_or_else(|_| Err("fixture canceled".into()))
+                });
+                service.track_creation("/pending-creation-fixture".into(), work, cx)
+            });
+            drop(result); // Closing the form must not cancel service ownership.
+            service.update(cx, |service, cx| {
+                assert!(service
+                    .ensure_not_removing("/pending-creation-fixture")
+                    .unwrap_err()
+                    .contains("creation"));
+                assert!(service
+                    .archive_project_by_path("/pending-creation-fixture", cx)
+                    .unwrap_err()
+                    .contains("creation"));
+                assert!(service
+                    .remove_worktree_by_path(
+                        "/pending-creation-fixture",
+                        "/pending-creation-fixture/child",
+                        cx
+                    )
+                    .unwrap_err()
+                    .contains("creation"));
+            });
+            service
+        });
+        release
+            .send(Err("expected fixture failure".into()))
+            .unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while service.read_with(cx, |service, _| !service.creations.is_empty())
+            && std::time::Instant::now() < deadline
+        {
+            cx.run_until_parked();
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        service.read_with(cx, |service, _| {
+            assert!(service.creations.is_empty());
+            assert!(service
+                .ensure_not_removing("/pending-creation-fixture")
+                .is_ok());
+        });
+    }
+
+    #[gpui::test]
     fn workspace_move_persists_preserves_sessions_and_rolls_back(cx: &mut gpui::TestAppContext) {
         // Every write stays in a subprocess-local config directory.
         if std::env::var_os("GROVE_WORKSPACE_MOVE_TEST_CHILD").is_none() {
@@ -1217,6 +1518,17 @@ mod tests {
                 String::from_utf8_lossy(&output.stderr)
             );
             return;
+        }
+        let repo = storage::config_dir().unwrap().join("repo");
+        fs::create_dir_all(&repo).unwrap();
+        let session =
+            cx.new(|cx| TerminalSession::spawn_script("sleep 60", repo.to_str().unwrap(), cx));
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while session.read_with(cx, |session, _| session.root_pid().is_none())
+            && std::time::Instant::now() < deadline
+        {
+            cx.run_until_parked();
+            std::thread::sleep(std::time::Duration::from_millis(10));
         }
         cx.update(|cx| {
             let config = storage::config_dir().unwrap();
@@ -1250,7 +1562,6 @@ mod tests {
             let registry = cx.new(|_| SessionRegistry::new());
             let state = cx.new(|_| WorkspaceState::default());
             let service = cx.new(|_| ProjectService::new(registry.clone(), state.clone()));
-            let session = cx.new(|cx| TerminalSession::spawn_script("sleep 60", path, cx));
             assert!(session.read(cx).spawn_error().is_none());
             let pid = session.read(cx).root_pid().unwrap();
             let id = registry.update(cx, |registry, _| {
@@ -1547,6 +1858,80 @@ mod tests {
     }
 
     #[gpui::test]
+    fn removal_waits_for_cancelled_startup_before_teardown_and_git(cx: &mut gpui::TestAppContext) {
+        let Some((fixture, repo, wt)) = git_fixture() else {
+            return;
+        };
+        let marker = fixture.0.join("teardown-started");
+        let (release, gate) = futures::channel::oneshot::channel();
+        let (service, terminal) = cx.update(|cx| {
+            let mut configured = project("fixture", &repo);
+            configured.scripts.teardown = Some(format!("printf done > '{}'", marker.display()));
+            cx.set_global(SettingsState::new(storage::Store {
+                projects: vec![configured],
+                ..Default::default()
+            }));
+            cx.set_global(crate::zoom::CurrentPtyDims::default());
+            let registry = cx.new(|_| SessionRegistry::new());
+            let state = cx.new(|_| WorkspaceState::default());
+            let service = cx.new(|_| ProjectService::new(registry.clone(), state));
+            let terminal = cx.new(|cx| TerminalSession::pending_startup_for_test(gate, cx));
+            registry.update(cx, |registry, cx| {
+                let id = registry.insert_meta(
+                    "fixture".into(),
+                    wt.clone(),
+                    grove_core::agent::Agent::Terminal,
+                );
+                registry.attach_observed(id, terminal.clone(), None, cx);
+            });
+            (service, terminal)
+        });
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        service.update(cx, |service, cx| {
+            service.remove_worktree_by_path(&repo, &wt, cx).unwrap();
+        });
+        while service.read_with(cx, |service, _| {
+            service.worktree_removal_status(&wt).unwrap().stage != WorktreeRemovalStage::Stopping
+        }) {
+            cx.run_until_parked();
+            cx.executor()
+                .advance_clock(std::time::Duration::from_millis(20));
+            assert!(
+                std::time::Instant::now() < deadline,
+                "{:?}",
+                service.read_with(cx, |service, _| service
+                    .worktree_removal_status(&wt)
+                    .cloned())
+            );
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        assert!(terminal.read_with(cx, |terminal, _| terminal.is_starting()));
+        assert!(Path::new(&wt).exists());
+        assert!(
+            !marker.exists(),
+            "teardown must wait for startup cancellation acknowledgement"
+        );
+        release.send(()).unwrap();
+        while service.read_with(cx, |service, _| {
+            service.worktree_removal_status(&wt).unwrap().stage != WorktreeRemovalStage::Finished
+        }) {
+            cx.run_until_parked();
+            cx.executor()
+                .advance_clock(std::time::Duration::from_millis(120));
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        assert!(terminal.read_with(cx, |terminal, _| terminal.has_exited()));
+        assert!(marker.exists());
+        assert!(!Path::new(&wt).exists());
+        assert!(service.read_with(cx, |service, _| service
+            .worktree_removal_status(&wt)
+            .unwrap()
+            .error
+            .is_none()));
+    }
+
+    #[gpui::test]
     fn worktree_removal_validates_then_sweeps_all_roots_and_blocks_launches(
         cx: &mut gpui::TestAppContext,
     ) {
@@ -1624,7 +2009,7 @@ mod tests {
                 service.remove_worktree_by_path(&repo, &wt, cx).unwrap();
                 assert_eq!(
                     service.worktree_removal_status(&wt).unwrap().stage,
-                    WorktreeRemovalStage::Removing,
+                    WorktreeRemovalStage::Checking,
                 );
                 assert!(service.remove_worktree_by_path(&repo, &wt, cx).is_err());
                 assert!(service.archive_project_by_path(&repo, cx).is_err());
@@ -1632,11 +2017,7 @@ mod tests {
                     .register_project("late registration".into(), alias.clone(), cx)
                     .is_err());
             });
-            assert!(registry.read(cx).meta(primary).is_none());
-            assert!(registry.read(cx).meta(context).is_none());
-            assert!(registry.read(cx).meta(alias_primary).is_none());
-            assert!(registry.read(cx).meta(alias_context).is_none());
-            assert!(registry.read(cx).meta(main).is_some());
+
             let blocked_primary = runtime.update(cx, |runtime, cx| {
                 runtime.spawn_session_in_with_args(
                     "fixture".into(),
@@ -1662,10 +2043,32 @@ mod tests {
                 )
             });
             assert!(!blocked_context);
-            service
+            (
+                service,
+                registry,
+                [primary, context, alias_primary, alias_context],
+                main,
+            )
         });
-        cx.run_until_parked();
+        let (service, registry, removed, main) = service;
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while service.read_with(cx, |service, _| {
+            service.worktree_removal_status(&wt).unwrap().stage != WorktreeRemovalStage::Finished
+        }) {
+            cx.run_until_parked();
+            cx.executor()
+                .advance_clock(std::time::Duration::from_millis(20));
+            assert!(
+                std::time::Instant::now() < deadline,
+                "removal must complete after actual session cleanup"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
         cx.update(|cx| {
+            for id in removed {
+                assert!(registry.read(cx).meta(id).is_none());
+            }
+            assert!(registry.read(cx).meta(main).is_some());
             let status = service.read(cx).worktree_removal_status(&wt).unwrap();
             assert_eq!(status.stage, WorktreeRemovalStage::Finished);
             assert!(status.error.is_none(), "{:?}", status.error);
@@ -1691,13 +2094,6 @@ mod tests {
             }));
             cx.set_global(crate::zoom::CurrentPtyDims::default());
             let runtime = cx.new(crate::runtime::Runtime::new);
-            assert!(runtime
-                .read(cx)
-                .tree
-                .read(cx)
-                .worktrees_for_project(0, 0)
-                .iter()
-                .any(|entry| entry.path == wt));
             let registry = runtime.read(cx).registry.clone();
             let id = registry.update(cx, |registry, _| {
                 registry.insert_meta(
@@ -1708,6 +2104,28 @@ mod tests {
             });
             (runtime, id)
         });
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !runtime.read_with(cx, |runtime, cx| {
+            runtime
+                .tree
+                .read(cx)
+                .worktrees_for_project(0, 0)
+                .iter()
+                .any(|entry| entry.path == wt)
+        }) && std::time::Instant::now() < deadline
+        {
+            cx.run_until_parked();
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        cx.update(|cx| {
+            assert!(runtime
+                .read(cx)
+                .tree
+                .read(cx)
+                .worktrees_for_project(0, 0)
+                .iter()
+                .any(|entry| entry.path == wt));
+        });
         // Another Git client removes the checkout while Grove still displays its cached row.
         git::remove_worktree(&repo, &wt).unwrap();
         fs::create_dir(&wt).unwrap();
@@ -1715,15 +2133,23 @@ mod tests {
         fs::write(&marker, "keep me").unwrap();
         cx.update(|cx| {
             let service = runtime.read(cx).projects.clone();
-            let error = service.update(cx, |service, cx| {
-                service.remove_worktree_by_path(&repo, &wt, cx).unwrap_err()
+            service.update(cx, |service, cx| {
+                service.remove_worktree_by_path(&repo, &wt, cx).unwrap();
             });
-            assert_eq!(error, "Worktree is no longer listed by Git.");
-            assert!(service.read(cx).worktree_removal_status(&wt).is_none());
         });
         cx.run_until_parked();
         cx.update(|cx| {
             let runtime = runtime.read(cx);
+            let status = runtime
+                .projects
+                .read(cx)
+                .worktree_removal_status(&wt)
+                .unwrap();
+            assert_eq!(status.stage, WorktreeRemovalStage::Finished);
+            assert_eq!(
+                status.error.as_deref(),
+                Some("Worktree is no longer listed by Git.")
+            );
             let inventory = runtime.tree.read(cx).worktrees_for_project(0, 0);
             assert!(!inventory.iter().any(|entry| entry.path == wt));
             assert!(inventory
@@ -1920,43 +2346,71 @@ mod tests {
                 service.remove_worktree_by_path(&repo, &wt, cx).unwrap();
                 assert_eq!(
                     service.worktree_removal_status(&wt).unwrap().stage,
-                    WorktreeRemovalStage::RunningScript,
-                );
-                assert!(service
-                    .worktree_removal_status(&wt)
-                    .unwrap()
-                    .error
-                    .is_some());
-                let (late_primary, late_context) = registry.update(cx, |registry, _| {
-                    let primary = registry.insert_meta(
-                        "fixture".into(),
-                        alias.clone(),
-                        grove_core::agent::Agent::Terminal,
-                    );
-                    let context = registry.insert_meta_with_context(
-                        "fixture".into(),
-                        repo.clone(),
-                        grove_core::agent::Agent::Codex,
-                        vec![grove_core::session_meta::ContextRoot {
-                            project: "fixture".into(),
-                            wt_path: alias.clone(),
-                        }],
-                        None,
-                    );
-                    (primary, context)
-                });
-                service.skip_worktree_teardown(cx);
-                service.skip_worktree_teardown(cx);
-                assert!(registry.read(cx).meta(late_primary).is_none());
-                assert!(registry.read(cx).meta(late_context).is_none());
-                assert_eq!(
-                    service.worktree_removal_status(&wt).unwrap().stage,
-                    WorktreeRemovalStage::Removing,
+                    WorktreeRemovalStage::Checking,
                 );
             });
-            service
+            (service, registry)
         });
-        cx.run_until_parked();
+        let (service, registry) = service;
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while service.read_with(cx, |service, _| {
+            service
+                .worktree_removal_status(&wt)
+                .is_some_and(|state| state.error.is_none())
+        }) && std::time::Instant::now() < deadline
+        {
+            cx.run_until_parked();
+            cx.executor()
+                .advance_clock(std::time::Duration::from_millis(120));
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        service.update(cx, |service, cx| {
+            assert!(service
+                .worktree_removal_status(&wt)
+                .unwrap()
+                .error
+                .is_some());
+            let (late_primary, late_context) = registry.update(cx, |registry, _| {
+                let primary = registry.insert_meta(
+                    "fixture".into(),
+                    alias.clone(),
+                    grove_core::agent::Agent::Terminal,
+                );
+                let context = registry.insert_meta_with_context(
+                    "fixture".into(),
+                    repo.clone(),
+                    grove_core::agent::Agent::Codex,
+                    vec![grove_core::session_meta::ContextRoot {
+                        project: "fixture".into(),
+                        wt_path: alias.clone(),
+                    }],
+                    None,
+                );
+                (primary, context)
+            });
+            service.skip_worktree_teardown(cx);
+            service.skip_worktree_teardown(cx);
+            assert!(registry.read(cx).meta(late_primary).is_none());
+            assert!(registry.read(cx).meta(late_context).is_none());
+            assert_eq!(
+                service.worktree_removal_status(&wt).unwrap().stage,
+                WorktreeRemovalStage::Stopping,
+            );
+        });
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while service.read_with(cx, |service, _| {
+            service.worktree_removal_status(&wt).unwrap().stage != WorktreeRemovalStage::Finished
+        }) {
+            cx.run_until_parked();
+            cx.executor()
+                .advance_clock(std::time::Duration::from_millis(20));
+            assert!(
+                std::time::Instant::now() < deadline,
+                "removal must complete after actual session cleanup"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
         cx.update(|cx| {
             let status = service.read(cx).worktree_removal_status(&wt).unwrap();
             assert_eq!(status.stage, WorktreeRemovalStage::Finished);

@@ -311,13 +311,18 @@ impl CheckoutPanel {
         succeeded
     }
 
-    fn local_refresh_due(&self) -> bool {
+    fn local_refresh_due(&self, focused: bool) -> bool {
         !self.loading
             && !self.operation.busy
             && (self.state.is_none()
-                || self
-                    .checked_at
-                    .is_none_or(|time| time.elapsed() >= STATUS_REFRESH_INTERVAL))
+                || self.checked_at.is_none_or(|time| {
+                    time.elapsed()
+                        >= if focused {
+                            STATUS_REFRESH_INTERVAL
+                        } else {
+                            Duration::from_mins(1)
+                        }
+                }))
     }
 
     fn accepts_sample(&self, path: &str, generation: u64, revision: u64) -> bool {
@@ -462,7 +467,7 @@ impl Sidebar {
             let (result, summary) = cx
                 .background_executor()
                 .spawn(async move {
-                    let result = checkout_git::inspect(Path::new(&target));
+                    let result = checkout_git::inspect_for_poll(Path::new(&target));
                     let summary = result
                         .as_ref()
                         .is_ok_and(|state| state.dirty)
@@ -3107,7 +3112,10 @@ impl Sidebar {
                         focus.focus(window, cx);
                     }
                 }
-                if self.checkout_panel.local_refresh_due() {
+                if self
+                    .checkout_panel
+                    .local_refresh_due(window.is_window_active())
+                {
                     self.checkout_load(path.clone(), cx);
                 }
                 let project = cx.global::<SettingsState>().store.script_project(&path);
@@ -3224,20 +3232,27 @@ impl Sidebar {
                             self.checkout_panel.pr_checked_at = None;
                         }
                         if !self.checkout_panel.pr_loading
-                            && self
-                                .checkout_panel
-                                .pr_checked_at
-                                .is_none_or(|t| t.elapsed() >= Duration::from_secs(30))
+                            && self.checkout_panel.pr_checked_at.is_none_or(|t| {
+                                t.elapsed()
+                                    >= if window.is_window_active() {
+                                        Duration::from_secs(30)
+                                    } else {
+                                        Duration::from_mins(5)
+                                    }
+                            })
                         {
                             self.checkout_load_pr(path.clone(), state.clone(), cx);
                         }
                     }
                     if let Some(state) = state.as_ref() {
-                        if self
-                            .checkout_panel
-                            .main_checked_at
-                            .is_none_or(|t| t.elapsed() >= REMOTE_REFRESH_INTERVAL)
-                        {
+                        if self.checkout_panel.main_checked_at.is_none_or(|t| {
+                            t.elapsed()
+                                >= if window.is_window_active() {
+                                    REMOTE_REFRESH_INTERVAL
+                                } else {
+                                    Duration::from_mins(5)
+                                }
+                        }) {
                             self.checkout_load_main(path.clone(), state.clone(), cx);
                         }
                     }
@@ -3405,8 +3420,8 @@ impl Sidebar {
                                 }))
                             }
                             None => {
-                                let git = self.runtime.read(cx).tree.read(cx).git_states();
-                                git.get(crate::paths::normalize_wt_path(&path))
+                                let tree = self.runtime.read(cx).tree.read(cx);
+                                tree.git_state(crate::paths::normalize_wt_path(&path))
                                     .filter(|changes| {
                                         changes.dirty || changes.added > 0 || changes.removed > 0
                                     })
@@ -4761,17 +4776,17 @@ mod tests {
             state: Some(Err("Last observation unavailable".into())),
             ..CheckoutPanel::default()
         };
-        assert!(panel.local_refresh_due());
+        assert!(panel.local_refresh_due(true));
         panel.checked_at = Some(Instant::now());
-        assert!(!panel.local_refresh_due());
+        assert!(!panel.local_refresh_due(true));
         panel.checked_at = None;
         panel.loading = true;
-        assert!(!panel.local_refresh_due());
+        assert!(!panel.local_refresh_due(true));
         panel.loading = false;
         panel.operation.busy = true;
-        assert!(!panel.local_refresh_due());
+        assert!(!panel.local_refresh_due(true));
         panel.operation.busy = false;
-        assert!(panel.local_refresh_due());
+        assert!(panel.local_refresh_due(true));
     }
 
     #[test]

@@ -469,13 +469,8 @@ impl Sidebar {
         for (id, session) in sessions {
             let state = &session.read(cx).state;
             let cache = self.task_glances.entry(id).or_default();
-            cache.refresh(&state.saved.items);
-            cache.refresh_dashboard_reporting(
-                &state.saved.items,
-                state.status,
-                state.turn_id.as_deref(),
-                state.saved.activity_reporting,
-            );
+            cache.refresh_snapshot(&state.saved.items);
+            cache.refresh_dashboard_snapshot(state);
         }
     }
     pub(super) fn render_dashboard_progress(

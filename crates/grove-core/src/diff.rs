@@ -3,6 +3,7 @@
 
 use fs_err as fs;
 use std::collections::HashSet;
+use std::io::Read as _;
 use std::path::Path;
 use std::process::Command;
 
@@ -259,16 +260,52 @@ fn parse_status_porcelain(out: &str) -> Vec<StatusLine> {
 
 /// A file over [`DIFF_MAX_BYTES`] is not read at all.
 fn count_lines_guarded(full_path: &Path) -> u32 {
+    type Entry = (std::time::SystemTime, u64, u32);
+    static CACHE: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashMap<std::path::PathBuf, Entry>>,
+    > = std::sync::OnceLock::new();
     let Ok(meta) = fs::metadata(full_path) else {
         return 0;
     };
     if meta.len() > DIFF_MAX_BYTES {
         return 0;
     }
-    let Ok(content) = fs::read_to_string(full_path) else {
+    let modified = meta.modified().ok();
+    let cache = CACHE.get_or_init(Default::default);
+    if let Some(modified) = modified {
+        if let Some((at, size, count)) = cache
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(full_path)
+        {
+            if *at == modified && *size == meta.len() {
+                return *count;
+            }
+        }
+    }
+    let Ok(file) = fs::File::open(full_path) else {
         return 0;
     };
-    content.lines().count().try_into().unwrap_or(u32::MAX)
+    let mut content = String::new();
+    if file
+        .take(DIFF_MAX_BYTES + 1)
+        .read_to_string(&mut content)
+        .is_err()
+        || content.len() as u64 > DIFF_MAX_BYTES
+    {
+        return 0;
+    }
+    let count = content.lines().count().try_into().unwrap_or(u32::MAX);
+    if let Some(modified) = modified {
+        let mut cache = cache
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if cache.len() >= 1024 {
+            cache.clear();
+        }
+        cache.insert(full_path.to_path_buf(), (modified, meta.len(), count));
+    }
+    count
 }
 
 /// Merges tracked (`--numstat -M`) and untracked (`status --porcelain -uall`) changes, sorted by path.
@@ -292,6 +329,7 @@ pub fn changed_files(wt: &str) -> Vec<FileChange> {
 
     tracing::debug!(args = "status --porcelain -uall", cwd = %wt, "running git command");
     let status_out = Command::new("git")
+        .env("GIT_OPTIONAL_LOCKS", "0")
         .args(["-C", wt, "status", "--porcelain", "-uall"])
         .output();
     let status_lines = match status_out {
@@ -307,22 +345,20 @@ pub fn changed_files(wt: &str) -> Vec<FileChange> {
         Err(_) => vec![],
     };
 
+    let status_by_path: std::collections::HashMap<_, _> = status_lines
+        .iter()
+        .map(|entry| (entry.path.as_str(), (entry.x, entry.y)))
+        .collect();
     let mut result: Vec<FileChange> = Vec::new();
     for entry in numstat_lines {
         let status = match (&entry.added, &entry.rename_from) {
             (None, _) => Status::Binary,
             (Some(_), Some(from)) => Status::Renamed { from: from.clone() },
-            (Some(_), None) => {
-                match status_lines
-                    .iter()
-                    .find(|s| s.path == entry.path)
-                    .map(|s| (s.x, s.y))
-                {
-                    Some(('A', _) | (_, 'A')) => Status::Added,
-                    Some(('D', _) | (_, 'D')) => Status::Deleted,
-                    _ => Status::Modified,
-                }
-            }
+            (Some(_), None) => match status_by_path.get(entry.path.as_str()).copied() {
+                Some(('A', _) | (_, 'A')) => Status::Added,
+                Some(('D', _) | (_, 'D')) => Status::Deleted,
+                _ => Status::Modified,
+            },
         };
         result.push(FileChange {
             path: entry.path,
@@ -873,6 +909,16 @@ pub fn file_patch(wt: &str, path: &str, status: &Status) -> Patch {
         return untracked_patch(wt, path);
     }
 
+    // Guard byte size before asking Git to materialize a minified one-line
+    // blob. Line-count limits alone cannot bound its memory cost.
+    if fs::metadata(Path::new(wt).join(path)).is_ok_and(|meta| meta.len() > DIFF_MAX_BYTES)
+        || head_blob_size(wt, path).is_some_and(|size| size > DIFF_MAX_BYTES)
+    {
+        return Patch::TooLarge {
+            added: 0,
+            removed: 0,
+        };
+    }
     tracing::debug!(
         args = format!("diff --numstat -M HEAD -- {path}"),
         cwd = %wt,
@@ -909,22 +955,16 @@ pub fn file_patch(wt: &str, path: &str, status: &Status) -> Patch {
         cwd = %wt,
         "running git command"
     );
-    let out = Command::new("git")
-        .args(["-C", wt, "diff", "-U3", "-M", "HEAD", "--", path])
-        .output();
-    match out {
-        Ok(o) if o.status.success() => parse_patch(&String::from_utf8_lossy(&o.stdout)),
-        Ok(o) => {
-            tracing::warn!(
-                status = ?o.status,
-                stderr = %String::from_utf8_lossy(&o.stderr),
-                "git command failed"
-            );
-            Patch::Text {
-                hunks: vec![],
-                no_newline_at_eof: false,
-            }
-        }
+    match crate::checkout_git::git_limited(
+        Path::new(wt),
+        &["diff", "-U3", "-M", "HEAD", "--", path],
+        (DIFF_MAX_BYTES * 3) as usize,
+    ) {
+        Ok(output) if output.ends_with("\n[context truncated]") => Patch::TooLarge {
+            added: 0,
+            removed: 0,
+        },
+        Ok(output) => parse_patch(&output),
         Err(_) => Patch::Text {
             hunks: vec![],
             no_newline_at_eof: false,
@@ -932,8 +972,23 @@ pub fn file_patch(wt: &str, path: &str, status: &Status) -> Patch {
     }
 }
 
+fn head_blob_size(wt: &str, path: &str) -> Option<u64> {
+    let output = Command::new("git")
+        .args(["-C", wt, "cat-file", "-s", &format!("HEAD:{path}")])
+        .output()
+        .ok()?;
+    output
+        .status
+        .success()
+        .then(|| String::from_utf8_lossy(&output.stdout).trim().parse().ok())
+        .flatten()
+}
+
 /// `None` covers every reason there isn't a `HEAD` version — callers treat them all the same.
 pub fn head_blob(wt: &str, path: &str) -> Option<String> {
+    if head_blob_size(wt, path)? > DIFF_MAX_BYTES {
+        return None;
+    }
     tracing::debug!(
         args = format!("show HEAD:{path}"),
         cwd = %wt,
@@ -955,7 +1010,15 @@ pub fn head_blob(wt: &str, path: &str) -> Option<String> {
 }
 
 pub fn working_file(wt: &str, path: &str) -> Option<String> {
-    fs::read_to_string(Path::new(wt).join(path)).ok()
+    let file = fs::File::open(Path::new(wt).join(path)).ok()?;
+    if file.metadata().ok()?.len() > DIFF_MAX_BYTES {
+        return None;
+    }
+    let mut text = String::new();
+    file.take(DIFF_MAX_BYTES + 1)
+        .read_to_string(&mut text)
+        .ok()?;
+    (text.len() as u64 <= DIFF_MAX_BYTES).then_some(text)
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

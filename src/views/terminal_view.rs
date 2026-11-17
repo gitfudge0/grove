@@ -117,12 +117,13 @@ impl TerminalView {
             return false;
         };
         let before = self.session.read(cx).display_offset();
-        self.session
-            .update(cx, |term, _| term.scroll_selection(up, mouse::SCROLL_STEP));
+        self.session.update(cx, |term, cx| {
+            term.scroll_selection(up, mouse::SCROLL_STEP, cx);
+        });
         let term = self.session.read(cx);
         let offset = term.display_offset();
         if offset == before {
-            return false;
+            return term.is_scroll_pending();
         }
         let zoom = cx.global::<ZoomState>();
         let bounds = self.bounds.get();
@@ -289,7 +290,7 @@ impl Render for TerminalView {
                 };
                 if dy.abs() >= 0.1 {
                     this.session.update(cx, |term, cx| {
-                        term.scroll_lines(dy > 0., dy.abs().ceil() as usize);
+                        term.scroll_lines(dy > 0., dy.abs().ceil() as usize, cx);
                         cx.notify();
                     });
                 }
@@ -304,7 +305,7 @@ impl Render for TerminalView {
                             keys::ScrollAmount::Page => term.scroll_page_lines(),
                             keys::ScrollAmount::All => mouse::SCROLLBACK_LINES,
                         };
-                        term.scroll_lines(up, lines);
+                        term.scroll_lines(up, lines, cx);
                         cx.notify();
                     });
                     cx.stop_propagation();
@@ -628,7 +629,7 @@ mod tests {
         let (view, cx, total) = history_fixture(cx);
         view.update(cx, |view, cx| {
             view.session
-                .update(cx, |term, _| term.scroll_selection(true, 12));
+                .update(cx, |term, cx| term.scroll_selection(true, 12, cx));
         });
         let bounds = view.read_with(cx, |view, _| view.bounds.get());
         let start = point(px(2.0), bounds.center().y);

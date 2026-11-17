@@ -1,8 +1,9 @@
 use gpui::Corners;
 use std::{
+    cell::RefCell,
     ops::Range,
     rc::Rc,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, Weak},
 };
 
 use gpui::{
@@ -23,8 +24,8 @@ pub(super) struct Inline {
     id: ElementId,
     text: SharedString,
     links: Rc<Vec<(Range<usize>, LinkMark)>>,
-    highlights: Vec<(Range<usize>, HighlightStyle)>,
-    styled_text: StyledText,
+    highlights: Arc<[(Range<usize>, HighlightStyle)]>,
+    styled_text: Rc<RefCell<StyledText>>,
 
     state: Arc<Mutex<InlineState>>,
 }
@@ -43,12 +44,26 @@ impl InlineState {
     }
 }
 
+// Layouts contain foreground-thread GPUI state, so keep them out of the Send
+// parser nodes. Weak owners release entries when immutable documents disappear.
+thread_local! {
+    static CODE_LAYOUTS: RefCell<std::collections::HashMap<usize, CachedInline>> = RefCell::default();
+}
+struct CachedInline {
+    owner: Weak<Mutex<InlineState>>,
+    text: SharedString,
+    style: gpui::TextStyle,
+    rem: Pixels,
+    highlights: Arc<[(Range<usize>, HighlightStyle)]>,
+    element: Rc<RefCell<StyledText>>,
+}
+
 impl Inline {
     pub(super) fn new(
         id: impl Into<ElementId>,
         state: Arc<Mutex<InlineState>>,
         links: Vec<(Range<usize>, LinkMark)>,
-        highlights: Vec<(Range<usize>, HighlightStyle)>,
+        highlights: impl Into<Arc<[(Range<usize>, HighlightStyle)]>>,
     ) -> Self {
         let text = state
             .lock()
@@ -58,9 +73,9 @@ impl Inline {
         Self {
             id: id.into(),
             links: Rc::new(links),
-            highlights,
+            highlights: highlights.into(),
             text: text.clone(),
-            styled_text: StyledText::new(text),
+            styled_text: Rc::new(RefCell::new(StyledText::new(text))),
             state,
         }
     }
@@ -284,6 +299,37 @@ impl Element for Inline {
         cx: &mut App,
     ) -> (LayoutId, Self::RequestLayoutState) {
         let text_style = window.text_style();
+        let cache_key = Arc::as_ptr(&self.state) as usize;
+        // Code has no hover-dependent links. Paragraph links retain their
+        // existing immediate styling path.
+        if self.links.is_empty() {
+            let cached = CODE_LAYOUTS.with(|cache| {
+                cache
+                    .borrow()
+                    .get(&cache_key)
+                    .filter(|old| {
+                        old.owner
+                            .upgrade()
+                            .is_some_and(|owner| Arc::ptr_eq(&owner, &self.state))
+                            && old.text == self.text
+                            && old.style == text_style
+                            && old.rem == window.rem_size()
+                            && (Arc::ptr_eq(&old.highlights, &self.highlights)
+                                || old.highlights == self.highlights)
+                    })
+                    .map(|old| old.element.clone())
+            });
+            if let Some(cached) = cached {
+                self.styled_text = cached;
+                let (layout, _) = self.styled_text.borrow_mut().request_layout(
+                    global_element_id,
+                    inspector_id,
+                    window,
+                    cx,
+                );
+                return (layout, ());
+            }
+        }
 
         let mut runs = Vec::new();
         let mut ix = 0;
@@ -307,10 +353,32 @@ impl Element for Inline {
             runs.push(text_style.to_run(self.text.len() - ix));
         }
 
-        self.styled_text = StyledText::new(self.text.clone()).with_runs(runs);
-        let (layout_id, _) =
-            self.styled_text
-                .request_layout(global_element_id, inspector_id, window, cx);
+        self.styled_text = Rc::new(RefCell::new(
+            StyledText::new(self.text.clone()).with_runs(runs),
+        ));
+        if self.links.is_empty() {
+            CODE_LAYOUTS.with(|cache| {
+                let mut cache = cache.borrow_mut();
+                cache.retain(|_, old| old.owner.strong_count() > 0);
+                cache.insert(
+                    cache_key,
+                    CachedInline {
+                        owner: Arc::downgrade(&self.state),
+                        text: self.text.clone(),
+                        style: window.text_style(),
+                        rem: window.rem_size(),
+                        highlights: self.highlights.clone(),
+                        element: self.styled_text.clone(),
+                    },
+                );
+            });
+        }
+        let (layout_id, _) = self.styled_text.borrow_mut().request_layout(
+            global_element_id,
+            inspector_id,
+            window,
+            cx,
+        );
 
         (layout_id, ())
     }
@@ -325,6 +393,7 @@ impl Element for Inline {
         cx: &mut App,
     ) -> Self::PrepaintState {
         self.styled_text
+            .borrow_mut()
             .prepaint(id, inspector_id, bounds, &mut (), window, cx);
 
         let hitbox = window.insert_hitbox(bounds, HitboxBehavior::Normal);
@@ -347,10 +416,11 @@ impl Element for Inline {
             return;
         };
 
-        let text_layout = self.styled_text.layout().clone();
+        let text_layout = self.styled_text.borrow().layout().clone();
         // Inline links use foreground-only hover feedback (set in request_layout).
         // A list-hover fill can obscure text when theme token palettes differ.
         self.styled_text
+            .borrow_mut()
             .paint(global_id, None, bounds, &mut (), &mut (), window, cx);
 
         // layout selections

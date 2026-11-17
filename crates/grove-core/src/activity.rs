@@ -2,7 +2,7 @@
 use crate::tasks::{self, Task};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::borrow::Borrow;
+use std::{borrow::Borrow, collections::HashMap};
 
 pub const GUIDANCE: &str = "Grove requires explicit live action reporting through its internal grove_activity report_activity tool, separately from ordinary commentary and the task checklist. Load report_activity with tool search if deferred. Before the FIRST meaningful action of a turn, open an in_progress report. Before beginning EACH task's work, open an action report for that task; do not perform a task's work silently and report only the final verification task. Supply a stable id, task_id (the exact checklist task id or uniquely matching exact task title; empty only without a checklist), status in_progress, and a short present-continuous action label such as 'Checking session navigation'. After observing the result, update the SAME id and task_id with status completed and a short past-tense label such as 'Checked session navigation', or failed with a truthful failure label. Close each finished action explicitly before moving to another task or marking its checklist task completed. Never infer completion from another action starting, a task status changing or a turn ending. If work is interrupted or its result is unknown, leave it unfinished rather than reporting success. Report meaningful changes of action as work progresses. Open a distinct step when moving to a different investigation target, implementation area, or verification method, or when a milestone would clarify progress during a long action. Use specific labels such as 'Tracing title loading state' and 'Checking naming transition tests'. Group related tool calls into each action; do not report every command, commentary message, intention, scope description or generic finding. Keep labels to at most 100 characters, without first-person narration, commands, paths, or explanations. Reports are internal UI metadata: do not repeat their JSON in commentary or final answers. Ordinary commentary remains available for context. Task status and step status are independent; completing a task does not implicitly complete its steps.";
 
@@ -103,17 +103,34 @@ pub fn steps<T: Borrow<Value>>(items: &[T]) -> Vec<Step> {
     let latest_prompt = items
         .iter()
         .rposition(|item| item.borrow()["type"] == "userMessage");
+    let mut item_ids = HashMap::new();
+    for (index, item) in items.iter().enumerate() {
+        if let Some(id) = item.borrow()["id"].as_str() {
+            item_ids.entry(id).or_insert(index);
+        }
+    }
+    let mut projections = HashMap::new();
+    let mut latest_checklist = None;
+    let mut step_indexes = HashMap::new();
     let mut result: Vec<(TurnKey, Step)> = Vec::new();
     let mut prompt = None;
     for (index, item) in items.iter().enumerate() {
         let item = item.borrow();
+        if tasks::is_checklist(item) {
+            latest_checklist = Some(index);
+        }
         if item["type"] == "userMessage" {
             prompt = Some(index);
         }
         let Some((report, turn_id, accepted_owner)) = accepted(item) else {
             continue;
         };
-        let list = tasks::current(&items[..index]);
+        let list = latest_checklist.and_then(|at| {
+            projections
+                .entry(at)
+                .or_insert_with(|| tasks::current(&items[..=at]))
+                .clone()
+        });
         if accepted_owner.is_none()
             && list
                 .as_ref()
@@ -125,10 +142,11 @@ pub fn steps<T: Borrow<Value>>(items: &[T]) -> Vec<Step> {
             // The provider can insert a call before a concurrent checklist update.
             // Its successful result binds the acceptance snapshot, not arrival order.
             owner["snapshot_id"].as_str().and_then(|snapshot| {
-                let at = items
-                    .iter()
-                    .position(|item| item.borrow()["id"] == snapshot)?;
-                let list = tasks::current(&items[..=at])?;
+                let at = *item_ids.get(snapshot)?;
+                let list = projections
+                    .entry(at)
+                    .or_insert_with(|| tasks::current(&items[..=at]))
+                    .clone()?;
                 list.tasks.into_iter().find(|task| {
                     Some(task.id.as_str()) == owner["id"].as_str()
                         && Some(task.step.as_str()) == owner["step"].as_str()
@@ -159,10 +177,9 @@ pub fn steps<T: Borrow<Value>>(items: &[T]) -> Vec<Step> {
             turn_id.clone(),
             if turn_id.is_some() { None } else { prompt },
         );
-        if let Some((_, existing)) = result
-            .iter_mut()
-            .find(|(turn, step)| *turn == key && step.id == report.id)
-        {
+        let step_key = (key.clone(), report.id.clone());
+        if let Some(&at) = step_indexes.get(&step_key) {
+            let (_, existing): &mut (TurnKey, Step) = &mut result[at];
             let same_owner = match (&existing.task, &task) {
                 (Some(old), Some(new)) => new.owns_activity(old),
                 (None, None) => true,
@@ -174,6 +191,7 @@ pub fn steps<T: Borrow<Value>>(items: &[T]) -> Vec<Step> {
             existing.label = report.label;
             existing.status = report.status;
         } else {
+            step_indexes.insert(step_key, result.len());
             result.push((
                 key,
                 Step {

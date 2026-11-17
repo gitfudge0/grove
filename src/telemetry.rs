@@ -111,10 +111,25 @@ fn scrub_token(token: &str, home: Option<&str>) -> String {
 }
 
 pub fn track(event: &'static str, props: Vec<(&'static str, serde_json::Value)>) {
+    type Event = (&'static str, Vec<(&'static str, serde_json::Value)>);
+    static EVENTS: OnceLock<std::sync::mpsc::SyncSender<Event>> = OnceLock::new();
     if !enabled() {
         return;
     }
-    std::thread::spawn(move || send(event, props));
+    // A bounded queue keeps telemetry off the caller and reuses one worker and
+    // HTTP connection pool. Best-effort events may be dropped under overload.
+    let events = EVENTS.get_or_init(|| {
+        let (send, receive) = std::sync::mpsc::sync_channel::<Event>(64);
+        std::thread::spawn(move || {
+            while let Ok((event, props)) = receive.recv() {
+                if enabled() {
+                    send_event(event, props);
+                }
+            }
+        });
+        send
+    });
+    let _ = events.try_send((event, props));
 }
 
 /// Synchronous `track`, for the panic hook where a spawned thread might not run before exit.
@@ -122,10 +137,11 @@ pub fn track_blocking(event: &'static str, props: Vec<(&'static str, serde_json:
     if !enabled() {
         return;
     }
-    send(event, props);
+    send_event(event, props);
 }
 
-fn send(event: &str, props: Vec<(&'static str, serde_json::Value)>) {
+fn send_event(event: &str, props: Vec<(&'static str, serde_json::Value)>) {
+    static AGENT: OnceLock<ureq::Agent> = OnceLock::new();
     let Some(api_key) = api_key() else {
         return;
     };
@@ -142,14 +158,16 @@ fn send(event: &str, props: Vec<(&'static str, serde_json::Value)>) {
         "distinct_id": distinct_id(),
         "properties": properties,
     });
-    let agent: ureq::Agent = ureq::Agent::config_builder()
-        .proxy(None)
-        .max_redirects(5)
-        .timeout_connect(Some(Duration::from_secs(3)))
-        .timeout_recv_response(Some(Duration::from_secs(5)))
-        .timeout_recv_body(Some(Duration::from_secs(5)))
-        .build()
-        .into();
+    let agent = AGENT.get_or_init(|| {
+        ureq::Agent::config_builder()
+            .proxy(None)
+            .max_redirects(5)
+            .timeout_connect(Some(Duration::from_secs(3)))
+            .timeout_recv_response(Some(Duration::from_secs(5)))
+            .timeout_recv_body(Some(Duration::from_secs(5)))
+            .build()
+            .into()
+    });
     let _ = agent
         .post(POSTHOG_ENDPOINT)
         .header("User-Agent", "grove")

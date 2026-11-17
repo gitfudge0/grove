@@ -87,8 +87,10 @@ pub(super) fn streamed_text<'a>(
     if !text.starts_with(&entry.0[..entry.1.min(entry.0.len())]) || !streaming {
         entry.1 = text.len();
     }
-    entry.0.clear();
-    entry.0.push_str(text);
+    if entry.0 != text {
+        entry.0.clear();
+        entry.0.push_str(text);
+    }
     // Parsing a prefix notifies its owner and can redraw at the same frame
     // timestamp. Only elapsed animation time may consume more of the suffix.
     if entry.1 < text.len() && elapsed > 0.0 {

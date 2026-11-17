@@ -36,6 +36,18 @@ fn syntax_set() -> &'static SyntaxSet {
 
 /// Checked most-specific-first so a nested rule wins over its container.
 fn map_scope(scope: Scope) -> Option<CodeScope> {
+    thread_local! {
+        static CACHE: std::cell::RefCell<std::collections::HashMap<Scope, Option<CodeScope>>> = std::cell::RefCell::new(std::collections::HashMap::new());
+    }
+    CACHE.with(|cache| {
+        *cache
+            .borrow_mut()
+            .entry(scope)
+            .or_insert_with(|| classify_scope(scope))
+    })
+}
+
+fn classify_scope(scope: Scope) -> Option<CodeScope> {
     let name = scope.build_string();
     if name.starts_with("keyword.operator") || name.starts_with("punctuation") {
         // Checked before the general `keyword.*` rule below since `keyword.operator` also starts with `keyword.`.

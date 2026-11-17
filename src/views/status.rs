@@ -126,6 +126,16 @@ pub fn drawn_check(
 /// Fixed-size icon slot; reduced motion never schedules animation.
 pub fn mark(id: impl Into<SharedString>, kind: StatusKind, size: f32, cx: &App) -> AnyElement {
     let id = id.into();
+    if matches!(kind, StatusKind::Working | StatusKind::Running) && !cx.reduce_motion() {
+        return super::components::isolated_animation(
+            gpui::ElementId::Name(format!("status-animation-{id}").into()),
+            move |_, cx| mark_inner(id.clone(), kind, size, cx),
+        );
+    }
+    mark_inner(id, kind, size, cx)
+}
+
+fn mark_inner(id: SharedString, kind: StatusKind, size: f32, cx: &App) -> AnyElement {
     let selector = format!("status-mark-{id}");
     let slot = div()
         .id(SharedString::from(format!("session-spinner-icon-{id}")))

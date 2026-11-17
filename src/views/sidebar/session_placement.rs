@@ -79,6 +79,10 @@ impl SessionPlacement {
 
 impl Sidebar {
     pub(super) fn sync_session_placement(&mut self, cx: &mut Context<Self>) {
+        let previous = (
+            self.session_placement.workspace,
+            self.session_placement.next_position,
+        );
         if self.session_placement.workspace != Some(self.active_workspace) {
             self.session_placement.rows.clear();
             self.session_placement.next_position = 0;
@@ -102,6 +106,14 @@ impl Sidebar {
             .into_iter()
             .filter_map(|(id, target)| self.session_placement.observe(id, target, now))
             .min();
+        if previous
+            != (
+                self.session_placement.workspace,
+                self.session_placement.next_position,
+            )
+        {
+            self.list_groups_cache.borrow_mut().take();
+        }
         self.placement_timer = deadline.map(|deadline| {
             cx.spawn(async move |this, cx| {
                 cx.background_executor()
@@ -230,7 +242,7 @@ mod tests {
                 assert_eq!(sidebar.visible_session_order(cx), ids);
                 // Immediate Needs you moves only that session; removal preserves residents.
                 activity.update(cx, |activity, _| {
-                    activity.set_state_for_test(ids[0], ActivityState::WaitingForInput)
+                    activity.set_state_for_test(ids[0], ActivityState::WaitingForInput);
                 });
                 sidebar.sync_session_placement(cx);
                 assert_eq!(
@@ -252,7 +264,7 @@ mod tests {
                 sidebar.sync_session_placement(cx);
                 assert_eq!(sidebar.session_placement.position(ids[1]), 0);
                 assert_eq!(sidebar.visible_session_order(cx), ids[1..]);
-            })
+            });
         });
     }
 

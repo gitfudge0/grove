@@ -210,6 +210,7 @@ impl Sidebar {
         let Some(session) = registry.read(cx).wt_shell(&path, idx).cloned() else {
             return body;
         };
+        self.rendered_terminal_ids.insert(meta.id);
         if !self.worktree_terminal.observers.contains_key(&meta.id) {
             let id = meta.id;
             self.worktree_terminal.signatures.insert(

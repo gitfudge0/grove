@@ -1,12 +1,14 @@
 //! PTY spawning and the blocking reader thread; deliberately executor-free.
 
 use std::io::{Read, Write};
-use std::sync::mpsc::{channel, Receiver, TryRecvError};
+use std::sync::mpsc::{channel, sync_channel, Receiver, TryRecvError};
 
 use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
 
 /// Bytes read per `read()` call on the PTY master.
-const READ_CHUNK: usize = 8192;
+const READ_CHUNK: usize = 64 * 1024;
+/// Bound queued output to 512 KiB so a noisy process cannot grow UI memory indefinitely.
+const READ_QUEUE: usize = 8;
 
 fn io_err(e: impl std::fmt::Display) -> std::io::Error {
     std::io::Error::other(e.to_string())
@@ -37,7 +39,7 @@ impl PtyHandle {
 
         let writer = pair.master.take_writer().map_err(io_err)?;
         let mut reader = pair.master.try_clone_reader().map_err(io_err)?;
-        let (tx, rx) = channel::<Vec<u8>>();
+        let (tx, rx) = sync_channel::<Vec<u8>>(READ_QUEUE);
         std::thread::Builder::new()
             .name("grove-pty-reader".into())
             .spawn(move || {
@@ -127,6 +129,18 @@ impl PtyHandle {
 
     pub fn try_wait(&mut self) -> std::io::Result<bool> {
         self.exit_code().map(|code| code.is_some())
+    }
+
+    /// Destructive checkout removal calls this only on a worker, after cancelling startup.
+    pub fn terminate_and_wait(mut self) -> std::io::Result<()> {
+        if let Some(mut child) = self.child.take() {
+            let _ = child.kill();
+            if let Err(error) = child.wait() {
+                kill_and_reap(child);
+                return Err(error);
+            }
+        }
+        Ok(())
     }
 
     pub fn kill(&mut self) -> std::io::Result<()> {

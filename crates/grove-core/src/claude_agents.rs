@@ -1,7 +1,7 @@
 //! Native Claude Code agent-status polling via `claude agents --json` — a strictly better
 //! attention signal than `attention`'s hook state files or `gui::activity`'s screen-scraping
 //! heuristics when available, and the only one that works for tmux-backed sessions reattached
-//! across a grove restart. Polls on a fixed 1s cadence from one shared background thread, and
+//! across a grove restart. Polls at 1s only while requested by live sessions, and
 //! separately shells out to `ps` to match a Grove session to a row by process ancestry rather
 //! than cwd, since multiple sessions can share a cwd. Failures are silent: an unsupported
 //! `claude` install just means permanent "no signal" after a few failed attempts, never a crash.
@@ -9,7 +9,7 @@
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 #[cfg(not(windows))]
@@ -46,75 +46,112 @@ pub struct Poller {
     snapshot: Arc<Mutex<Option<Snapshot>>>,
     wanted: Arc<AtomicBool>,
     unsupported: Arc<AtomicBool>,
+    stopping: Arc<AtomicBool>,
+    control: Arc<(Mutex<()>, Condvar)>,
+    worker: Option<std::thread::JoinHandle<()>>,
 }
 
 impl Poller {
-    /// Cheap to construct — the thread sleeps whenever nothing wants live status.
+    /// The shared worker parks without a recurring timer while nobody needs
+    /// native status. Changes and entity disposal wake its condition variable.
     pub fn new() -> Poller {
-        let snapshot: Arc<Mutex<Option<Snapshot>>> = Arc::new(Mutex::new(None));
-        let wanted = Arc::new(AtomicBool::new(false));
-        let unsupported = Arc::new(AtomicBool::new(false));
+        let mut poller = Self::inert();
+        poller.start();
+        poller
+    }
 
-        #[cfg(not(windows))]
-        {
-            let snapshot = snapshot.clone();
-            let wanted = wanted.clone();
-            let unsupported = unsupported.clone();
-            std::thread::spawn(move || {
-                tracing::info!("claude agents poller started");
-                let mut consecutive_failures: u32 = 0;
-                loop {
-                    if !wanted.load(Ordering::Relaxed) {
-                        std::thread::sleep(POLL_INTERVAL);
-                        continue;
-                    }
-
-                    match poll_once() {
-                        Ok((rows, pid_parent)) => {
-                            consecutive_failures = 0;
-                            if let Ok(mut guard) = snapshot.lock() {
-                                *guard = Some(Snapshot {
-                                    rows,
-                                    pid_parent,
-                                    taken_at: Instant::now(),
-                                });
-                            }
-                        }
-                        Err(()) => {
-                            consecutive_failures += 1;
-                            tracing::debug!(
-                                consecutive_failures,
-                                "claude agents poll attempt failed"
-                            );
-                            if consecutive_failures >= MAX_CONSECUTIVE_FAILURES {
-                                tracing::debug!(
-                                    "claude agents poller giving up after {MAX_CONSECUTIVE_FAILURES} consecutive failures"
-                                );
-                                unsupported.store(true, Ordering::Relaxed);
-                                return;
-                            }
-                        }
-                    }
-
-                    std::thread::sleep(POLL_INTERVAL);
-                }
-            });
-        }
-        #[cfg(windows)]
-        {
-            unsupported.store(true, Ordering::Relaxed);
-        }
-
-        Poller {
-            snapshot,
-            wanted,
-            unsupported,
+    fn inert() -> Self {
+        Self {
+            snapshot: Arc::new(Mutex::new(None)),
+            wanted: Arc::new(AtomicBool::new(false)),
+            unsupported: Arc::new(AtomicBool::new(cfg!(windows))),
+            stopping: Arc::new(AtomicBool::new(false)),
+            control: Arc::new((Mutex::new(()), Condvar::new())),
+            worker: None,
         }
     }
 
-    /// `true` iff at least one live Claude session exists.
+    fn start(&mut self) {
+        #[cfg(not(windows))]
+        {
+            self.worker = Some(self.start_worker(poll_once));
+        }
+    }
+
+    #[cfg(not(windows))]
+    fn start_worker(
+        &self,
+        mut operation: impl FnMut() -> Result<(Vec<AgentRow>, HashMap<u32, u32>), ()> + Send + 'static,
+    ) -> std::thread::JoinHandle<()> {
+        let (snapshot, wanted, unsupported, stopping, control) = (
+            self.snapshot.clone(),
+            self.wanted.clone(),
+            self.unsupported.clone(),
+            self.stopping.clone(),
+            self.control.clone(),
+        );
+        std::thread::spawn(move || {
+            let mut failures = 0;
+            loop {
+                let mut guard = control
+                    .0
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                while !wanted.load(Ordering::Acquire) && !stopping.load(Ordering::Acquire) {
+                    guard = control
+                        .1
+                        .wait(guard)
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                }
+                if stopping.load(Ordering::Acquire) {
+                    return;
+                }
+                drop(guard);
+                match operation() {
+                    Ok((rows, pid_parent)) => {
+                        failures = 0;
+                        *snapshot
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Snapshot {
+                            rows,
+                            pid_parent,
+                            taken_at: Instant::now(),
+                        });
+                    }
+                    Err(()) => {
+                        failures += 1;
+                        if failures >= MAX_CONSECUTIVE_FAILURES {
+                            unsupported.store(true, Ordering::Relaxed);
+                            return;
+                        }
+                    }
+                }
+                let guard = control
+                    .0
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                if wanted.load(Ordering::Acquire) && !stopping.load(Ordering::Acquire) {
+                    drop(
+                        control
+                            .1
+                            .wait_timeout(guard, POLL_INTERVAL)
+                            .unwrap_or_else(std::sync::PoisonError::into_inner),
+                    );
+                }
+            }
+        })
+    }
+
+    /// `true` iff at least one live Claude terminal session needs native status.
     pub fn set_wanted(&self, wanted: bool) {
-        self.wanted.store(wanted, Ordering::Relaxed);
+        let _guard = self
+            .control
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if self.wanted.swap(wanted, Ordering::AcqRel) != wanted {
+            self.control.1.notify_one();
+        }
     }
 
     /// `None` whenever there's no trustworthy live signal; callers must always have a fallback.
@@ -128,6 +165,21 @@ impl Poller {
             return None;
         }
         match_row(&snap.rows, &snap.pid_parent, root_pid, wt_path)
+    }
+}
+
+impl Drop for Poller {
+    fn drop(&mut self) {
+        let _guard = self
+            .control
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.stopping.store(true, Ordering::Release);
+        self.control.1.notify_one();
+        // Never join a subprocess-owning worker on GPUI's foreground. It exits
+        // after the current status operation, or immediately when idle.
+        let _worker = self.worker.take();
     }
 }
 
@@ -284,6 +336,33 @@ mod tests {
         {"kind": "interactive", "pid": 333, "cwd": "/repo/c", "status": "waiting"},
         {"kind": "background", "pid": 444, "cwd": "/repo/d", "status": "busy"}
     ]"#;
+
+    #[cfg(not(windows))]
+    #[test]
+    fn idle_poller_waits_for_demand_and_stops_when_dropped() {
+        let mut poller = Poller::inert();
+        let (called, calls) = std::sync::mpsc::channel();
+        poller.worker = Some(poller.start_worker(move || {
+            called.send(()).unwrap();
+            Ok((Vec::new(), HashMap::new()))
+        }));
+        assert!(calls.recv_timeout(Duration::from_millis(30)).is_err());
+        poller.set_wanted(true);
+        calls.recv_timeout(Duration::from_secs(2)).unwrap();
+        poller.set_wanted(false);
+        assert!(calls.recv_timeout(Duration::from_millis(30)).is_err());
+        let worker = poller.worker.take().unwrap();
+        drop(poller);
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !worker.is_finished() && Instant::now() < deadline {
+            std::thread::yield_now();
+        }
+        assert!(
+            worker.is_finished(),
+            "idle worker failed to exit after its owner dropped"
+        );
+        worker.join().unwrap();
+    }
 
     #[test]
     fn parses_interactive_rows_and_excludes_background() {

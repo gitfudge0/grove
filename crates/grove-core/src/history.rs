@@ -70,6 +70,7 @@ fn git(path: &str, args: &[&str]) -> Result<Vec<u8>, String> {
     let mut out = tempfile::tempfile().map_err(|e| e.to_string())?;
     let mut err = tempfile::tempfile().map_err(|e| e.to_string())?;
     let mut child = Command::new("git")
+        .env("GIT_OPTIONAL_LOCKS", "0")
         .args([
             "-C",
             path,
@@ -228,6 +229,11 @@ pub fn load(checkout: &str, limit: usize) -> Result<BranchHistory, String> {
 // No fetch/network access. Structured fields avoid ambiguous %D text;
 // annotated tags point at their peeled commit rather than their tag object.
 fn decorate_refs(checkout: &str, commits: &mut [Commit], head_oid: &str) -> Result<(), String> {
+    let by_id: HashMap<_, _> = commits
+        .iter()
+        .enumerate()
+        .map(|(index, commit)| (commit.id.clone(), index))
+        .collect();
     let bytes = git(
         checkout,
         &[
@@ -277,15 +283,14 @@ fn decorate_refs(checkout: &str, commits: &mut [Commit], head_oid: &str) -> Resu
         } else {
             chunk[2]
         };
-        if let Some(commit) = commits
-            .iter_mut()
-            .find(|commit| commit.id.as_bytes() == target)
-        {
-            commit.refs.push(CommitRef { name, kind });
+        if let Ok(target) = std::str::from_utf8(target) {
+            if let Some(index) = by_id.get(target) {
+                commits[*index].refs.push(CommitRef { name, kind });
+            }
         }
     }
-    if let Some(commit) = commits.iter_mut().find(|commit| commit.id == head_oid) {
-        commit.refs.insert(
+    if let Some(index) = by_id.get(head_oid) {
+        commits[*index].refs.insert(
             0,
             CommitRef {
                 name: "HEAD".into(),
@@ -298,14 +303,14 @@ fn decorate_refs(checkout: &str, commits: &mut [Commit], head_oid: &str) -> Resu
 
 // Strand identity stays stable when compacted visual lane positions change.
 fn assign_graph(commits: &mut [Commit]) -> Result<(), String> {
-    let mut lanes: Vec<(String, usize)> = vec![];
+    let mut lanes: Vec<(&str, usize)> = vec![];
     let mut next_color = 0;
     for commit in commits {
         let lane = lanes
             .iter()
-            .position(|(id, _)| id == &commit.id)
+            .position(|(id, _)| *id == commit.id.as_str())
             .unwrap_or_else(|| {
-                lanes.push((commit.id.clone(), next_color));
+                lanes.push((commit.id.as_str(), next_color));
                 next_color += 1;
                 lanes.len() - 1
             });
@@ -314,7 +319,7 @@ fn assign_graph(commits: &mut [Commit]) -> Result<(), String> {
         let before = lanes.clone();
         lanes.remove(lane);
         for (offset, parent) in commit.parents.iter().enumerate() {
-            if !lanes.iter().any(|(id, _)| id == parent) {
+            if !lanes.iter().any(|(id, _)| *id == parent.as_str()) {
                 let color = if offset == 0 {
                     commit.color_lane
                 } else {
@@ -322,7 +327,7 @@ fn assign_graph(commits: &mut [Commit]) -> Result<(), String> {
                     next_color += 1;
                     color
                 };
-                lanes.insert((lane + offset).min(lanes.len()), (parent.clone(), color));
+                lanes.insert((lane + offset).min(lanes.len()), (parent.as_str(), color));
             }
         }
         for (from, (id, color)) in before.iter().enumerate() {
@@ -330,7 +335,7 @@ fn assign_graph(commits: &mut [Commit]) -> Result<(), String> {
                 for parent in &commit.parents {
                     let to = lanes
                         .iter()
-                        .position(|(id, _)| id == parent)
+                        .position(|(id, _)| *id == parent.as_str())
                         .ok_or("Invalid Git graph topology")?;
                     commit.edges.push(GraphEdge {
                         from_lane: from,
@@ -343,7 +348,7 @@ fn assign_graph(commits: &mut [Commit]) -> Result<(), String> {
                 commit.edges.push(GraphEdge {
                     from_lane: from,
                     to_lane: to,
-                    parent_id: id.clone(),
+                    parent_id: (*id).to_owned(),
                     color_lane: *color,
                 });
             }

@@ -1,6 +1,7 @@
 //! `GroveTerm` — the headless terminal model: an `alacritty_terminal::Term` exposing Grove's *token space* only (no theme colors, no gpui types, no executor).
 //! Behavioral parity with the in-tree `vt100` parser is enforced by `tests/golden.rs`, which feeds recorded PTY streams to both and compares cell by cell.
 
+use std::cell::RefCell;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
@@ -153,6 +154,9 @@ impl CwdTracker {
     }
 
     fn process(&mut self, bytes: &[u8]) -> bool {
+        if matches!(self.state, CwdEscapeState::Ground) && !bytes.contains(&0x1b) {
+            return false;
+        }
         let mut changed = false;
         for &byte in bytes {
             match self.state {
@@ -285,6 +289,8 @@ pub struct GroveTerm {
     cwd_tracker: CwdTracker,
     /// Bumped on screen damage or a new OSC 7 directory so views repaint.
     damage_gen: u64,
+    snapshot_cache: RefCell<Option<Snapshot>>,
+    dirty_rows: RefCell<Vec<bool>>,
     rows: u16,
     cols: u16,
 }
@@ -308,6 +314,8 @@ impl GroveTerm {
             listener,
             cwd_tracker: CwdTracker::new(local_hostname()),
             damage_gen: 0,
+            snapshot_cache: RefCell::new(None),
+            dirty_rows: RefCell::new(vec![true; rows as usize]),
             rows,
             cols,
         }
@@ -318,9 +326,22 @@ impl GroveTerm {
         let cwd_changed = self.cwd_tracker.process(bytes);
         let mut term = self.term.lock();
         self.processor.advance(&mut *term, bytes);
+        let mut dirty = self.dirty_rows.borrow_mut();
         let damaged = match term.damage() {
-            alacritty_terminal::term::TermDamage::Full => true,
-            alacritty_terminal::term::TermDamage::Partial(mut it) => it.next().is_some(),
+            alacritty_terminal::term::TermDamage::Full => {
+                dirty.fill(true);
+                true
+            }
+            alacritty_terminal::term::TermDamage::Partial(lines) => {
+                let mut damaged = false;
+                for line in lines {
+                    if let Some(row) = dirty.get_mut(line.line) {
+                        *row = true;
+                    }
+                    damaged = true;
+                }
+                damaged
+            }
         };
         term.reset_damage();
         drop(term);
@@ -344,26 +365,38 @@ impl GroveTerm {
         let rows = grid.screen_lines();
         let cols = grid.columns();
         let offset = grid.display_offset() as i32;
-        let mut cells = Vec::with_capacity(rows * cols);
+        let mut cache = self.snapshot_cache.borrow_mut();
+        let mut dirty = self.dirty_rows.borrow_mut();
+        let snapshot = cache.get_or_insert_with(|| Snapshot {
+            rows: rows as u16,
+            cols: cols as u16,
+            cells: vec![Cell::default(); rows * cols],
+        });
+        if snapshot.rows as usize != rows || snapshot.cols as usize != cols {
+            snapshot.rows = rows as u16;
+            snapshot.cols = cols as u16;
+            snapshot.cells.resize(rows * cols, Cell::default());
+            dirty.resize(rows, true);
+            dirty.fill(true);
+        }
         for r in 0..rows {
+            if !dirty[r] {
+                continue;
+            }
             let row = &grid[Line(r as i32 - offset)];
             for c in 0..cols {
                 let cell = &row[Column(c)];
-                cells.push(Cell {
+                snapshot.cells[r * cols + c] = Cell {
                     c: cell_char(cell),
                     fg: map_color(cell.fg),
                     bg: map_color(cell.bg),
                     bold: cell.flags.contains(Flags::BOLD),
                     inverse: cell.flags.contains(Flags::INVERSE),
-                });
+                };
             }
+            dirty[r] = false;
         }
-        drop(term);
-        Snapshot {
-            rows: u16::try_from(rows).unwrap_or(u16::MAX),
-            cols: u16::try_from(cols).unwrap_or(u16::MAX),
-            cells,
-        }
+        snapshot.clone()
     }
 
     /// `(row, col, hidden)` in viewport coordinates.
@@ -458,6 +491,7 @@ impl GroveTerm {
         }
         let delta = target as i32 - current as i32;
         term.scroll_display(Scroll::Delta(delta));
+        self.dirty_rows.borrow_mut().fill(true);
     }
 
     /// Last `n` rows of the *live* screen, for the activity classifier. Scroll offset is temporarily zeroed so a scrolled-back user can't feed it stale markers.
@@ -491,6 +525,8 @@ impl GroveTerm {
         }
         self.rows = rows;
         self.cols = cols;
+        *self.snapshot_cache.get_mut() = None;
+        *self.dirty_rows.get_mut() = vec![true; rows as usize];
         let mut term = self.term.lock();
         if term.grid().display_offset() != 0 {
             term.scroll_display(Scroll::Bottom);
@@ -855,5 +891,35 @@ mod tests {
         assert!(!tracker.process(b"\x07"));
         assert!(tracker.process(b"\x1b]7;file:///tmp/recovered\x07"));
         assert_eq!(tracker.cwd.as_deref(), Some("/tmp/recovered"));
+    }
+    #[test]
+    fn retained_snapshot_matches_full_damage_after_each_output_scroll_and_resize() {
+        let mut incremental = GroveTerm::new(12, 40);
+        let mut reference = GroveTerm::new(12, 40);
+        for i in 0..80 {
+            let output = if i % 13 == 0 {
+                format!("\x1b[2J\x1b[HFrame {i}\r\n")
+            } else {
+                format!("\x1b[3{}mline {i} Unicode 界 and text\x1b[0m\r\n", i % 8)
+            };
+            incremental.process(output.as_bytes());
+            reference.process(output.as_bytes());
+            if i % 7 == 0 {
+                incremental.scroll_to(3);
+                reference.scroll_to(3);
+            } else if i % 7 == 1 {
+                incremental.scroll_to(0);
+                reference.scroll_to(0);
+            }
+            if i % 19 == 0 {
+                let (rows, cols) = if i % 2 == 0 { (8, 32) } else { (12, 40) };
+                incremental.resize(rows, cols);
+                reference.resize(rows, cols);
+            }
+            // Force the reference to remap every cell while the other model
+            // retains only the emulator's damaged rows between snapshots.
+            reference.dirty_rows.borrow_mut().fill(true);
+            assert_eq!(incremental.snapshot(), reference.snapshot(), "frame {i}");
+        }
     }
 }

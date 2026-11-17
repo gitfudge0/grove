@@ -254,58 +254,117 @@ pub fn parse_state(raw: &str) -> Option<AttentionState> {
     })
 }
 
-/// Keyed on (mtime, len) so the steady state costs one `metadata()` call instead of a read+parse.
-type StateCache =
-    std::collections::HashMap<PathBuf, (std::time::SystemTime, u64, Option<AttentionState>)>;
-static STATE_CACHE: std::sync::Mutex<Option<StateCache>> = std::sync::Mutex::new(None);
-
-pub fn read_state(path: &Path) -> Option<AttentionState> {
-    use std::io::{Read, Seek, SeekFrom};
-
-    // Files grow unbounded (append-only); only the last line matters, so read a bounded tail.
-    const TAIL_BYTES: u64 = 4096;
-
-    let mut file = fs::File::open(path).ok()?;
-    let meta = file.metadata().ok()?;
-    let len = meta.len();
-    let stamp = meta.modified().ok();
-
-    // The cache is pure derived data, so recover from a poisoned lock rather than propagate.
-    let mut guard = STATE_CACHE
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let cache = guard.get_or_insert_with(Default::default);
-    if let Some(stamp) = stamp {
-        if let Some((cached_stamp, cached_len, value)) = cache.get(path) {
-            if *cached_stamp == stamp && *cached_len == len {
-                return *value;
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct FileIdentity {
+    #[cfg(unix)]
+    dev: u64,
+    #[cfg(unix)]
+    ino: u64,
+    #[cfg(not(unix))]
+    created: Option<std::time::SystemTime>,
+}
+impl FileIdentity {
+    fn from_metadata(metadata: &std::fs::Metadata) -> Self {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt as _;
+            Self {
+                dev: metadata.dev(),
+                ino: metadata.ino(),
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            Self {
+                created: metadata.created().ok(),
             }
         }
     }
-
-    if len > TAIL_BYTES {
-        file.seek(SeekFrom::Start(len - TAIL_BYTES)).ok()?;
-    }
-    let mut buf = Vec::with_capacity(TAIL_BYTES.min(len) as usize);
-    file.read_to_end(&mut buf).ok()?;
-    let value = parse_state(&String::from_utf8_lossy(&buf));
-    if let Some(stamp) = stamp {
-        cache.insert(path.to_path_buf(), (stamp, len, value));
-    }
-    value
 }
 
-/// Truncates rather than deletes, so hooks can keep appending to the same path.
+/// One observed append-only prefix. Acknowledgments never consume bytes that
+/// arrived after this observation, even if the next state has the same enum.
+#[derive(Clone, Debug)]
+pub struct Observation {
+    pub state: Option<AttentionState>,
+    identity: FileIdentity,
+    length: u64,
+    modified: Option<std::time::SystemTime>,
+}
+type Acknowledged = std::collections::HashMap<PathBuf, Observation>;
+static ACKNOWLEDGED: std::sync::Mutex<Option<Acknowledged>> = std::sync::Mutex::new(None);
+
+pub fn observe(path: &Path) -> Option<Observation> {
+    use std::io::{Read, Seek, SeekFrom};
+    const TAIL_BYTES: u64 = 4096;
+    let mut file = fs::File::open(path).ok()?;
+    let metadata = file.metadata().ok()?;
+    let identity = FileIdentity::from_metadata(&metadata);
+    let length = metadata.len();
+    let modified = metadata.modified().ok();
+    let prefix = {
+        let mut acknowledged = ACKNOWLEDGED
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let acknowledged = acknowledged.get_or_insert_with(Default::default);
+        if acknowledged.get(path).is_some_and(|old| {
+            old.identity != identity
+                || length < old.length
+                || (length == old.length && modified != old.modified)
+        }) {
+            acknowledged.remove(path);
+        }
+        acknowledged.get(path).map_or(0, |old| old.length)
+    };
+    let start = prefix.max(length.saturating_sub(TAIL_BYTES));
+    file.seek(SeekFrom::Start(start)).ok()?;
+    let mut bytes = Vec::with_capacity(length.saturating_sub(start).min(TAIL_BYTES) as usize);
+    // Bound to the metadata snapshot: later appends belong to the next pass.
+    file.take(length.saturating_sub(start))
+        .read_to_end(&mut bytes)
+        .ok()?;
+    Some(Observation {
+        state: parse_state(&String::from_utf8_lossy(&bytes)),
+        identity,
+        length,
+        modified,
+    })
+}
+
+pub fn read_state(path: &Path) -> Option<AttentionState> {
+    observe(path).and_then(|observed| observed.state)
+}
+
+/// Pure in-memory acknowledgment of exactly the prefix observed by the caller.
+/// Hooks continue appending to their original inode, with no truncate/append race.
+pub fn acknowledge_observation(path: &Path, observation: &Observation) {
+    let mut acknowledged = ACKNOWLEDGED
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let acknowledged = acknowledged.get_or_insert_with(Default::default);
+    match acknowledged.entry(path.to_path_buf()) {
+        std::collections::hash_map::Entry::Vacant(entry) => {
+            entry.insert(observation.clone());
+        }
+        std::collections::hash_map::Entry::Occupied(mut entry) => {
+            if entry.get().identity == observation.identity
+                && entry.get().length < observation.length
+            {
+                entry.insert(observation.clone());
+            }
+        }
+    }
+}
+
 pub fn acknowledge(path: &Path) {
-    // This truncate races the agent's `>>` append — benign today (worst case one missed signal); see history for the seq-numbered fix if that changes.
-    if let Err(e) = fs::write(path, b"") {
-        tracing::debug!(path = %path.display(), error = %e, "attention: acknowledge write failed");
+    if let Some(observation) = observe(path) {
+        acknowledge_observation(path, &observation);
     }
 }
 
 pub fn cleanup(files: &AttentionFiles) {
     // Drop the cache entry too, so the map doesn't grow for the process's life.
-    if let Ok(mut guard) = STATE_CACHE.lock() {
+    if let Ok(mut guard) = ACKNOWLEDGED.lock() {
         if let Some(cache) = guard.as_mut() {
             cache.remove(&files.state_file);
         }
@@ -389,13 +448,48 @@ mod tests {
     }
 
     #[test]
-    fn acknowledge_truncates_file_to_no_signal() {
+    fn acknowledge_marks_prefix_without_truncating_signal_file() {
         let path = tmp_state_file("ack");
         fs::write(&path, "needs-you\n").unwrap();
         assert_eq!(read_state(&path), Some(AttentionState::NeedsYou));
         acknowledge(&path);
         assert_eq!(read_state(&path), None);
         assert!(path.exists());
+    }
+
+    #[test]
+    fn delayed_ack_preserves_new_done_and_needs_you_appends() {
+        use std::io::Write as _;
+        for suffix in ["working\ndone\n", "needs-you\n"] {
+            let path = tmp_state_file(if suffix.starts_with("working") {
+                "new-done"
+            } else {
+                "new-input"
+            });
+            fs::write(&path, "done\n").unwrap();
+            let old = observe(&path).unwrap();
+            let mut hook = fs::OpenOptions::new().append(true).open(&path).unwrap();
+            hook.write_all(suffix.as_bytes()).unwrap();
+            acknowledge_observation(&path, &old);
+            assert_eq!(read_state(&path), parse_state(suffix));
+            assert_eq!(
+                fs::read_to_string(&path).unwrap(),
+                format!("done\n{suffix}")
+            );
+        }
+    }
+
+    #[test]
+    fn acknowledgment_resets_after_truncate_and_inode_replacement() {
+        let path = tmp_state_file("ack-replaced");
+        fs::write(&path, "working\ndone\n").unwrap();
+        acknowledge(&path);
+        fs::write(&path, "done\n").unwrap();
+        assert_eq!(read_state(&path), Some(AttentionState::Done));
+        acknowledge(&path);
+        fs::remove_file(&path).unwrap();
+        fs::write(&path, "needs-you\n").unwrap();
+        assert_eq!(read_state(&path), Some(AttentionState::NeedsYou));
     }
 
     #[test]

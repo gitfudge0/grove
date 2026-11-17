@@ -57,35 +57,85 @@ fn tmux_discovery_enabled() -> bool {
     !cfg!(test)
 }
 
-fn resolve_multi_root_worktrees(
-    selected_paths: &[String],
-    projects: &[grove_core::storage::Project],
-) -> Result<Vec<(String, String)>, String> {
-    selected_paths
-        .iter()
-        .map(|selected_path| resolve_multi_root_worktree(selected_path, projects))
-        .collect()
+#[derive(Clone, Copy)]
+enum CheckoutValidation {
+    RegisteredFolder,
+    GitInventory,
+    ProjectlessDirectory,
 }
 
-fn resolve_multi_root_worktree(
-    selected_path: &str,
+/// Authoritative launch preflight. Call only inside a provider/PTY startup
+/// worker; UI selection uses cached inventory and never forks Git.
+fn validate_checkout_paths(
     projects: &[grove_core::storage::Project],
-) -> Result<(String, String), String> {
-    let canonical = fs_err::canonicalize(selected_path)
-        .map_err(|_| format!("{selected_path}: worktree is no longer available"))?;
-    let canonical_text = canonical.to_string_lossy().into_owned();
-
-    for project in projects {
-        let listed = grove_core::git::list_worktrees(&project.path);
-        if listed
-            .into_iter()
-            .any(|worktree| fs_err::canonicalize(worktree.path).is_ok_and(|path| path == canonical))
+    paths: &[std::path::PathBuf],
+    policy: CheckoutValidation,
+    expected_projects: &[String],
+) -> Result<(), String> {
+    if let Some(error) = crate::entities::codex_session::workspace_restore_error(paths, None) {
+        return Err(error);
+    }
+    if !matches!(policy, CheckoutValidation::ProjectlessDirectory)
+        && expected_projects.len() != paths.len()
+    {
+        return Err("Launch ownership is incomplete.".into());
+    }
+    for (index, path) in paths.iter().enumerate() {
+        let canonical = fs_err::canonicalize(path)
+            .map_err(|_| format!("{}: worktree is no longer available", path.display()))?;
+        if !canonical.is_dir() {
+            return Err(format!("{}: checkout is not a directory", path.display()));
+        }
+        if matches!(policy, CheckoutValidation::ProjectlessDirectory) {
+            continue;
+        }
+        let project = projects
+            .iter()
+            .find(|project| project.path == expected_projects[index])
+            .ok_or("The selected project is no longer registered.")?;
+        if project.archived {
+            return Err("Project is archived.".into());
+        }
+        if matches!(policy, CheckoutValidation::RegisteredFolder)
+            && fs_err::canonicalize(&project.path).is_ok_and(|root| root == canonical)
         {
-            return Ok((project.name.clone(), canonical_text));
+            continue;
+        }
+        let listed = grove_core::git::list_worktree_paths(&project.path, std::time::Duration::ZERO)
+            .map_err(|error| {
+                format!("Could not list worktrees for the selected project: {error}")
+            })?;
+        if !listed
+            .iter()
+            .any(|listed| fs_err::canonicalize(listed).is_ok_and(|listed| listed == canonical))
+        {
+            return Err(format!(
+                "{}: checkout is no longer listed by the selected project",
+                path.display()
+            ));
         }
     }
+    Ok(())
+}
 
-    Err(format!("{selected_path}: worktree is no longer available"))
+fn expected_project_paths(
+    projects: &[grove_core::storage::Project],
+    names: &[&str],
+    policy: CheckoutValidation,
+) -> Result<Vec<String>, String> {
+    if matches!(policy, CheckoutValidation::ProjectlessDirectory) {
+        return Ok(Vec::new());
+    }
+    names
+        .iter()
+        .map(|name| {
+            projects
+                .iter()
+                .find(|project| project.name == *name)
+                .map(|project| project.path.clone())
+                .ok_or_else(|| "The selected project is no longer registered.".to_owned())
+        })
+        .collect()
 }
 
 #[derive(Clone)]
@@ -144,8 +194,23 @@ impl Runtime {
             .next()
             .map(|(i, p)| (i, p.path.clone()));
         if let Some((idx, path)) = active_project {
-            tree.update(cx, |t, _| {
-                t.set_active_worktrees(idx, grove_core::git::list_worktrees(&path));
+            tree.update(cx, |tree, cx| {
+                // Stamp ownership before first render so snapshot construction
+                // cannot synchronously refill this initial cache miss.
+                tree.set_active_worktrees(idx, Vec::new());
+                let generation = tree.generation();
+                cx.spawn(async move |this, cx| {
+                    let worktrees = cx
+                        .background_spawn(async move { grove_core::git::list_worktrees(&path) })
+                        .await;
+                    let _ = this.update(cx, |tree, cx| {
+                        if tree.generation() == generation && tree.active_project() == Some(idx) {
+                            tree.set_active_worktrees(idx, worktrees);
+                            cx.notify();
+                        }
+                    });
+                })
+                .detach();
             });
         }
         let observers = vec![
@@ -175,11 +240,22 @@ impl Runtime {
                 let outcomes = registry.update(cx, |registry, _| registry.take_history_outcomes());
                 for outcome in outcomes {
                     cx.spawn(async move |this, cx| {
-                        let result = cx.background_spawn(async move {
-                            outcome.recv()
-                                .map_err(|_| "Could not confirm that session History was saved.".to_string())
-                                .and_then(|result| result)
-                        }).await;
+                        // Cleanup may itself need foreground callbacks before it can
+                        // complete. Yield while this owned result is pending rather
+                        // than occupying an executor thread with a blocking receive.
+                        let mut delay = std::time::Duration::from_millis(10);
+                        let result = loop {
+                            match outcome.try_recv() {
+                                Ok(result) => break result,
+                                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                                    break Err("Could not confirm that session History was saved.".to_owned());
+                                }
+                                Err(std::sync::mpsc::TryRecvError::Empty) => {
+                                    cx.background_executor().timer(delay).await;
+                                    delay = (delay * 2).min(std::time::Duration::from_millis(250));
+                                }
+                            }
+                        };
                         if let Err(error) = result {
                             let _ = this.update(cx, |this, cx| {
                                 this.toast.update(cx, |toast, cx| {
@@ -251,22 +327,67 @@ impl Runtime {
             }
             exists
         });
+        if matches!(
+            event,
+            ProjectEvent::WorktreeRemovalChanged { .. }
+                | ProjectEvent::ProjectRemovalChanged { .. }
+        ) {
+            cx.notify();
+            return;
+        }
         let idx = self.state.read(cx).proj_idx();
+        if matches!(
+            event,
+            ProjectEvent::WorktreeRemoved { .. } | ProjectEvent::ProjectRemoved { .. }
+        ) {
+            self.finish_project_event(event, idx, cx);
+        }
         let active = cx
             .global::<SettingsState>()
             .store
             .projects
             .get(idx)
-            .map(|p| p.path.clone());
-        self.tree.update(cx, |tree, cx| {
+            .map(|project| project.path.clone());
+        let generation = self.tree.update(cx, |tree, cx| {
             tree.rebuild_wt_cache();
-            if let Some(path) = active {
-                tree.set_active_worktrees(idx, grove_core::git::list_worktrees(&path));
-            }
             cx.notify();
+            tree.generation()
         });
+        let event = event.clone();
+        let read = cx.background_spawn(async move {
+            active.map(|path| grove_core::git::list_worktrees(&path))
+        });
+        cx.spawn(async move |this, cx| {
+            let inventory = read.await;
+            let _ = this.update(cx, |this, cx| {
+                let active = this.state.read(cx).proj_idx();
+                let applied = this.tree.update(cx, |tree, cx| {
+                    if tree.generation() != generation {
+                        return false;
+                    }
+                    if let Some(inventory) = inventory {
+                        tree.register_project_worktrees(idx, active, inventory);
+                    }
+                    cx.notify();
+                    true
+                });
+                if applied && matches!(event, ProjectEvent::WorktreeAdded { .. }) {
+                    this.finish_project_event(&event, idx, cx);
+                }
+            });
+        })
+        .detach();
+    }
+
+    fn finish_project_event(
+        &mut self,
+        event: &crate::project_service::ProjectEvent,
+        idx: usize,
+        cx: &mut Context<Self>,
+    ) {
+        use crate::project_service::ProjectEvent;
         match event {
-            ProjectEvent::WorktreeAdded { path } => {
+            ProjectEvent::WorktreeAdded { path } if self.state.read(cx).proj_idx() == idx => {
                 let snap = self.snapshot(cx);
                 if let Some(wt) = snap
                     .projects
@@ -336,19 +457,6 @@ impl Runtime {
         temp_bundle_path: Option<String>,
         cx: &mut Context<Self>,
     ) -> bool {
-        if let Some(error) = crate::entities::codex_session::workspace_restore_error(
-            &std::iter::once(std::path::PathBuf::from(&cwd))
-                .chain(context_roots.iter().map(|root| root.wt_path.clone().into()))
-                .collect::<Vec<_>>(),
-            None,
-        ) {
-            self.toast
-                .update(cx, |toast, cx| toast.set_error(error, cx));
-            if let Some(path) = temp_bundle_path.as_deref() {
-                grove_core::multi_root::cleanup_path(std::path::Path::new(path));
-            }
-            return false;
-        }
         if self.provider_updates.read(cx).is_updating(agent)
             || grove_core::connections::credentials_busy(agent)
         {
@@ -369,21 +477,18 @@ impl Runtime {
             }
             return false;
         }
-        let projects = &cx.global::<SettingsState>().store.projects;
         let launch_error = std::iter::once(cwd.as_str())
             .chain(context_roots.iter().map(|root| root.wt_path.as_str()))
-            .find_map(
-                |wt| match grove_core::session_meta::project_owner(projects, wt) {
-                    Ok(project) if self.projects.read(cx).is_removing(&project.path) => Some(
-                        "Cannot launch a session while this project is being removed.".to_string(),
-                    ),
-                    Ok(_) if self.projects.read(cx).is_worktree_removing(wt) => Some(
-                        "Cannot launch a session while this worktree is being removed.".to_string(),
-                    ),
-                    Ok(_) => None,
-                    Err(error) => Some(error),
-                },
-            );
+            .find_map(|wt| match self.cached_checkout_owner(wt, cx) {
+                Ok(project) if self.projects.read(cx).is_removing(&project.path) => {
+                    Some("Cannot launch a session while this project is being removed.".to_string())
+                }
+                Ok(_) if self.projects.read(cx).is_worktree_removing(wt) => Some(
+                    "Cannot launch a session while this worktree is being removed.".to_string(),
+                ),
+                Ok(_) => None,
+                Err(error) => Some(error),
+            });
         if let Some(error) = launch_error {
             if let Some(path) = temp_bundle_path.as_deref() {
                 grove_core::multi_root::cleanup_path(std::path::Path::new(path));
@@ -459,11 +564,46 @@ impl Runtime {
                 },
             )
         });
+        let validation_policy = if target.context_roots.is_empty() {
+            CheckoutValidation::RegisteredFolder
+        } else {
+            CheckoutValidation::GitInventory
+        };
+        let validation_projects = cx.global::<SettingsState>().store.projects.clone();
+        let validation_expected = expected_project_paths(
+            &validation_projects,
+            &std::iter::once(target.project.as_str())
+                .chain(
+                    target
+                        .context_roots
+                        .iter()
+                        .map(|root| root.project.as_str()),
+                )
+                .collect::<Vec<_>>(),
+            validation_policy,
+        );
+        let validation_paths: Vec<_> = std::iter::once(std::path::PathBuf::from(&target.cwd))
+            .chain(
+                target
+                    .context_roots
+                    .iter()
+                    .map(|root| root.wt_path.clone().into()),
+            )
+            .collect();
         let session = cx.new(|cx| {
-            crate::entities::terminal_session::TerminalSession::spawn(
+            crate::entities::terminal_session::TerminalSession::spawn_checked(
                 &target,
                 &extra_args,
                 state_file.as_deref(),
+                Box::new(move || {
+                    let expected = validation_expected.as_ref().map_err(Clone::clone)?;
+                    validate_checkout_paths(
+                        &validation_projects,
+                        &validation_paths,
+                        validation_policy,
+                        expected,
+                    )
+                }),
                 cx,
             )
         });
@@ -482,7 +622,7 @@ impl Runtime {
             self.toast.update(cx, |t, cx| t.set_error(msg, cx));
         }
         self.registry.update(cx, |r, cx| {
-            r.attach(id, session, tmux_name);
+            r.attach_observed(id, session, tmux_name, cx);
             cx.notify();
         });
         if spawn_error.is_none() {
@@ -543,6 +683,16 @@ impl Runtime {
         args: Vec<String>,
         cx: &mut Context<Self>,
     ) -> SessionId {
+        self.attach_native_codex_inner(saved, args, false, cx)
+    }
+
+    fn attach_native_codex_inner(
+        &mut self,
+        saved: grove_core::codex::SavedSession,
+        args: Vec<String>,
+        restored: bool,
+        cx: &mut Context<Self>,
+    ) -> SessionId {
         let id = self.registry.update(cx, |registry, _| {
             registry.insert_meta_with_context(
                 saved.project.clone(),
@@ -552,8 +702,42 @@ impl Runtime {
                 None,
             )
         });
-        let session =
-            cx.new(|cx| crate::entities::codex_session::CodexSession::new(saved, args, cx));
+        let validation_projects = cx.global::<SettingsState>().store.projects.clone();
+        let validation_paths: Vec<_> = std::iter::once(std::path::PathBuf::from(&saved.cwd))
+            .chain(saved.roots.iter().map(|root| root.wt_path.clone().into()))
+            .collect();
+        let validation_policy = if saved.project.is_empty() {
+            CheckoutValidation::ProjectlessDirectory
+        } else if saved.roots.is_empty() {
+            CheckoutValidation::RegisteredFolder
+        } else {
+            CheckoutValidation::GitInventory
+        };
+        let validation_expected = expected_project_paths(
+            &validation_projects,
+            &std::iter::once(saved.project.as_str())
+                .chain(saved.roots.iter().map(|root| root.project.as_str()))
+                .collect::<Vec<_>>(),
+            validation_policy,
+        );
+        let validation = std::sync::Arc::new(move || {
+            let expected = validation_expected.as_ref().map_err(Clone::clone)?;
+            validate_checkout_paths(
+                &validation_projects,
+                &validation_paths,
+                validation_policy,
+                expected,
+            )
+        });
+        let session = cx.new(|cx| {
+            if restored {
+                crate::entities::codex_session::CodexSession::restored(saved, args, cx)
+            } else {
+                crate::entities::codex_session::CodexSession::new_checked(
+                    saved, args, validation, cx,
+                )
+            }
+        });
         let handle = session.read(cx).handle.clone();
         self.registry.update(cx, |registry, cx| {
             registry.take_attention_args(id);
@@ -678,12 +862,6 @@ impl Runtime {
                 "This provider is updating or changing credentials. Try again when it finishes."
                     .into(),
             );
-        }
-        if let Some(error) = crate::entities::codex_session::workspace_restore_error(
-            &[std::path::PathBuf::from(&saved.cwd)],
-            None,
-        ) {
-            return Err(error);
         }
         if !std::path::Path::new(&saved.cwd).is_dir() {
             return Err("The selected checkout is no longer available.".into());
@@ -846,7 +1024,11 @@ impl Runtime {
         true
     }
     fn restore_native_codex(&mut self, cx: &mut Context<Self>) {
-        let load = cx.background_spawn(async { grove_core::codex::load_sessions() });
+        let ready = crate::app::startup_ready(cx);
+        let load = cx.background_spawn(async move {
+            ready.await;
+            grove_core::codex::load_sessions_metadata()
+        });
         cx.spawn(async move |this, cx| {
             let loaded = load.await;
             let _ = this.update(cx, |runtime, cx| {
@@ -867,7 +1049,7 @@ impl Runtime {
                         for mut saved in recovery.sessions {
                             let projects = &cx.global::<SettingsState>().store.projects;
                             if restore_session_project(&mut saved, projects) {
-                                runtime.attach_native_codex(saved, Vec::new(), cx);
+                                runtime.attach_native_codex_inner(saved, Vec::new(), true, cx);
                             }
                         }
                     }
@@ -990,7 +1172,7 @@ impl Runtime {
             return;
         }
         let remaining = self.registry.update(cx, |r, cx| {
-            r.close_home(i);
+            r.close_home_background(i, cx);
             cx.notify();
             r.home_terminal_count()
         });
@@ -1098,72 +1280,178 @@ impl Runtime {
         if !tmux_discovery_enabled() {
             return;
         }
-        if !grove_core::tmux::available() {
-            return;
-        }
-        let discovered = grove_core::tmux::list_grove_sessions();
-        if discovered.is_empty() {
-            return;
-        }
-        let plan = {
-            let existing = self.registry.read(cx).all().to_vec();
-            let store = &cx.global::<SettingsState>().store;
-            let paths: HashMap<String, String> = store
-                .active_projects()
-                .map(|(_, p)| (p.name.clone(), p.path.clone()))
-                .collect();
-            let wt_order = |project: &str| -> Vec<String> {
-                paths.get(project).map_or_else(Vec::new, |path| {
-                    grove_core::git::list_worktrees(path)
-                        .into_iter()
-                        .map(|w| w.path)
-                        .collect()
-                })
+        let existing = self.registry.read(cx).all().to_vec();
+        let paths: HashMap<String, String> = cx
+            .global::<SettingsState>()
+            .store
+            .active_projects()
+            .map(|(_, project)| (project.name.clone(), project.path.clone()))
+            .collect();
+        let ready = crate::app::startup_ready(cx);
+        let work = cx.background_spawn(async move {
+            ready.await;
+            grove_core::env_path::wait_for_initial_environment();
+            if !grove_core::tmux::available() {
+                return Vec::new();
+            }
+            let discovered = grove_core::tmux::list_grove_sessions();
+            let plan = {
+                let wt_order = |project: &str| -> Vec<String> {
+                    paths.get(project).map_or_else(Vec::new, |path| {
+                        grove_core::git::list_worktree_paths(
+                            path,
+                            std::time::Duration::from_secs(2),
+                        )
+                        .unwrap_or_default()
+                    })
+                };
+                crate::reattach::plan(&discovered, &existing, &wt_order)
             };
-            crate::reattach::plan(&discovered, &existing, &wt_order)
-        };
-        let dims = self.last_pty_dims;
-        for entry in plan {
-            if crate::entities::codex_session::workspace_restore_error(
-                &std::iter::once(std::path::PathBuf::from(&entry.session.wt_path))
-                    .chain(
-                        entry
-                            .session
-                            .context_roots
-                            .iter()
-                            .map(|root| root.wt_path.clone().into()),
+            plan.into_iter()
+                .filter(|entry| {
+                    crate::entities::codex_session::workspace_restore_error(
+                        &std::iter::once(std::path::PathBuf::from(&entry.session.wt_path))
+                            .chain(
+                                entry
+                                    .session
+                                    .context_roots
+                                    .iter()
+                                    .map(|root| root.wt_path.clone().into()),
+                            )
+                            .collect::<Vec<_>>(),
+                        None,
                     )
-                    .collect::<Vec<_>>(),
-                None,
-            )
-            .is_some()
-            {
-                continue;
-            }
-            if self
-                .provider_updates
-                .read(cx)
-                .is_updating(entry.session.agent)
-                || grove_core::connections::credentials_busy(entry.session.agent)
-            {
-                continue;
-            }
-            let name = entry.session.name.clone();
-            // `dims` only seeds the emulator; the tmux client attaches later at the painting tile's actual dims.
-            let session = cx.new(|cx| TerminalSession::attach_existing(&name, dims.0, dims.1, cx));
-            if let Some(err) = session.read(cx).spawn_error().map(str::to_string) {
-                tracing::warn!(session = %name, error = %err, "reattach failed; skipping");
-                continue;
-            }
-            let id = self
-                .registry
-                .update(cx, |r, _| r.insert_reattached(entry.at, &entry.session));
-            self.registry.update(cx, |r, cx| {
-                r.attach(id, session, Some(name.clone()));
+                    .is_none()
+                })
+                .collect::<Vec<_>>()
+        });
+        cx.spawn(async move |this, cx| {
+            let plan = work.await;
+            let _ = this.update(cx, |this, cx| {
+                let dims = this.last_pty_dims;
+                for mut entry in plan {
+                    if !this.revalidate_tmux_restore(&mut entry.session, cx) {
+                        continue;
+                    }
+                    if this
+                        .registry
+                        .read(cx)
+                        .all()
+                        .iter()
+                        .any(|meta| meta.tmux_name.as_deref() == Some(entry.session.name.as_str()))
+                    {
+                        continue;
+                    }
+                    if this
+                        .provider_updates
+                        .read(cx)
+                        .is_updating(entry.session.agent)
+                        || grove_core::connections::credentials_busy(entry.session.agent)
+                    {
+                        continue;
+                    }
+                    let name = entry.session.name.clone();
+                    // `dims` only seeds the emulator; the tmux client attaches later at the painting tile's actual dims.
+                    let session =
+                        cx.new(|cx| TerminalSession::attach_existing(&name, dims.0, dims.1, cx));
+                    if let Some(err) = session.read(cx).spawn_error().map(str::to_string) {
+                        tracing::warn!(session = %name, error = %err, "reattach failed; skipping");
+                        continue;
+                    }
+                    let id = this
+                        .registry
+                        .update(cx, |r, _| r.insert_reattached(entry.at, &entry.session));
+                    this.registry.update(cx, |r, cx| {
+                        r.attach_observed(id, session, Some(name.clone()), cx);
+                        cx.notify();
+                    });
+                }
                 cx.notify();
             });
+        })
+        .detach();
+    }
+
+    /// Apply ownership guards again after asynchronous discovery. Metadata can
+    /// outlive a project rename, archive or removal while the worker waits.
+    fn revalidate_tmux_restore(
+        &self,
+        session: &mut grove_core::tmux::DiscoveredSession,
+        cx: &App,
+    ) -> bool {
+        let projects = &cx.global::<SettingsState>().store.projects;
+        let service = self.projects.read(cx);
+        let owner = |path: &str| {
+            grove_core::session_meta::project_owner(projects, path)
+                .ok()
+                .filter(|project| {
+                    !project.archived
+                        && !service.is_removing(&project.path)
+                        && !service.is_worktree_removing(path)
+                })
+                .map(|project| project.name.clone())
+        };
+        let Some(primary) = owner(&session.wt_path) else {
+            return false;
+        };
+        let Some(context): Option<Vec<_>> = session
+            .context_roots
+            .iter()
+            .map(|root| owner(&root.wt_path))
+            .collect()
+        else {
+            return false;
+        };
+        session.project = primary;
+        for (root, project) in session.context_roots.iter_mut().zip(context) {
+            root.project = project;
         }
-        cx.notify();
+        true
+    }
+
+    /// Resolve menu ownership from the registered roots and warmed inventory.
+    /// Fresh Git membership is checked later by the startup worker.
+    fn cached_checkout_owner(
+        &self,
+        path: &str,
+        cx: &App,
+    ) -> Result<grove_core::storage::Project, String> {
+        let projects = &cx.global::<SettingsState>().store.projects;
+        let canonical = fs_err::canonicalize(path)
+            .map_err(|_| format!("{path}: checkout is no longer available"))?;
+        let direct: Vec<_> = projects
+            .iter()
+            .filter(|project| {
+                fs_err::canonicalize(&project.path).is_ok_and(|root| root == canonical)
+            })
+            .collect();
+        if direct.len() == 1 {
+            return Ok(direct[0].clone());
+        }
+        if direct.len() > 1 {
+            return Err("Checkout belongs to multiple project registrations.".into());
+        }
+        let active = self.state.read(cx).proj_idx();
+        let tree = self.tree.read(cx);
+        let cached: Vec<_> = projects
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| {
+                tree.worktrees_for_project(*index, active)
+                    .iter()
+                    .any(|worktree| {
+                        fs_err::canonicalize(&worktree.path).is_ok_and(|listed| listed == canonical)
+                    })
+            })
+            .map(|(_, project)| project)
+            .collect();
+        if cached.len() == 1 {
+            return Ok(cached[0].clone());
+        }
+        if cached.len() > 1 {
+            return Err("Checkout belongs to multiple project inventories.".into());
+        }
+        grove_core::session_meta::project_owner(projects, path).cloned()
     }
 
     fn directory_tools_available(&self, path: &str, cx: &gpui::App) -> bool {
@@ -1185,12 +1473,6 @@ impl Runtime {
 
     pub fn spawn_wt_shell(&mut self, wt_path: &str, cx: &mut Context<Self>) -> bool {
         let target = (|| -> Result<(), String> {
-            if let Some(error) = crate::entities::codex_session::workspace_restore_error(
-                &[std::path::PathBuf::from(wt_path)],
-                None,
-            ) {
-                return Err(error);
-            }
             let canonical = fs_err::canonicalize(wt_path)
                 .map_err(|_| format!("{wt_path}: worktree is no longer available"))?;
             if !canonical.is_dir() {
@@ -1199,19 +1481,10 @@ impl Runtime {
             if self.directory_tools_available(wt_path, cx) {
                 return Ok(());
             }
-            let projects = &cx.global::<SettingsState>().store.projects;
-            let project = projects
-                .iter()
+            let project = self
+                .cached_checkout_owner(wt_path, cx)
+                .ok()
                 .filter(|project| !project.archived)
-                .find(|project| {
-                    fs_err::canonicalize(&project.path).is_ok_and(|path| path == canonical)
-                        || grove_core::git::list_worktrees(&project.path)
-                            .into_iter()
-                            .any(|worktree| {
-                                fs_err::canonicalize(worktree.path)
-                                    .is_ok_and(|path| path == canonical)
-                            })
-                })
                 .ok_or_else(|| format!("{wt_path}: checkout is no longer registered"))?;
             if self.projects.read(cx).is_removing(&project.path)
                 || self.projects.read(cx).is_worktree_removing(wt_path)
@@ -1238,12 +1511,47 @@ impl Runtime {
             temp_bundle_path: None,
             use_tmux: false,
         };
-        let session = cx.new(|cx| TerminalSession::spawn(&target, &[], None, cx));
+        let validation_projects = cx.global::<SettingsState>().store.projects.clone();
+        let validation_paths = vec![std::path::PathBuf::from(wt_path)];
+        let validation_policy = if self.directory_tools_available(wt_path, cx) {
+            CheckoutValidation::ProjectlessDirectory
+        } else {
+            CheckoutValidation::RegisteredFolder
+        };
+        let validation_expected =
+            if matches!(validation_policy, CheckoutValidation::ProjectlessDirectory) {
+                Ok(Vec::new())
+            } else {
+                self.cached_checkout_owner(wt_path, cx)
+                    .map(|owner| vec![owner.path])
+            };
+        let session = cx.new(|cx| {
+            TerminalSession::spawn_checked(
+                &target,
+                &[],
+                None,
+                Box::new(move || {
+                    let expected = validation_expected.as_ref().map_err(Clone::clone)?;
+                    validate_checkout_paths(
+                        &validation_projects,
+                        &validation_paths,
+                        validation_policy,
+                        expected,
+                    )
+                }),
+                cx,
+            )
+        });
         if let Some(err) = session.read(cx).spawn_error().map(str::to_string) {
             self.toast.update(cx, |t, cx| {
                 t.set_error(format!("terminal failed: {err}"), cx);
             });
             return false;
+        }
+        if let Ok(owner) = self.cached_checkout_owner(wt_path, cx) {
+            self.projects.update(cx, |service, _| {
+                service.track_worktree_shell_owner(id, owner.path);
+            });
         }
         let meta = crate::entities::session_registry::SessionMeta {
             id,
@@ -1336,12 +1644,6 @@ impl Runtime {
         cx: &mut Context<Self>,
     ) -> bool {
         let target = (|| -> Result<Option<(String, String, String)>, String> {
-            if let Some(error) = crate::entities::codex_session::workspace_restore_error(
-                &[std::path::PathBuf::from(wt_path)],
-                None,
-            ) {
-                return Err(error);
-            }
             if project_path == wt_path && self.directory_tools_available(wt_path, cx) {
                 if command.trim().is_empty() {
                     return Ok(None);
@@ -1366,25 +1668,15 @@ impl Runtime {
             }
             let canonical = fs_err::canonicalize(wt_path)
                 .map_err(|_| format!("{wt_path}: worktree is no longer available"))?;
-            let worktree = grove_core::git::list_worktrees_checked(&project.path)
-                .map_err(|error| format!("Could not list worktrees: {error}"))?
-                .into_iter()
-                .find(|worktree| {
-                    fs_err::canonicalize(&worktree.path).is_ok_and(|path| path == canonical)
-                })
-                .ok_or_else(|| format!("{wt_path}: worktree is no longer available"))?;
-            if self.projects.read(cx).is_worktree_removing(&worktree.path) {
+            let worktree = canonical.to_string_lossy().into_owned();
+            if self.projects.read(cx).is_worktree_removing(&worktree) {
                 return Err("Cannot launch a script while this worktree is being removed.".into());
             }
-            let owner = grove_core::session_meta::project_owner(projects, &worktree.path)?;
+            let owner = self.cached_checkout_owner(&worktree, cx)?;
             if owner.path != project.path {
                 return Err(format!("{wt_path}: worktree belongs to another project"));
             }
-            Ok(Some((
-                project.name.clone(),
-                worktree.path,
-                script.to_string(),
-            )))
+            Ok(Some((project.name.clone(), worktree, script.to_string())))
         })();
         let (project, cwd, script) = match target {
             Ok(Some(target)) => target,
@@ -1396,7 +1688,29 @@ impl Runtime {
             }
         };
 
-        let session = cx.new(|cx| TerminalSession::spawn_script(&script, &cwd, cx));
+        let validation_projects = cx.global::<SettingsState>().store.projects.clone();
+        let validation_paths = vec![std::path::PathBuf::from(&cwd)];
+        let validation_policy = if project.is_empty() {
+            CheckoutValidation::ProjectlessDirectory
+        } else {
+            CheckoutValidation::GitInventory
+        };
+        let validation_expected = vec![project_path.to_owned()];
+        let session = cx.new(|cx| {
+            TerminalSession::spawn_script_checked(
+                &script,
+                &cwd,
+                Box::new(move || {
+                    validate_checkout_paths(
+                        &validation_projects,
+                        &validation_paths,
+                        validation_policy,
+                        &validation_expected,
+                    )
+                }),
+                cx,
+            )
+        });
         if let Some(error) = session.read(cx).spawn_error().map(str::to_string) {
             self.toast.update(cx, |toast, cx| {
                 toast.set_error(format!("terminal failed: {error}"), cx);
@@ -1426,7 +1740,15 @@ impl Runtime {
                 name,
                 command: script,
                 terminal: session.clone(),
-                _observer: std::rc::Rc::new(cx.observe(&session, |_, _, cx| cx.notify())),
+                _observer: std::rc::Rc::new(cx.observe(&session, move |this, terminal, cx| {
+                    if let Some(error) = terminal.read(cx).spawn_error().map(str::to_owned) {
+                        this.script_runs.retain(|run| run.id != id);
+                        this.toast.update(cx, |toast, cx| {
+                            toast.set_error(format!("terminal failed: {error}"), cx);
+                        });
+                    }
+                    cx.notify();
+                })),
             });
             cx.notify();
             return true;
@@ -1437,7 +1759,7 @@ impl Runtime {
         });
         let id = self.registry.update(cx, |registry, cx| {
             let id = registry.insert_meta(project, cwd, Agent::Terminal);
-            registry.attach(id, session, None);
+            registry.attach_observed(id, session, None, cx);
             cx.notify();
             id
         });
@@ -1458,10 +1780,18 @@ impl Runtime {
         agent: Agent,
         cx: &mut Context<Self>,
     ) -> bool {
-        let targets = {
-            let store = &cx.global::<SettingsState>().store;
-            resolve_multi_root_worktrees(worktree_paths, &store.projects)
-        };
+        let targets = worktree_paths
+            .iter()
+            .map(|path| {
+                let owner = self.cached_checkout_owner(path, cx)?;
+                if owner.archived {
+                    return Err("Project is archived.".to_owned());
+                }
+                let canonical = fs_err::canonicalize(path)
+                    .map_err(|_| format!("{path}: worktree is no longer available"))?;
+                Ok((owner.name, canonical.to_string_lossy().into_owned()))
+            })
+            .collect::<Result<Vec<_>, String>>();
         let targets = match targets {
             Ok(targets) => targets,
             Err(error) => {
@@ -1568,7 +1898,7 @@ impl Runtime {
 
     pub fn kill_session(&mut self, id: SessionId, cx: &mut Context<Self>) {
         self.registry.update(cx, |r, cx| {
-            r.remove(id);
+            r.remove_background(id, cx);
             cx.notify();
         });
         let (live, saved) = (self.live_tiles(cx), Self::saved_grid_order(cx));
@@ -1851,15 +2181,23 @@ mod tests {
                 terminal.read(cx).backend(),
                 &crate::entities::terminal_session::Backend::Native
             );
-            terminal
-                .update(cx, |terminal, _| {
-                    terminal.send_checked(
-                        format!("printf '%s' \"$PWD\" > '{}'\n", output.display()).as_bytes(),
-                    )
-                })
-                .unwrap();
-            runtime
+            (runtime, terminal)
         });
+        let (runtime, terminal) = runtime;
+        let deadline = Instant::now() + std::time::Duration::from_secs(5);
+        while terminal.read_with(cx, |terminal, _| terminal.root_pid().is_none())
+            && Instant::now() < deadline
+        {
+            cx.run_until_parked();
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        terminal
+            .update(cx, |terminal, _| {
+                terminal.send_checked(
+                    format!("printf '%s' \"$PWD\" > '{}'\n", output.display()).as_bytes(),
+                )
+            })
+            .unwrap();
         for _ in 0..200 {
             if fs_err::read_to_string(&output).is_ok_and(|value| value == path) {
                 break;
@@ -1983,6 +2321,7 @@ mod tests {
         // complete pwd line rather than the file's creation or a fixed poll count.
         let deadline = Instant::now() + std::time::Duration::from_secs(10);
         loop {
+            cx.run_until_parked();
             if let Ok(contents) = fs_err::read_to_string(&output) {
                 if contents.ends_with('\n') {
                     actual = Some(contents);
@@ -2003,19 +2342,202 @@ mod tests {
     }
 
     #[gpui::test]
+    fn delayed_tmux_restore_revalidates_renamed_archived_removed_and_busy_projects(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().to_string_lossy().into_owned();
+        cx.update(|cx| {
+            let runtime = init_script_runtime(cx, script_project(&path, ""));
+            let mut session = grove_core::tmux::DiscoveredSession {
+                name: "restore-fixture".into(),
+                pane_title: None,
+                wt_path: path.clone(),
+                project: "old-name".into(),
+                label: "1".into(),
+                agent: Agent::Terminal,
+                context_roots: Vec::new(),
+                temp_bundle_path: None,
+            };
+            cx.global_mut::<SettingsState>().store.projects[0].name = "Renamed".into();
+            assert!(runtime.read(cx).revalidate_tmux_restore(&mut session, cx));
+            assert_eq!(session.project, "Renamed");
+            cx.global_mut::<SettingsState>().store.projects[0].archived = true;
+            assert!(!runtime.read(cx).revalidate_tmux_restore(&mut session, cx));
+            cx.global_mut::<SettingsState>().store.projects[0].archived = false;
+            runtime.read(cx).projects.clone().update(cx, |service, _| {
+                service.mark_history_removal_for_test(&path, None);
+            });
+            assert!(!runtime.read(cx).revalidate_tmux_restore(&mut session, cx));
+            cx.global_mut::<SettingsState>().store.projects.clear();
+            assert!(!runtime.read(cx).revalidate_tmux_restore(&mut session, cx));
+        });
+    }
+
+    #[test]
+    fn fresh_launch_policy_preserves_git_inventory_for_scripts_and_multi_roots() {
+        let _settings = SettingsState::new(grove_core::storage::Store::default());
+        let directory = tempfile::tempdir().unwrap();
+        let projects = vec![script_project(directory.path().to_str().unwrap(), "")];
+        let paths = vec![directory.path().to_path_buf()];
+        assert!(validate_checkout_paths(
+            &projects,
+            &paths,
+            CheckoutValidation::RegisteredFolder,
+            &projects
+                .iter()
+                .map(|project| project.path.clone())
+                .collect::<Vec<_>>()
+        )
+        .is_ok());
+        assert!(validate_checkout_paths(
+            &projects,
+            &paths,
+            CheckoutValidation::GitInventory,
+            &projects
+                .iter()
+                .map(|project| project.path.clone())
+                .collect::<Vec<_>>()
+        )
+        .is_err());
+        let repository = git_fixture();
+        let projects = vec![script_project(repository.path().to_str().unwrap(), "")];
+        let paths = vec![repository.path().to_path_buf()];
+        assert!(validate_checkout_paths(
+            &projects,
+            &paths,
+            CheckoutValidation::GitInventory,
+            &projects
+                .iter()
+                .map(|project| project.path.clone())
+                .collect::<Vec<_>>()
+        )
+        .is_ok());
+        fs_err::rename(
+            repository.path().join(".git"),
+            repository.path().join("retained-git-metadata"),
+        )
+        .unwrap();
+        assert!(validate_checkout_paths(
+            &projects,
+            &paths,
+            CheckoutValidation::RegisteredFolder,
+            &projects
+                .iter()
+                .map(|project| project.path.clone())
+                .collect::<Vec<_>>()
+        )
+        .is_ok());
+        assert!(validate_checkout_paths(
+            &projects,
+            &paths,
+            CheckoutValidation::GitInventory,
+            &projects
+                .iter()
+                .map(|project| project.path.clone())
+                .collect::<Vec<_>>()
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn fresh_launch_validation_rejects_checkout_reassigned_to_another_project() {
+        let _settings = SettingsState::new(grove_core::storage::Store::default());
+        let first = git_fixture();
+        let second = git_fixture();
+        let destination = tempfile::tempdir().unwrap();
+        let checkout = destination.path().join("checkout");
+        let git = |repository: &std::path::Path, args: &[&str]| {
+            let output = std::process::Command::new("git")
+                .arg("-C")
+                .arg(repository)
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        };
+        for repository in [first.path(), second.path()] {
+            git(
+                repository,
+                &[
+                    "-c",
+                    "user.name=Fixture",
+                    "-c",
+                    "user.email=fixture@example.com",
+                    "commit",
+                    "--allow-empty",
+                    "-m",
+                    "initial",
+                ],
+            );
+        }
+        let target = checkout.to_str().unwrap();
+        git(first.path(), &["worktree", "add", "--detach", target]);
+        let projects = vec![
+            script_project(first.path().to_str().unwrap(), ""),
+            script_project(second.path().to_str().unwrap(), ""),
+        ];
+        let paths = vec![checkout.clone()];
+        let expected = vec![projects[0].path.clone()];
+        assert!(validate_checkout_paths(
+            &projects,
+            &paths,
+            CheckoutValidation::GitInventory,
+            &expected
+        )
+        .is_ok());
+        git(first.path(), &["worktree", "remove", target]);
+        git(second.path(), &["worktree", "add", "--detach", target]);
+        assert!(validate_checkout_paths(
+            &projects,
+            &paths,
+            CheckoutValidation::GitInventory,
+            &expected
+        )
+        .is_err());
+        assert!(validate_checkout_paths(
+            &projects,
+            &paths,
+            CheckoutValidation::GitInventory,
+            &[projects[1].path.clone()]
+        )
+        .is_ok());
+    }
+
+    #[gpui::test]
     fn failed_run_script_spawn_shows_error_without_bogus_shell(cx: &mut gpui::TestAppContext) {
         let repo = git_fixture();
         let canonical = repo.path().canonicalize().unwrap();
         let path = canonical.to_str().unwrap();
-        cx.update(|cx| {
+        let runtime = cx.update(|cx| {
             let runtime = init_script_runtime(cx, script_project(path, "\0"));
-            assert!(!runtime.update(cx, |runtime, cx| runtime.spawn_run_script(path, path, cx)));
-            let registry = runtime.read(cx).registry.read(cx);
+            assert!(runtime.update(cx, |runtime, cx| runtime.spawn_run_script(path, path, cx)));
+            runtime
+        });
+        let deadline = Instant::now() + std::time::Duration::from_secs(5);
+        while runtime.read_with(cx, |runtime, _| !runtime.script_runs.is_empty())
+            && Instant::now() < deadline
+        {
+            cx.run_until_parked();
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        cx.update(|cx| {
+            let state = runtime.read(cx);
+            assert!(
+                state.script_runs.is_empty(),
+                "failed asynchronous launches must remove their pending run"
+            );
+            let registry = state.registry.read(cx);
             assert!(registry.wt_shells(path).is_empty());
             assert_eq!(registry.active_wt_shell_idx(path), None);
             assert!(registry.is_empty());
-            let toast = runtime.read(cx).toast.read(cx);
-            assert!(toast
+            assert!(state
+                .toast
+                .read(cx)
                 .current()
                 .unwrap()
                 .message
@@ -2129,7 +2651,20 @@ mod tests {
                 })
                 .unwrap();
         });
-        cx.run_until_parked();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !original
+            .terminal
+            .read_with(cx, |terminal, _| terminal.has_exited())
+        {
+            cx.run_until_parked();
+            cx.executor()
+                .advance_clock(std::time::Duration::from_millis(25));
+            assert!(
+                std::time::Instant::now() < deadline,
+                "script must confirm actual process exit"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
         cx.update(|cx| {
             assert!(runtime.read(cx).script_runs.is_empty());
             assert!(original.terminal.read(cx).has_exited());
@@ -2163,7 +2698,20 @@ mod tests {
                 .unwrap();
             deleted
         });
-        cx.run_until_parked();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !deleted
+            .terminal
+            .read_with(cx, |terminal, _| terminal.has_exited())
+        {
+            cx.run_until_parked();
+            cx.executor()
+                .advance_clock(std::time::Duration::from_millis(25));
+            assert!(
+                std::time::Instant::now() < deadline,
+                "script must confirm actual process exit"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
         cx.update(|cx| {
             assert!(runtime.read(cx).script_runs.is_empty());
             assert!(deleted.terminal.read(cx).has_exited());

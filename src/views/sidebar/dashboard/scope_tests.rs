@@ -238,7 +238,7 @@ fn dashboard_scope_changed_preserves_codex_and_claude_drafts_and_blocks_missing_
                 assert_eq!(session.read(cx).state.saved.draft, "Retain this exact task");
                 assert!(session.read(cx).is_deferred());
                 assert!(!session.read(cx).has_transport());
-            })
+            });
         });
     }
 }
@@ -337,7 +337,7 @@ fn dashboard_scope_replacement_preserves_same_project_worktrees_and_chosen_cwd(
                 );
                 assert_eq!(registry.all().last().unwrap().wt_path, topic);
                 assert_eq!(session.read(cx).state.saved.draft, "First independent task");
-            })
+            });
         });
     }
 }
@@ -371,7 +371,7 @@ fn dashboard_scope_hides_starting_directory_only_for_multiple_worktrees(
                     })
                     .collect();
                 cx.notify();
-            })
+            });
         });
         cx.simulate_resize(gpui::size(gpui::px(width), gpui::px(300.)));
         cx.run_until_parked();

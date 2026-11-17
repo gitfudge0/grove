@@ -212,6 +212,10 @@ impl crate::conversation_result::Workflow for Review {
     }
 }
 
+pub fn is_current_for_poll(path: &Path, review: &Review) -> Result<bool, String> {
+    change_description::snapshot_is_current_for_poll(path, &review.snapshot)
+}
+
 pub fn is_current(path: &Path, review: &Review) -> Result<bool, String> {
     change_description::snapshot_is_current(path, &review.snapshot)
 }

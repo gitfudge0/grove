@@ -73,34 +73,38 @@ impl ProjectTree {
         active: usize,
         worktrees: Vec<Worktree>,
     ) {
-        self.generation = self.generation.wrapping_add(1);
         if project == active {
             self.set_active_worktrees(project, worktrees);
         } else {
+            self.generation = self.generation.wrapping_add(1);
             self.wt_cache.insert(project, worktrees);
         }
     }
 
+    pub fn active_project(&self) -> Option<usize> {
+        self.active_idx
+    }
+
     /// Every writer of `worktrees` must go through here (or `switch_active_project`), or `active_idx` drifts.
     pub fn set_active_worktrees(&mut self, proj: usize, worktrees: Vec<Worktree>) {
+        self.generation = self.generation.wrapping_add(1);
         self.worktrees = worktrees;
         self.active_idx = Some(proj);
     }
 
     /// Outgoing project's list moves into the cache; incoming's stale entry is dropped for a fresh inline read.
-    pub fn switch_active_project(&mut self, old: usize, new: usize, new_path: &str) {
+    pub fn switch_active_project(&mut self, old: usize, new: usize, _new_path: &str) {
         if old == new {
             return;
         }
         let outgoing = std::mem::take(&mut self.worktrees);
         self.wt_cache.insert(old, outgoing);
-        self.wt_cache.remove(&new);
-        self.worktrees = git::list_worktrees(new_path);
+        self.worktrees = self.wt_cache.remove(&new).unwrap_or_default();
         self.active_idx = Some(new);
     }
 
     /// Heals a stale `active_idx`; out-of-range still gets stamped (empty list) or this re-shells `git` every frame.
-    pub fn ensure_active(&mut self, active_proj: usize, store: &Store) {
+    pub fn ensure_active(&mut self, active_proj: usize, _store: &Store) {
         if self.active_idx == Some(active_proj) {
             return;
         }
@@ -108,12 +112,7 @@ impl ProjectTree {
             let outgoing = std::mem::take(&mut self.worktrees);
             self.wt_cache.insert(old, outgoing);
         }
-        self.wt_cache.remove(&active_proj);
-        self.worktrees = store
-            .projects
-            .get(active_proj)
-            .map(|p| git::list_worktrees(&p.path))
-            .unwrap_or_default();
+        self.worktrees = self.wt_cache.remove(&active_proj).unwrap_or_default();
         self.active_idx = Some(active_proj);
     }
 
@@ -148,17 +147,6 @@ impl ProjectTree {
         }
     }
 
-    #[allow(dead_code)]
-    pub fn ensure_wt_cached(&mut self, proj: usize, active_proj: usize, store: &Store) {
-        if proj == active_proj || self.wt_cache.contains_key(&proj) {
-            return;
-        }
-        if let Some(p) = store.projects.get(proj) {
-            let wts = git::list_worktrees(&p.path);
-            self.wt_cache.insert(proj, wts);
-        }
-    }
-
     /// Called by every add/remove/archive/restore, so any sweep in flight is now stale.
     pub fn rebuild_wt_cache(&mut self) {
         self.wt_cache.clear();
@@ -166,9 +154,18 @@ impl ProjectTree {
     }
 
     /// Discards the sweep if the generation moved while it ran.
-    pub fn apply_sweep(&mut self, generation: u64, swept: HashMap<usize, Vec<Worktree>>) -> bool {
+    pub fn apply_sweep(
+        &mut self,
+        generation: u64,
+        mut swept: HashMap<usize, Vec<Worktree>>,
+    ) -> bool {
         if generation != self.generation {
             return false;
+        }
+        if let Some(active) = self.active_idx {
+            if let Some(worktrees) = swept.remove(&active) {
+                self.worktrees = worktrees;
+            }
         }
         self.wt_cache.extend(swept);
         true
@@ -227,6 +224,11 @@ impl ProjectTree {
     #[must_use]
     pub fn git_states(&self) -> HashMap<String, WorktreeGitState> {
         self.git_state.clone()
+    }
+
+    /// Read one checkout without cloning every cached state.
+    pub fn git_state(&self, path: &str) -> Option<&WorktreeGitState> {
+        self.git_state.get(path)
     }
 
     /// Failures drop the cached entry rather than leaving stale data on screen.
@@ -326,7 +328,7 @@ impl ProjectTree {
                     let mut fresh = HashMap::new();
                     let mut stale = Vec::new();
                     for path in paths {
-                        match git::worktree_git_state(&path) {
+                        match git::worktree_git_state_for_poll(&path) {
                             Some(state) => {
                                 fresh.insert(path, state);
                             }
@@ -661,6 +663,20 @@ mod tests {
         };
         assert!(!p1.worktrees.iter().any(|w| w.path == "/a"));
         assert!(!p1.worktrees.iter().any(|w| w.path == "/a-x"));
+        assert!(
+            p1.worktrees.is_empty(),
+            "cache misses wait for the background sweep"
+        );
+        let generation = tree.generation();
+        let mut swept = HashMap::new();
+        swept.insert(1, vec![wt("/grove-test-p1-does-not-exist", true)]);
+        assert!(tree.apply_sweep(generation, swept));
+        let refreshed = tree.snapshot(&store, &SessionRegistry::new(), 1);
+        let p1 = refreshed
+            .projects
+            .iter()
+            .find(|project| project.idx == 1)
+            .unwrap();
         assert_eq!(p1.worktrees.len(), 1);
         assert_eq!(p1.worktrees[0].path, "/grove-test-p1-does-not-exist");
 

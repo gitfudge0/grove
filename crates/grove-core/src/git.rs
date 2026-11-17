@@ -64,6 +64,50 @@ pub fn list_worktrees_checked(project_path: &str) -> Result<Vec<Worktree>> {
     ))
 }
 
+/// Enumerate identity only, without stat/read_dir/canonicalize per checkout.
+/// Read-only callers may share a short TTL; operation guards pass ZERO.
+pub fn list_worktree_paths(
+    project_path: &str,
+    max_age: std::time::Duration,
+) -> Result<Vec<String>> {
+    type Entry = (std::time::Instant, Vec<String>);
+    static CACHE: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, Entry>>> =
+        std::sync::OnceLock::new();
+    let cache = CACHE.get_or_init(Default::default);
+    if let Some((_, paths)) = cache
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .get(project_path)
+        .filter(|(at, _)| at.elapsed() < max_age)
+    {
+        return Ok(paths.clone());
+    }
+    let output = Command::new("git")
+        .args(["-C", project_path, "worktree", "list", "--porcelain", "-z"])
+        .output()?;
+    if !output.status.success() {
+        return Err(GitError::Command {
+            cmd: "worktree list --porcelain -z".into(),
+            stderr: String::from_utf8_lossy(&output.stderr).trim().to_owned(),
+        });
+    }
+    let paths: Vec<_> = String::from_utf8_lossy(&output.stdout)
+        .split('\0')
+        .filter_map(|record| record.strip_prefix("worktree ").map(str::to_owned))
+        .collect();
+    let mut cache = cache
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if cache.len() >= 128 {
+        cache.clear();
+    }
+    cache.insert(
+        project_path.to_owned(),
+        (std::time::Instant::now(), paths.clone()),
+    );
+    Ok(paths)
+}
+
 fn parse_worktrees(project_path: &str, stdout: &str) -> Vec<Worktree> {
     let mut result = vec![];
     let mut cur_path: Option<String> = None;
@@ -830,25 +874,82 @@ pub struct WorktreeGitState {
     pub removed: u32,
 }
 
+/// Share a status sample between tree chips and the checkout panel. Action
+/// guards request a fresh sample (`max_age = ZERO`) instead of trusting a poll.
+pub(crate) fn worktree_status(
+    path: &std::path::Path,
+    max_age: std::time::Duration,
+) -> Result<String, String> {
+    type Sample = std::sync::Arc<std::sync::Mutex<Option<(std::time::Instant, String)>>>;
+    static CACHE: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashMap<std::path::PathBuf, Sample>>,
+    > = std::sync::OnceLock::new();
+    let key = fs_err::canonicalize(path).map_err(|_| "Could not inspect checkout folder")?;
+    let sample = {
+        let mut cache = CACHE
+            .get_or_init(Default::default)
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if cache.len() >= 128 && !cache.contains_key(&key) {
+            cache.clear();
+        }
+        cache.entry(key).or_default().clone()
+    };
+    let mut sample = sample
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some((at, value)) = sample.as_ref().filter(|(at, _)| at.elapsed() < max_age) {
+        let _ = at;
+        return Ok(value.clone());
+    }
+    let value = crate::checkout_git::git(
+        path,
+        &[
+            "status",
+            "--porcelain=v2",
+            "--branch",
+            "--no-renames",
+            "--untracked-files=normal",
+            "-z",
+        ],
+    )?;
+    *sample = Some((std::time::Instant::now(), value.clone()));
+    Ok(value)
+}
+
 pub fn worktree_git_state(path: &str) -> Option<WorktreeGitState> {
+    worktree_git_state_with_age(path, std::time::Duration::ZERO)
+}
+
+pub fn worktree_git_state_for_poll(path: &str) -> Option<WorktreeGitState> {
+    worktree_git_state_with_age(path, std::time::Duration::from_secs(5))
+}
+
+fn worktree_git_state_with_age(
+    path: &str,
+    max_age: std::time::Duration,
+) -> Option<WorktreeGitState> {
     tracing::debug!(
         args = "status --porcelain=v2 -b",
         cwd = %path,
         "running git command"
     );
-    let out = Command::new("git")
-        .args(["-C", path, "status", "--porcelain=v2", "-b"])
-        .output()
-        .ok()?;
-    if !out.status.success() {
-        tracing::warn!(
-            status = ?out.status,
-            stderr = %String::from_utf8_lossy(&out.stderr),
-            "git command failed"
-        );
-        return None;
+    let status = worktree_status(std::path::Path::new(path), max_age).ok()?;
+    let mut state = WorktreeGitState::default();
+    for record in status.split('\0') {
+        if let Some(counts) = record.strip_prefix("# branch.ab ") {
+            for token in counts.split_whitespace() {
+                if let Some(ahead) = token.strip_prefix('+') {
+                    state.ahead = ahead.parse().unwrap_or(0);
+                }
+                if let Some(behind) = token.strip_prefix('-') {
+                    state.behind = behind.parse().unwrap_or(0);
+                }
+            }
+        } else if !record.starts_with('#') && !record.is_empty() {
+            state.dirty = true;
+        }
     }
-    let mut state = parse_porcelain_v2(&String::from_utf8_lossy(&out.stdout));
     if state.dirty {
         let (added, removed) = worktree_diff_stat(path);
         state.added = added;
@@ -902,6 +1003,7 @@ fn parse_shortstat(out: &str) -> (u32, u32) {
 }
 
 /// `# branch.ab +N -M` supplies ahead/behind; any other non-`#` line means dirty.
+#[cfg(test)]
 fn parse_porcelain_v2(out: &str) -> WorktreeGitState {
     let mut state = WorktreeGitState::default();
     for line in out.lines() {

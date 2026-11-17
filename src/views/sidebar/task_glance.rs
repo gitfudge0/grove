@@ -80,6 +80,8 @@ pub(super) fn task_phase(status: Status) -> TaskPhase {
 /// snapshot re-parses the list; continuation messages retain the summary.
 #[derive(Default)]
 pub(super) struct TaskGlanceCache {
+    revision: Option<u64>,
+    dashboard_signature: Option<(u64, Status, Option<String>, bool)>,
     index: Option<usize>,
     latest_prompt: Option<usize>,
     item: Value,
@@ -93,6 +95,33 @@ pub(super) struct TaskGlanceCache {
 }
 
 impl TaskGlanceCache {
+    pub fn refresh_snapshot(&mut self, items: &grove_core::codex::TranscriptItems) -> bool {
+        let revision = items.revision();
+        if self.revision == Some(revision) {
+            return false;
+        }
+        self.revision = Some(revision);
+        self.refresh(items)
+    }
+    pub fn refresh_dashboard_snapshot(&mut self, state: &grove_core::codex::Snapshot) -> bool {
+        let signature = (
+            state.saved.items.revision(),
+            state.status,
+            state.turn_id.clone(),
+            state.saved.activity_reporting,
+        );
+        if self.dashboard_signature.as_ref() == Some(&signature) {
+            return false;
+        }
+        self.dashboard_signature = Some(signature);
+        self.refresh_dashboard_reporting(
+            &state.saved.items,
+            state.status,
+            state.turn_id.as_deref(),
+            state.saved.activity_reporting,
+        )
+    }
+
     /// Connection and lifecycle controls are visible even with Dashboard closed.
     fn refresh_presentation(&mut self, state: &grove_core::codex::Snapshot) -> bool {
         let next = Some((state.session_status(), state.review_completion()));
@@ -222,16 +251,11 @@ impl Sidebar {
             let mut cache = TaskGlanceCache::default();
             {
                 let state = &session.read(cx).state;
-                cache.refresh(&state.saved.items);
+                cache.refresh_snapshot(&state.saved.items);
                 cache.refresh_lifecycle(state.status);
                 cache.title_generation_pending = state.title_generation_pending;
                 if self.dashboard_open && self.dashboard_owns_session(id) {
-                    cache.refresh_dashboard_reporting(
-                        &state.saved.items,
-                        state.status,
-                        state.turn_id.as_deref(),
-                        state.saved.activity_reporting,
-                    );
+                    cache.refresh_dashboard_snapshot(state);
                 }
             }
             self.task_glances.insert(id, cache);
@@ -239,19 +263,16 @@ impl Sidebar {
                 let visible = this.dashboard_open && this.dashboard_owns_session(id);
                 let state = &session.read(cx).state;
                 let cache = this.task_glances.entry(id).or_default();
-                let changed = cache.refresh(&state.saved.items);
+                let changed = cache.refresh_snapshot(&state.saved.items);
                 let presentation_changed = cache.refresh_presentation(state);
                 let lifecycle_changed = cache.refresh_lifecycle(state.status);
+                if presentation_changed || lifecycle_changed {
+                    this.list_groups_cache.borrow_mut().take();
+                }
                 let title_pending_changed =
                     cache.title_generation_pending != state.title_generation_pending;
                 cache.title_generation_pending = state.title_generation_pending;
-                let activity_changed = visible
-                    && cache.refresh_dashboard_reporting(
-                        &state.saved.items,
-                        state.status,
-                        state.turn_id.as_deref(),
-                        state.saved.activity_reporting,
-                    );
+                let activity_changed = visible && cache.refresh_dashboard_snapshot(state);
                 if changed
                     || lifecycle_changed
                     || activity_changed

@@ -22,6 +22,16 @@ pub type Result<T, E = TmuxError> = std::result::Result<T, E>;
 pub const SOCKET: &str = "grove";
 pub const NAME_PREFIX: &str = "grove__";
 
+/// Serialize allocation/create/metadata and cleanup as whole lifecycle
+/// transactions. Call only from background jobs, and never nest the lock.
+pub fn with_lifecycle_lock<R>(operation: impl FnOnce() -> R) -> R {
+    static LIFECYCLE: Mutex<()> = Mutex::new(());
+    let _guard = LIFECYCLE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    operation()
+}
+
 fn tmux() -> Command {
     let mut c = Command::new("tmux");
     // Grove launches from a macOS .app bundle with no LANG/LC_* — without -u/LC_ALL, tmux downgrades Unicode box-drawing to literal q/x.
@@ -627,9 +637,17 @@ pub fn make_name(wt_path: &str, agent: Agent, n: u32) -> String {
 }
 
 pub fn next_free_n(wt_path: &str, agent: Agent) -> u32 {
-    // Bounded so a wedged tmux server can't spin this forever.
+    let mut command = tmux();
+    command.args(["list-sessions", "-F", "#{session_name}"]);
+    let names = command
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .map(|output| String::from_utf8_lossy(&output.stdout).into_owned())
+        .unwrap_or_default();
+    let occupied: std::collections::HashSet<_> = names.lines().collect();
     (0u32..1024)
-        .find(|n| !has_session(&make_name(wt_path, agent, *n)))
+        .find(|n| !occupied.contains(make_name(wt_path, agent, *n).as_str()))
         .unwrap_or(0)
 }
 
@@ -885,8 +903,14 @@ mod tests {
         let old_path = dir.path().join("old-session");
         let new_path = dir.path().join("new-session");
         let key = "GROVE_TEST_REFRESH_REMOVED";
-        let old_name = "grove_test_refresh_old";
-        let new_name = "grove_test_refresh_new";
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let old_name = format!("grove_test_refresh_old_{}_{}", std::process::id(), unique);
+        let new_name = format!("grove_test_refresh_new_{}_{}", std::process::id(), unique);
+        let old_name = old_name.as_str();
+        let new_name = new_name.as_str();
         let old_script = format!(
             "/bin/sleep 0.5; printf '%s' \"${key}\" > {}; exec /bin/sleep 10",
             sh_quote(old_path.to_str().unwrap())
