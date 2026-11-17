@@ -1,3 +1,28 @@
+## Plugin fingerprint feedback loop — issue 43 (November 2026)
+
+An isolated source snapshot containing only the issue 43 changes passed all 19
+composer-catalog tests, all eight branch tests, strict `grove-core` library
+Clippy, and the application `cargo check`. Regression fixtures cover marker
+churn, content edits/renames/removals, enabled plugin/version/project selection,
+shared-root expiry and explicit invalidation, automatic cooldown including failed
+attempts, and source changes during an in-flight handshake. Branch fixtures use
+an injected root inside their owning TempDir and remove empty project parents;
+they no longer create worktrees under the real Grove configuration directory.
+
+**Codex:** verified on Linux with the rebuilt `native_catalog_smoke`: real CLI
+cold metadata discovery and warm reuse, no conversation created, selected model
+and unsent draft preserved in the caller.
+**Claude:** verified on Linux with the same live metadata smoke and boundaries.
+The metadata smoke uses disposable Grove configuration and diagnostics roots.
+The earlier shared-checkout test/lint attempts encountered concurrent unrelated
+edits; isolated checks separate those changes from this fix.
+
+The live smoke does not exercise the session watch timer, a multi-session process
+storm, or plugin installation changes. Marker stability and cooldown are verified
+by fixtures, not by a live provider churn test. macOS CPU impact and Windows/macOS
+runtime behavior remain untested. No application installation, restart, release,
+or push was performed.
+
 ## Add project icon choices (November 2026)
 
 The Project details form places symbol and color options below the full-width

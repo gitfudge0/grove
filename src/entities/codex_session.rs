@@ -492,7 +492,7 @@ impl CodexSession {
                         let key = (Scope::new(&request, &options), inputs.revision());
                         let catalog =
                             if old.as_ref() != Some(&key) || inputs.models_require_refresh() {
-                                Some(composer_catalog::discover_with_inputs(
+                                Some(composer_catalog::discover_automatically_with_inputs(
                                     request, options, inputs,
                                 ))
                             } else {

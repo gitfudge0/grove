@@ -32,6 +32,15 @@ remembered rows remain available for display. Source changes invalidate workspac
 metadata through shared, provider-specific background scans at five-second
 intervals; explicit retry bypasses the scan memo. Matching sessions share a scan
 and pass its input fingerprint through discovery rather than scanning twice.
+Source-root fingerprints are also shared across checkout scopes for five seconds,
+so global installations are not walked once per open checkout. Fingerprints hash
+relevant content paths and bytes, ignoring empty directories and runtime
+`.in_use` trees. Claude plugin sources come from enabled registry installations
+and their `skills`, `commands`, and `.claude-plugin` folders; stale cache versions
+are not scanned. Project and local settings override user plugin enablement.
+Automatic session watchers attempt at most one metadata handshake per scope per
+minute, retaining ready metadata during cooldown and retrying deferred changes.
+Explicit refresh/retry bypasses the source memo and cooldown.
 Account/configuration changes also invalidate the model identity.
 Codex initialization reuses a fresh known model list
 while still reading skills and configured defaults. Claude's required initialize

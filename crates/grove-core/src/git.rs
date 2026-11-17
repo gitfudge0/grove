@@ -315,7 +315,7 @@ pub fn add_worktree(
 ) -> Result<String> {
     // Directory names may contain spaces; Git branch names cannot.
     let branch = name.replace(' ', "-");
-    add_worktree_impl(project_path, worktree_dir, name, &branch, base, false)
+    add_worktree_impl(project_path, worktree_dir, name, &branch, base, false, None)
 }
 
 /// Create a new branch independently from the worktree directory name.
@@ -326,7 +326,7 @@ pub fn add_worktree_with_branch(
     branch: &str,
     base: Option<&str>,
 ) -> Result<String> {
-    add_worktree_impl(project_path, worktree_dir, name, branch, base, true)
+    add_worktree_impl(project_path, worktree_dir, name, branch, base, true, None)
 }
 
 fn worktree_branch_error(message: String) -> GitError {
@@ -343,6 +343,7 @@ fn add_worktree_impl(
     branch: &str,
     base: Option<&str>,
     require_new_branch: bool,
+    root: Option<&Path>,
 ) -> Result<String> {
     if require_new_branch {
         let valid = !branch.starts_with('-')
@@ -380,7 +381,7 @@ fn add_worktree_impl(
             });
         }
     }
-    let root = worktrees_root()?;
+    let root = root.map_or_else(worktrees_root, |path| Ok(path.to_path_buf()))?;
     create_private_dir(&root)?;
     let dest = root.join(worktree_dir).join(name);
     if let Some(parent) = dest.parent() {
@@ -1086,6 +1087,42 @@ mod branch_tests {
 
     static COUNTER: AtomicUsize = AtomicUsize::new(0);
 
+    // Exercise the production implementation with a root owned by the fixture's
+    // TempDir, even when an assertion panics. Never mutate global environment.
+    fn add_worktree(
+        project: &str,
+        directory: &str,
+        name: &str,
+        base: Option<&str>,
+    ) -> Result<String> {
+        add_worktree_impl(
+            project,
+            directory,
+            name,
+            &name.replace(' ', "-"),
+            base,
+            false,
+            Some(&Path::new(project).join(".test-worktrees")),
+        )
+    }
+    fn add_worktree_with_branch(
+        project: &str,
+        directory: &str,
+        name: &str,
+        branch: &str,
+        base: Option<&str>,
+    ) -> Result<String> {
+        add_worktree_impl(
+            project,
+            directory,
+            name,
+            branch,
+            base,
+            true,
+            Some(&Path::new(project).join(".test-worktrees")),
+        )
+    }
+
     fn unique_worktree_dir() -> String {
         format!(
             "grove-branch-test-{}-{}",
@@ -1149,7 +1186,12 @@ mod branch_tests {
     }
 
     fn cleanup(added_path: &str) {
-        let _ = fs::remove_dir_all(added_path);
+        assert!(Path::new(added_path)
+            .components()
+            .any(|part| part.as_os_str() == ".test-worktrees"));
+        fs::remove_dir_all(added_path).expect("remove test worktree");
+        fs::remove_dir(Path::new(added_path).parent().expect("project directory"))
+            .expect("remove empty project directory");
     }
 
     #[test]

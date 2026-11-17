@@ -8,6 +8,7 @@ use std::{
 };
 
 const MAX_SCOPES: usize = 32;
+const AUTOMATIC_REFRESH_INTERVAL: Duration = Duration::from_mins(1);
 
 /// Checkout configuration must never cross a provider or launch destination.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -139,9 +140,12 @@ fn revisions() -> &'static Revisions {
     REVISIONS.get_or_init(Revisions::default)
 }
 fn scan_inputs(saved: &SavedSession, args: &[String]) -> DiscoveryInputs {
+    scan_inputs_with_cache(saved, args, true)
+}
+fn scan_inputs_with_cache(saved: &SavedSession, args: &[String], shared: bool) -> DiscoveryInputs {
     let model_key = crate::model_catalog::Key::new(saved, args);
     let mut revision = std::collections::hash_map::DefaultHasher::new();
-    provider_skill_revision(saved.provider, &saved.cwd, args, &saved.config_args)
+    provider_skill_revision_cached(saved.provider, &saved.cwd, args, &saved.config_args, shared)
         .hash(&mut revision);
     let model_revision = crate::model_catalog::revision_for_key(model_key.as_ref());
     model_revision
@@ -167,6 +171,7 @@ enum State {
 }
 struct Entry {
     skills_revision: u64,
+    started: Instant,
     state: Mutex<State>,
     changed: Condvar,
 }
@@ -206,6 +211,26 @@ impl Cache {
             entries.remove(scope);
         }
     }
+    fn invalidate_automatic(&self, scope: &Scope) -> Result<(), String> {
+        let mut entries = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(entry) = entries.get(scope) {
+            let state = entry
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if matches!(&*state, State::Loading) {
+                return Ok(());
+            }
+            if entry.started.elapsed() < AUTOMATIC_REFRESH_INTERVAL {
+                return Err("Automatic metadata refresh is cooling down.".into());
+            }
+        }
+        entries.remove(scope);
+        Ok(())
+    }
     #[cfg(test)]
     fn discover(
         &self,
@@ -214,10 +239,20 @@ impl Cache {
     ) -> Result<Snapshot, String> {
         self.discover_at(scope.clone(), revision(&scope.saved(), &scope.args), load)
     }
+    #[cfg(test)]
     fn discover_at(
         &self,
         scope: Scope,
         skills_revision: u64,
+        load: impl FnOnce() -> Result<Snapshot, String>,
+    ) -> Result<Snapshot, String> {
+        self.discover_at_policy(scope, skills_revision, false, load)
+    }
+    fn discover_at_policy(
+        &self,
+        scope: Scope,
+        skills_revision: u64,
+        automatic: bool,
         load: impl FnOnce() -> Result<Snapshot, String>,
     ) -> Result<Snapshot, String> {
         let (entry, owner) = {
@@ -225,13 +260,32 @@ impl Cache {
                 .0
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if automatic {
+                if let Some(entry) = entries.get(&scope) {
+                    let state = entry
+                        .state
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    if matches!(&*state, State::Loading) && entry.skills_revision != skills_revision
+                    {
+                        return Err(
+                            "Metadata discovery is already running; refresh will retry.".into()
+                        );
+                    }
+                    if matches!(&*state, State::Finished(result, _) if result.is_err() || entry.skills_revision != skills_revision)
+                        && entry.started.elapsed() < AUTOMATIC_REFRESH_INTERVAL
+                    {
+                        return Err("Automatic metadata refresh is cooling down; explicit Retry bypasses this limit.".into());
+                    }
+                }
+            }
             if entries.get(&scope).is_some_and(|entry| {
                 match &*entry
                     .state
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
                 {
-                    State::Loading => entry.skills_revision != skills_revision,
+                    State::Loading => !automatic && entry.skills_revision != skills_revision,
                     State::Finished(result, _) => {
                         result.is_err() || entry.skills_revision != skills_revision
                     }
@@ -264,6 +318,7 @@ impl Cache {
                 }
                 let entry = Arc::new(Entry {
                     skills_revision,
+                    started: Instant::now(),
                     state: Mutex::new(State::Loading),
                     changed: Condvar::new(),
                 });
@@ -321,6 +376,7 @@ pub fn cached(saved: &SavedSession, args: &[String]) -> Option<Snapshot> {
 }
 pub fn invalidate(saved: &SavedSession, args: &[String]) {
     let scope = Scope::new(saved, args);
+    shared_fingerprints().clear();
     revisions().invalidate(&scope);
     cache().invalidate(&scope);
     crate::model_catalog::invalidate(saved, args);
@@ -357,9 +413,25 @@ pub fn discover(saved: SavedSession, args: Vec<String>) -> Result<Snapshot, Stri
 }
 /// Reuse the watcher's input snapshot rather than scanning configuration twice.
 pub fn discover_with_inputs(
+    saved: SavedSession,
+    args: Vec<String>,
+    inputs: DiscoveryInputs,
+) -> Result<Snapshot, String> {
+    discover_with_policy(saved, args, inputs, false)
+}
+/// Watchers are rate limited; explicit user refresh retains the immediate path.
+pub fn discover_automatically_with_inputs(
+    saved: SavedSession,
+    args: Vec<String>,
+    inputs: DiscoveryInputs,
+) -> Result<Snapshot, String> {
+    discover_with_policy(saved, args, inputs, true)
+}
+fn discover_with_policy(
     mut saved: SavedSession,
     args: Vec<String>,
     inputs: DiscoveryInputs,
+    automatic: bool,
 ) -> Result<Snapshot, String> {
     let inputs = if inputs.scope == Scope::new(&saved, &args) {
         inputs
@@ -375,10 +447,14 @@ pub fn discover_with_inputs(
     if model_key.is_some() && current_models.is_none() {
         // Another workspace's ready snapshot cannot satisfy a missing/explicitly
         // invalidated model catalog. Keep coalescing an already-running handshake.
-        cache().invalidate(&scope);
+        if automatic {
+            cache().invalidate_automatic(&scope)?;
+        } else {
+            cache().invalidate(&scope);
+        }
     }
     saved = metadata_request(saved);
-    let mut snapshot = cache().discover_at(scope, inputs.revision, || {
+    let mut snapshot = cache().discover_at_policy(scope, inputs.revision, automatic, || {
         codex::discover_composer(saved, args)
     })?;
     if let Some(models) = model_key.as_ref().and_then(crate::model_catalog::load) {
@@ -390,7 +466,7 @@ pub fn discover_with_inputs(
 /// Background revision for all discovery inputs. Unlike model browsing, configured defaults
 /// and skills remain workspace-specific and must be re-read when account/configuration changes.
 pub fn revision(saved: &SavedSession, args: &[String]) -> u64 {
-    scan_inputs(saved, args).revision
+    scan_inputs_with_cache(saved, args, false).revision
 }
 
 /// Fingerprint skill sources off the UI thread, following symlinked installations.
@@ -411,6 +487,15 @@ fn provider_skill_revision(
     cwd: &str,
     args: &[String],
     config_args: &[String],
+) -> u64 {
+    provider_skill_revision_cached(provider, cwd, args, config_args, false)
+}
+fn provider_skill_revision_cached(
+    provider: codex::Provider,
+    cwd: &str,
+    args: &[String],
+    config_args: &[String],
+    shared: bool,
 ) -> u64 {
     use std::path::PathBuf;
     let mut roots = Vec::new();
@@ -434,7 +519,6 @@ fn provider_skill_revision(
         roots.extend([
             claude.join("skills"),
             claude.join("commands"),
-            claude.join("plugins/cache"),
             claude.join("plugins/installed_plugins.json"),
             claude.join("settings.json"),
         ]);
@@ -470,7 +554,119 @@ fn provider_skill_revision(
             roots.push(ancestor.join(suffix));
         }
     }
-    fingerprint_roots(&roots)
+    if provider == codex::Provider::Claude {
+        let claude = configured("CLAUDE_CONFIG_DIR").unwrap_or_else(|| home.join(".claude"));
+        let mut settings = vec![claude.join("settings.json")];
+        let mut ancestors: Vec<_> = std::path::Path::new(cwd).ancestors().collect();
+        ancestors.reverse();
+        for ancestor in ancestors {
+            settings.push(ancestor.join(".claude/settings.json"));
+            settings.push(ancestor.join(".claude/settings.local.json"));
+        }
+        roots.extend(settings.iter().cloned());
+        roots.extend(claude_plugin_roots(&claude, cwd, &settings));
+    }
+    if shared {
+        shared_fingerprints().fingerprint(&roots)
+    } else {
+        // Identical hash composition, with a fresh memo for immediate callers.
+        SharedFingerprints::default().fingerprint(&roots)
+    }
+}
+
+/// Read the registry rather than walking stale plugin cache versions. Settings nearer
+/// the checkout override global enablement, including explicit false entries.
+fn claude_plugin_roots(
+    config: &std::path::Path,
+    cwd: &str,
+    settings: &[std::path::PathBuf],
+) -> Vec<std::path::PathBuf> {
+    let mut enabled = HashMap::new();
+    for path in settings {
+        if let Ok(bytes) = fs_err::read(path) {
+            if let Ok(value) = serde_json::from_slice::<serde_json::Value>(&bytes) {
+                if let Some(plugins) = value["enabledPlugins"].as_object() {
+                    for (name, value) in plugins {
+                        enabled.insert(name.clone(), value.as_bool() == Some(true));
+                    }
+                }
+            }
+        }
+    }
+    let registry = fs_err::read(config.join("plugins/installed_plugins.json"))
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok());
+    let mut roots = Vec::new();
+    if let Some(plugins) = registry
+        .as_ref()
+        .and_then(|value| value["plugins"].as_object())
+    {
+        for (name, installs) in plugins {
+            if enabled.get(name) != Some(&true) {
+                continue;
+            }
+            for install in installs.as_array().into_iter().flatten() {
+                if let Some(project) = install["projectPath"].as_str() {
+                    if !std::path::Path::new(cwd).starts_with(project) {
+                        continue;
+                    }
+                }
+                if let Some(path) = install["installPath"].as_str() {
+                    for folder in ["skills", "commands", ".claude-plugin"] {
+                        roots.push(std::path::Path::new(path).join(folder));
+                    }
+                }
+            }
+        }
+    }
+    roots.sort();
+    roots.dedup();
+    roots
+}
+
+type RootRevision = Arc<Mutex<Option<(Instant, u64)>>>;
+#[derive(Default)]
+struct SharedFingerprints(Mutex<HashMap<std::path::PathBuf, RootRevision>>);
+impl SharedFingerprints {
+    fn fingerprint(&self, roots: &[std::path::PathBuf]) -> u64 {
+        let mut hash = std::collections::hash_map::DefaultHasher::new();
+        for root in roots {
+            let entry = {
+                let mut entries = self
+                    .0
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                if entries.len() >= 512 && !entries.contains_key(root) {
+                    entries.retain(|_, entry| Arc::strong_count(entry) > 1);
+                }
+                entries.entry(root.clone()).or_default().clone()
+            };
+            let mut state = entry
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let revision = match *state {
+                Some((at, revision)) if at.elapsed() < REVISION_INTERVAL => revision,
+                _ => {
+                    let revision = fingerprint_roots(std::slice::from_ref(root));
+                    *state = Some((Instant::now(), revision));
+                    revision
+                }
+            };
+            root.hash(&mut hash);
+            revision.hash(&mut hash);
+        }
+        hash.finish()
+    }
+    fn clear(&self) {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clear();
+    }
+}
+fn shared_fingerprints() -> &'static SharedFingerprints {
+    static SOURCES: OnceLock<SharedFingerprints> = OnceLock::new();
+    SOURCES.get_or_init(SharedFingerprints::default)
 }
 
 fn fingerprint_roots(roots: &[std::path::PathBuf]) -> u64 {
@@ -483,7 +679,6 @@ fn fingerprint_roots(roots: &[std::path::PathBuf]) -> u64 {
         if depth > 32 {
             return;
         }
-        path.hash(hash);
         let Ok(real) = path.canonicalize() else {
             return;
         };
@@ -494,6 +689,7 @@ fn fingerprint_roots(roots: &[std::path::PathBuf]) -> u64 {
             let definition = real.join("SKILL.md");
             if definition.is_file() {
                 if let Ok(contents) = fs_err::read(definition) {
+                    path.join("SKILL.md").hash(hash);
                     contents.hash(hash);
                 }
                 return;
@@ -502,8 +698,14 @@ fn fingerprint_roots(roots: &[std::path::PathBuf]) -> u64 {
                 let mut entries: Vec<_> = entries.flatten().map(|entry| entry.path()).collect();
                 entries.sort();
                 for entry in entries {
+                    if entry.file_name().is_some_and(|name| name == ".in_use") {
+                        continue;
+                    }
                     if !entry.file_name().is_some_and(|name| {
-                        name == ".git" || name == "node_modules" || name == "target"
+                        name == ".git"
+                            || name == ".in_use"
+                            || name == "node_modules"
+                            || name == "target"
                     }) || entry.join("SKILL.md").is_file()
                     {
                         visit(&entry, hash, visited, depth + 1);
@@ -515,6 +717,7 @@ fn fingerprint_roots(roots: &[std::path::PathBuf]) -> u64 {
             .is_some_and(|ext| ext == "md" || ext == "json" || ext == "toml")
         {
             if let Ok(contents) = fs_err::read(real) {
+                path.hash(hash);
                 contents.hash(hash);
             }
         }
@@ -563,6 +766,157 @@ mod tests {
             serde_json::json!({"model":"advertised", "supportedReasoningEfforts":[{"reasoningEffort":"high"}]}),
         ];
         state
+    }
+
+    #[test]
+    fn runtime_markers_and_non_content_do_not_change_fingerprint() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        fs_err::create_dir_all(root.join("commands")).unwrap();
+        fs_err::write(root.join("commands/example.md"), "command").unwrap();
+        let roots = [root.to_path_buf()];
+        let before = fingerprint_roots(&roots);
+        fs_err::create_dir_all(root.join(".in_use/skills")).unwrap();
+        // Even marker metadata with a recognized suffix must never be visited.
+        for pid in 0..2000 {
+            fs_err::write(root.join(format!(".in_use/{pid}.json")), "marker").unwrap();
+        }
+        fs_err::write(root.join(".in_use/skills/SKILL.md"), "not a skill").unwrap();
+        fs_err::create_dir_all(root.join("empty")).unwrap();
+        fs_err::write(root.join("binary"), "ignored").unwrap();
+        assert_eq!(before, fingerprint_roots(&roots));
+        fs_err::write(root.join("commands/example.md"), "changed").unwrap();
+        let changed = fingerprint_roots(&roots);
+        assert_ne!(before, changed);
+        fs_err::rename(
+            root.join("commands/example.md"),
+            root.join("commands/renamed.md"),
+        )
+        .unwrap();
+        assert_ne!(changed, fingerprint_roots(&roots));
+        fs_err::remove_file(root.join("commands/renamed.md")).unwrap();
+        assert_ne!(changed, fingerprint_roots(&roots));
+    }
+
+    #[test]
+    fn shared_root_scans_reuse_expire_and_explicitly_refresh() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().to_path_buf();
+        let roots = [root.clone()];
+        let cache = SharedFingerprints::default();
+        let before = cache.fingerprint(&roots);
+        fs_err::write(root.join("command.md"), "new").unwrap();
+        assert_eq!(before, cache.fingerprint(&roots));
+        // Different root sets still share their common global root.
+        cache.fingerprint(&[root.clone(), root.join("other-checkout")]);
+        assert_eq!(cache.0.lock().unwrap().len(), 2);
+        let entry = cache.0.lock().unwrap()[&root].clone();
+        entry.lock().unwrap().as_mut().unwrap().0 = Instant::now() - REVISION_INTERVAL;
+        assert_ne!(before, cache.fingerprint(&roots));
+        fs_err::remove_file(root.join("command.md")).unwrap();
+        cache.clear();
+        assert_eq!(before, cache.fingerprint(&roots));
+    }
+
+    #[test]
+    fn plugin_registry_limits_versions_enablement_and_project_scope() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        fs_err::create_dir_all(root.join("plugins")).unwrap();
+        let settings = root.join("settings.json");
+        let local = root.join("local.json");
+        fs_err::write(
+            &settings,
+            r#"{"enabledPlugins":{"active@market":true,"disabled@market":true}}"#,
+        )
+        .unwrap();
+        fs_err::write(&local, r#"{"enabledPlugins":{"disabled@market":false}}"#).unwrap();
+        fs_err::write(root.join("plugins/installed_plugins.json"), serde_json::to_vec(&serde_json::json!({
+            "version":2,"plugins": {
+                "active@market":[{"installPath":root.join("current"),"scope":"user"},
+                    {"installPath":root.join("unrelated"),"scope":"project","projectPath":"/other"}],
+                "disabled@market":[{"installPath":root.join("disabled"),"scope":"user"}]
+            }
+        })).unwrap()).unwrap();
+        let paths = claude_plugin_roots(root, "/workspace", &[settings, local]);
+        assert_eq!(paths.len(), 3);
+        assert!(paths.contains(&root.join("current/.claude-plugin")));
+        assert!(paths
+            .iter()
+            .all(|path| path.starts_with(root.join("current"))));
+        fs_err::create_dir_all(root.join("current/commands")).unwrap();
+        fs_err::write(root.join("current/commands/test.md"), "command").unwrap();
+        let before = fingerprint_roots(&paths);
+        fs_err::create_dir_all(root.join("stale/skills")).unwrap();
+        fs_err::write(root.join("stale/skills/SKILL.md"), "stale").unwrap();
+        assert_eq!(before, fingerprint_roots(&paths));
+        fs_err::write(root.join("current/commands/test.md"), "updated").unwrap();
+        assert_ne!(before, fingerprint_roots(&paths));
+    }
+
+    #[test]
+    fn automatic_refresh_is_bounded_and_explicit_retry_bypasses() {
+        let cache = Cache::default();
+        let scope = Scope::new(&saved(), &[]);
+        cache
+            .discover_at_policy(scope.clone(), 1, true, || Ok(result()))
+            .unwrap();
+        assert!(cache
+            .discover_at_policy(scope.clone(), 2, true, || panic!("throttled"))
+            .is_err());
+        assert!(cache.peek(&scope).is_some());
+        if let Some(entry) = cache.0.lock().unwrap().get_mut(&scope) {
+            Arc::get_mut(entry).unwrap().started = Instant::now() - Duration::from_secs(61);
+        }
+        cache
+            .discover_at_policy(scope.clone(), 2, true, || Ok(result()))
+            .unwrap();
+        assert!(cache.invalidate_automatic(&scope).is_err());
+        cache.invalidate(&scope);
+        assert!(cache
+            .discover_at_policy(scope.clone(), 3, true, || Err("failed".into()))
+            .is_err());
+        assert!(cache
+            .discover_at_policy(scope.clone(), 3, true, || panic!("failure cooldown"))
+            .is_err());
+        cache.invalidate(&scope);
+        cache
+            .discover_at_policy(scope, 3, true, || Ok(result()))
+            .unwrap();
+    }
+
+    #[test]
+    fn changed_revision_during_handshake_is_deferred_without_losing_refresh() {
+        let cache = Arc::new(Cache::default());
+        let scope = Scope::new(&saved(), &[]);
+        let (started, start) = std::sync::mpsc::channel();
+        let (release, wait) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn({
+            let cache = cache.clone();
+            let scope = scope.clone();
+            move || {
+                cache.discover_at_policy(scope, 1, true, || {
+                    started.send(()).unwrap();
+                    wait.recv_timeout(Duration::from_secs(5)).unwrap();
+                    Ok(result())
+                })
+            }
+        });
+        start.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert!(cache
+            .discover_at_policy(scope.clone(), 2, true, || panic!("duplicate handshake"))
+            .is_err());
+        release.send(()).unwrap();
+        worker.join().unwrap().unwrap();
+        assert_eq!(cache.0.lock().unwrap()[&scope].skills_revision, 1);
+        assert!(cache
+            .discover_at_policy(scope.clone(), 2, true, || panic!("cooldown"))
+            .is_err());
+        cache.invalidate(&scope);
+        cache
+            .discover_at_policy(scope.clone(), 2, true, || Ok(result()))
+            .unwrap();
+        assert_eq!(cache.0.lock().unwrap()[&scope].skills_revision, 2);
     }
 
     #[test]
@@ -767,7 +1121,7 @@ mod tests {
         fs_err::write(&skill, "---\nname: plugin-skill\n---").unwrap();
         assert_ne!(before, skill_revision_with_args(cwd, &args, &[]));
         fs_err::remove_file(skill).unwrap();
-        assert_ne!(before, skill_revision_with_args(cwd, &args, &[])); // directory install remains visible
+        assert_eq!(before, skill_revision_with_args(cwd, &args, &[])); // empty directories are not content
     }
 
     #[cfg(unix)]
