@@ -115,6 +115,15 @@ pub fn connect_deferred(
 ) -> Connection {
     connect_deferred_with_validation(saved, args, deferred, None)
 }
+/// Activate a restored session with the same startup preflight as a fresh one.
+pub fn connect_deferred_checked(
+    saved: SavedSession,
+    args: Vec<String>,
+    deferred: DeferredConnection,
+    validation: StartupValidation,
+) -> Connection {
+    connect_deferred_with_validation(saved, args, deferred, Some(validation))
+}
 fn connect_deferred_with_validation(
     saved: SavedSession,
     args: Vec<String>,

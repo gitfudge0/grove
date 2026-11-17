@@ -60,6 +60,7 @@ enum DashboardLaunch {
 
 struct DormantRestore {
     connection: codex::DeferredConnection,
+    validation: codex::StartupValidation,
     args: Vec<String>,
     loading: bool,
     draft_changed: bool,
@@ -119,7 +120,17 @@ impl CodexSession {
 
     /// A restored registration retains its command identity and metadata but
     /// starts neither a provider process nor transcript hydration while hidden.
-    pub fn restored(saved: SavedSession, args: Vec<String>, cx: &mut Context<Self>) -> Self {
+    #[cfg(test)]
+    fn restored(saved: SavedSession, args: Vec<String>, cx: &mut Context<Self>) -> Self {
+        Self::restored_checked(saved, args, std::sync::Arc::new(|| Ok(())), cx)
+    }
+
+    pub fn restored_checked(
+        saved: SavedSession,
+        args: Vec<String>,
+        validation: codex::StartupValidation,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let (wake, mut wakes) = futures::channel::mpsc::channel(1);
         let wake = std::sync::Mutex::new(wake);
         let connection = codex::deferred_connection(std::sync::Arc::new(move || {
@@ -133,6 +144,7 @@ impl CodexSession {
         session.handle = connection.handle.clone();
         session.restored = Some(DormantRestore {
             connection,
+            validation,
             args,
             loading: false,
             draft_changed: false,
@@ -179,14 +191,24 @@ impl CodexSession {
                                 .draft_reference
                                 .clone_from(&this.state.saved.draft_reference);
                         }
-                        let connection = codex::connect_deferred(
+                        let ready = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+                        let validated = ready.clone();
+                        let validation = std::sync::Arc::new(move || {
+                            validated.store(false, std::sync::atomic::Ordering::Release);
+                            let result = (restore.validation)();
+                            validated.store(result.is_ok(), std::sync::atomic::Ordering::Release);
+                            result
+                        });
+                        let connection = codex::connect_deferred_checked(
                             saved.clone(),
                             restore.args.clone(),
                             restore.connection,
+                            validation,
                         );
                         let replacement =
                             Self::from_connection(Snapshot::new(saved), connection, cx);
                         this.replace_restored(replacement);
+                        this.skill_startup_ready = Some(ready);
                         this.start_skill_watch(restore.args, cx);
                     }
                     Err(error) => this.restore_failed(error),
@@ -1147,8 +1169,12 @@ impl Drop for CodexSession {
                         saved.draft_images = images;
                         saved.draft_reference = reference;
                     }
-                    let _connection =
-                        codex::connect_deferred(saved, restore.args, restore.connection);
+                    let _connection = codex::connect_deferred_checked(
+                        saved,
+                        restore.args,
+                        restore.connection,
+                        restore.validation,
+                    );
                 }
                 Err(error) => restore
                     .connection
@@ -1358,6 +1384,81 @@ mod dashboard_tests {
     }
 
     #[gpui::test]
+    fn dormant_codex_and_claude_validate_on_activation_and_reconnect(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        // Real actor threads wake the foreground receiver during this integration test.
+        cx.executor().allow_parking();
+        let _config = crate::settings::lock_test_config();
+        for provider in [codex::Provider::Codex, codex::Provider::Claude] {
+            let mut record = saved(provider);
+            record.key = format!("dormant-validation-{}-{:?}", std::process::id(), provider);
+            record.persist_recovery().unwrap();
+            let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let observed = calls.clone();
+            let validation = std::sync::Arc::new(move || {
+                observed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Err("checkout no longer belongs to this project".into())
+            });
+            let session = cx.update(|cx| {
+                cx.new(|cx| {
+                    CodexSession::restored_checked(
+                        record.clone(),
+                        vec!["--unsupported-grove-test-option".into()],
+                        validation,
+                        cx,
+                    )
+                })
+            });
+            cx.run_until_parked();
+            assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+            session.update(cx, |session, cx| session.ensure_connected(cx));
+            for attempt in 1..=2 {
+                let deadline = std::time::Instant::now() + Duration::from_secs(10);
+                loop {
+                    cx.run_until_parked();
+                    cx.executor().advance_clock(Duration::from_millis(50));
+                    if session.read_with(cx, |session, _| {
+                        session.state.error.as_deref().is_some_and(|error| {
+                            error.contains("checkout no longer belongs to this project")
+                        })
+                    }) {
+                        break;
+                    }
+                    assert!(
+                        std::time::Instant::now() < deadline,
+                        "validation error was not surfaced for {provider:?}"
+                    );
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), attempt);
+                session.read_with(cx, |session, _| {
+                    assert!(!session
+                        .skill_startup_ready
+                        .as_ref()
+                        .unwrap()
+                        .load(std::sync::atomic::Ordering::Acquire));
+                });
+                if attempt == 1 {
+                    session.update(cx, |session, cx| {
+                        session.state.error = None;
+                        session.send(Action::Reconnect, cx);
+                    });
+                }
+            }
+            let handle = session.read_with(cx, |session, _| session.handle.clone());
+            let (done, outcome) = handle.stop_archiving();
+            cx.update(|_| drop(session));
+            done.recv_timeout(Duration::from_secs(10)).unwrap();
+            outcome
+                .recv_timeout(Duration::from_secs(10))
+                .unwrap()
+                .unwrap();
+            codex::finish_history_reopen(&record.key).unwrap();
+        }
+    }
+
+    #[gpui::test]
     fn restored_replacement_keeps_codex_and_claude_command_identity(cx: &mut gpui::TestAppContext) {
         cx.update(|cx| {
             for provider in [codex::Provider::Codex, codex::Provider::Claude] {
@@ -1432,9 +1533,12 @@ mod dashboard_tests {
             metadata.items.clear();
             let session = cx.update(|cx| {
                 cx.new(|cx| {
-                    CodexSession::restored(
+                    CodexSession::restored_checked(
                         metadata,
                         vec!["--unsupported-grove-test-option".into()],
+                        std::sync::Arc::new(|| {
+                            panic!("closing a dormant session must not validate or launch")
+                        }),
                         cx,
                     )
                 })

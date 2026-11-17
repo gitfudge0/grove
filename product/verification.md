@@ -1,3 +1,20 @@
+## Dormant session checkout validation (November 2026)
+
+Restored native sessions retain Runtime's checkout preflight through hydration
+and reconnect. Skill discovery remains gated until that preflight succeeds;
+closing a dormant session still archives without validation or a provider launch.
+
+Linux regression evidence: all 20 `entities::codex_session::dashboard_tests`
+passed, including activation/reconnect rejection and dormant archival for both
+Codex and Claude. The existing
+`fresh_launch_validation_rejects_checkout_reassigned_to_another_project` test
+also passed. The new rejection check uses real actor threads with an injected
+validator and deliberately invalid launch arguments; it does not exercise live
+Codex or Claude CLI transport. The initial run exposed the deterministic GPUI
+scheduler's restriction on external-thread wakes; enabling its supported real-I/O
+mode resolved that harness failure. Live provider transport and native UI
+inspection remain untested for this fix; macOS and Windows were not exercised.
+
 ## Transcript performance — issue 45 (November 2026)
 
 Completed the transcript cache work begun alongside issue 44: parsed Review

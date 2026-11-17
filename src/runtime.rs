@@ -731,7 +731,9 @@ impl Runtime {
         });
         let session = cx.new(|cx| {
             if restored {
-                crate::entities::codex_session::CodexSession::restored(saved, args, cx)
+                crate::entities::codex_session::CodexSession::restored_checked(
+                    saved, args, validation, cx,
+                )
             } else {
                 crate::entities::codex_session::CodexSession::new_checked(
                     saved, args, validation, cx,
