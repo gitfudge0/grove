@@ -1,6 +1,6 @@
 use gpui::Corners;
 use std::{
-    cell::RefCell,
+    cell::{Cell, RefCell},
     ops::Range,
     rc::Rc,
     sync::{Arc, Mutex, Weak},
@@ -12,7 +12,6 @@ use gpui::{
     MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point, SharedString,
     StyledText, TextLayout, Window, WrappedLineLayout, point, px, quad,
 };
-use smallvec::SmallVec;
 
 use crate::{
     ActiveTheme, WindowExt as _, global_state::GlobalState, input::Selection,
@@ -26,6 +25,11 @@ pub(super) struct Inline {
     links: Rc<Vec<(Range<usize>, LinkMark)>>,
     highlights: Arc<[(Range<usize>, HighlightStyle)]>,
     styled_text: Rc<RefCell<StyledText>>,
+    cache_layout: bool,
+    cached_extent: Option<gpui::Size<Pixels>>,
+    extent: Option<Rc<Cell<Option<gpui::Size<Pixels>>>>>,
+    cached_runs: Option<Arc<Vec<gpui::TextRun>>>,
+    code_paint: Option<Rc<RefCell<CodePaintCache>>>,
 
     state: Arc<Mutex<InlineState>>,
 }
@@ -47,7 +51,11 @@ impl InlineState {
 // Layouts contain foreground-thread GPUI state, so keep them out of the Send
 // parser nodes. Weak owners release entries when immutable documents disappear.
 thread_local! {
-    static CODE_LAYOUTS: RefCell<std::collections::HashMap<usize, CachedInline>> = RefCell::default();
+    static CODE_LAYOUTS: RefCell<InlineLayouts> = RefCell::new(InlineLayouts { entries: std::collections::HashMap::new(), next_sweep: 128 });
+}
+struct InlineLayouts {
+    entries: std::collections::HashMap<usize, CachedInline>,
+    next_sweep: usize,
 }
 struct CachedInline {
     owner: Weak<Mutex<InlineState>>,
@@ -56,6 +64,152 @@ struct CachedInline {
     rem: Pixels,
     highlights: Arc<[(Range<usize>, HighlightStyle)]>,
     element: Rc<RefCell<StyledText>>,
+    runs: Arc<Vec<gpui::TextRun>>,
+    extent: Rc<Cell<Option<gpui::Size<Pixels>>>>,
+    code_paint: Rc<RefCell<CodePaintCache>>,
+}
+
+// The full immutable layout remains the selection/caret oracle. Painting uses
+// only logical lines intersecting the clip, with their original syntax runs.
+struct LineSnapshot {
+    lines: Arc<[Arc<WrappedLineLayout>]>,
+    bytes: Vec<usize>,
+    ys: Vec<Pixels>,
+}
+impl LineSnapshot {
+    fn new(layout: &TextLayout) -> Self {
+        let lines: Arc<[_]> = layout.line_layouts().into_vec().into();
+        let mut bytes = Vec::with_capacity(lines.len() + 1);
+        let mut ys = Vec::with_capacity(lines.len() + 1);
+        bytes.push(0);
+        ys.push(px(0.));
+        for line in lines.iter() {
+            bytes.push(bytes.last().copied().unwrap_or(0) + line.len() + 1);
+            ys.push(ys.last().copied().unwrap_or(px(0.)) + line.size(layout.line_height()).height);
+        }
+        Self { lines, bytes, ys }
+    }
+    fn visible(&self, origin: Point<Pixels>, mask: Bounds<Pixels>) -> Range<usize> {
+        if mask.size.width <= px(0.) || mask.size.height <= px(0.) {
+            return 0..0;
+        }
+        let top = mask.top() - origin.y;
+        let bottom = mask.bottom() - origin.y;
+        let start = self.ys[1..].partition_point(|y| *y <= top);
+        let end = self.ys[..self.lines.len()].partition_point(|y| *y < bottom);
+        start.min(end)..end
+    }
+}
+struct VisibleCodeLine {
+    text: StyledText,
+    bounds: Bounds<Pixels>,
+}
+struct CodePaintCache {
+    snapshot: Option<Arc<LineSnapshot>>,
+    runs: Arc<Vec<gpui::TextRun>>,
+    run_ends: Vec<usize>,
+    visible: std::collections::BTreeMap<usize, VisibleCodeLine>,
+}
+impl CodePaintCache {
+    fn new(runs: Arc<Vec<gpui::TextRun>>) -> Self {
+        let mut end = 0;
+        let run_ends = runs
+            .iter()
+            .map(|run| {
+                end += run.len;
+                end
+            })
+            .collect();
+        Self {
+            snapshot: None,
+            runs,
+            run_ends,
+            visible: Default::default(),
+        }
+    }
+    fn prepare(
+        &mut self,
+        source: &str,
+        full: &TextLayout,
+        reshaped: bool,
+        bounds: Bounds<Pixels>,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        if reshaped || self.snapshot.is_none() {
+            self.snapshot = Some(Arc::new(LineSnapshot::new(full)));
+            self.visible.clear();
+        }
+        let snapshot = self.snapshot.as_ref().unwrap();
+        let range = snapshot.visible(
+            bounds.origin,
+            window.content_mask().bounds.intersect(&bounds),
+        );
+        self.visible.retain(|index, _| range.contains(index));
+        for index in range {
+            let start = snapshot.bytes[index];
+            let end = (start + snapshot.lines[index].len()).min(source.len());
+            let line_bounds = Bounds::new(
+                bounds.origin + point(px(0.), snapshot.ys[index]),
+                gpui::size(
+                    bounds.size.width,
+                    snapshot.ys[index + 1] - snapshot.ys[index],
+                ),
+            );
+            let line = self.visible.entry(index).or_insert_with(|| {
+                let mut clipped = Vec::new();
+                let first = self.run_ends.partition_point(|end| *end <= start);
+                for run_index in first..self.runs.len() {
+                    let run_start = if run_index == 0 {
+                        0
+                    } else {
+                        self.run_ends[run_index - 1]
+                    };
+                    if run_start >= end {
+                        break;
+                    }
+                    let mut run = self.runs[run_index].clone();
+                    run.len = self.run_ends[run_index].min(end) - run_start.max(start);
+                    clipped.push(run);
+                }
+                let mut text = StyledText::new(source[start..end].to_owned()).with_runs(clipped);
+                let (layout, _) = text.request_layout(None, None, window, cx);
+                window.compute_layout(
+                    layout,
+                    gpui::size(
+                        gpui::AvailableSpace::Definite(bounds.size.width),
+                        gpui::AvailableSpace::MaxContent,
+                    ),
+                    cx,
+                );
+                VisibleCodeLine {
+                    text,
+                    bounds: line_bounds,
+                }
+            });
+            line.bounds = line_bounds;
+            line.text
+                .prepaint(None, None, line_bounds, &mut (), window, cx);
+        }
+    }
+    fn paint(&mut self, window: &mut Window, cx: &mut App) {
+        for line in self.visible.values_mut() {
+            line.text
+                .paint(None, None, line.bounds, &mut (), &mut (), window, cx);
+        }
+    }
+}
+
+pub(super) fn release_cached_layout(state: &Arc<Mutex<InlineState>>) {
+    // This is called only by the foreground TextView document owner. Parser
+    // nodes are Send and may be dropped on a background thread, whose cache is
+    // unrelated. try_with also permits normal application/thread teardown.
+    let _ = CODE_LAYOUTS.try_with(|cache| {
+        cache
+            .borrow_mut()
+            .entries
+            .remove(&(Arc::as_ptr(state) as usize));
+    });
 }
 
 impl Inline {
@@ -76,8 +230,18 @@ impl Inline {
             highlights: highlights.into(),
             text: text.clone(),
             styled_text: Rc::new(RefCell::new(StyledText::new(text))),
+            cache_layout: false,
+            cached_extent: None,
+            extent: None,
+            cached_runs: None,
+            code_paint: None,
             state,
         }
+    }
+
+    pub(super) fn cache_layout(mut self) -> Self {
+        self.cache_layout = true;
+        self
     }
 
     fn link_for_position(
@@ -85,6 +249,9 @@ impl Inline {
         links: &Vec<(Range<usize>, LinkMark)>,
         position: Point<Pixels>,
     ) -> Option<LinkMark> {
+        if links.is_empty() {
+            return None;
+        }
         let offset = layout.index_for_position(position).ok()?;
         for (range, link) in links.iter() {
             if range.contains(&offset) {
@@ -302,32 +469,42 @@ impl Element for Inline {
         let cache_key = Arc::as_ptr(&self.state) as usize;
         // Code has no hover-dependent links. Paragraph links retain their
         // existing immediate styling path.
-        if self.links.is_empty() {
+        if self.cache_layout {
             let cached = CODE_LAYOUTS.with(|cache| {
                 cache
                     .borrow()
+                    .entries
                     .get(&cache_key)
                     .filter(|old| {
                         old.owner
                             .upgrade()
                             .is_some_and(|owner| Arc::ptr_eq(&owner, &self.state))
-                            && old.text == self.text
+                            && ((old.text.as_ptr() == self.text.as_ptr()
+                                && old.text.len() == self.text.len())
+                                || old.text == self.text)
                             && old.style == text_style
                             && old.rem == window.rem_size()
                             && (Arc::ptr_eq(&old.highlights, &self.highlights)
                                 || old.highlights == self.highlights)
                     })
-                    .map(|old| old.element.clone())
+                    .map(|old| {
+                        (
+                            old.element.clone(),
+                            old.runs.clone(),
+                            old.extent.clone(),
+                            old.code_paint.clone(),
+                        )
+                    })
             });
-            if let Some(cached) = cached {
-                self.styled_text = cached;
-                let (layout, _) = self.styled_text.borrow_mut().request_layout(
-                    global_element_id,
-                    inspector_id,
-                    window,
-                    cx,
-                );
-                return (layout, ());
+            if let Some((cached, runs, extent, code_paint)) = cached {
+                if let Some(size) = extent.get() {
+                    self.styled_text = cached;
+                    self.code_paint = Some(code_paint);
+                    self.cached_runs = Some(runs);
+                    self.cached_extent = Some(size);
+                    self.extent = Some(extent);
+                    return (super::measured_body::request_extent(size, window), ());
+                }
             }
         }
 
@@ -353,14 +530,24 @@ impl Element for Inline {
             runs.push(text_style.to_run(self.text.len() - ix));
         }
 
+        let runs = Arc::new(runs);
         self.styled_text = Rc::new(RefCell::new(
-            StyledText::new(self.text.clone()).with_runs(runs),
+            StyledText::new(self.text.clone()).with_runs(runs.as_ref().clone()),
         ));
-        if self.links.is_empty() {
+        if self.cache_layout {
+            let extent = Rc::new(Cell::new(None));
+            self.extent = Some(extent.clone());
+            let code_paint = Rc::new(RefCell::new(CodePaintCache::new(runs.clone())));
+            self.code_paint = Some(code_paint.clone());
             CODE_LAYOUTS.with(|cache| {
                 let mut cache = cache.borrow_mut();
-                cache.retain(|_, old| old.owner.strong_count() > 0);
-                cache.insert(
+                // Geometric sweep intervals amortize weak-owner cleanup over
+                // new nodes, rather than scanning every cached node per insert.
+                if cache.entries.len() >= cache.next_sweep {
+                    cache.entries.retain(|_, old| old.owner.strong_count() > 0);
+                    cache.next_sweep = cache.entries.len().max(64) * 2;
+                }
+                cache.entries.insert(
                     cache_key,
                     CachedInline {
                         owner: Arc::downgrade(&self.state),
@@ -369,6 +556,9 @@ impl Element for Inline {
                         rem: window.rem_size(),
                         highlights: self.highlights.clone(),
                         element: self.styled_text.clone(),
+                        runs,
+                        extent,
+                        code_paint,
                     },
                 );
             });
@@ -392,10 +582,56 @@ impl Element for Inline {
         window: &mut Window,
         cx: &mut App,
     ) -> Self::PrepaintState {
-        self.styled_text
-            .borrow_mut()
-            .prepaint(id, inspector_id, bounds, &mut (), window, cx);
+        let mut measured_bounds = bounds;
+        let reshaped = self
+            .cached_extent
+            .is_some_and(|old| old.width != bounds.size.width);
+        if self
+            .cached_extent
+            .is_some_and(|old| old.width != bounds.size.width)
+        {
+            // The cached full-width leaf detects both narrowing and widening.
+            // Rebuild only its consumed runs for the new constraints. Matching
+            // frames retain both the shaped text and the complete run list.
+            if let Some(runs) = &self.cached_runs {
+                let mut element = self.styled_text.borrow_mut();
+                let text = std::mem::replace(&mut *element, StyledText::new(self.text.clone()));
+                *element = text.with_runs(runs.as_ref().clone());
+                let (layout, _) = element.request_layout(id, inspector_id, window, cx);
+                window.compute_layout(
+                    layout,
+                    gpui::size(
+                        gpui::AvailableSpace::Definite(bounds.size.width),
+                        gpui::AvailableSpace::MaxContent,
+                    ),
+                    cx,
+                );
+                measured_bounds.size.height = window.layout_bounds(layout).size.height;
+                if measured_bounds.size.height != bounds.size.height {
+                    if let Some(owner) = GlobalState::global(cx).text_view_state().cloned() {
+                        super::measured_body::request_correction(&owner, window, cx);
+                    }
+                }
+            }
+        }
+        if let Some(extent) = &self.extent {
+            extent.set(Some(measured_bounds.size));
+        }
+        self.styled_text.borrow_mut().prepaint(
+            id,
+            inspector_id,
+            measured_bounds,
+            &mut (),
+            window,
+            cx,
+        );
 
+        if let Some(cache) = &self.code_paint {
+            let full = self.styled_text.borrow().layout().clone();
+            cache
+                .borrow_mut()
+                .prepare(&self.text, &full, reshaped, measured_bounds, window, cx);
+        }
         let hitbox = window.insert_hitbox(bounds, HitboxBehavior::Normal);
         hitbox
     }
@@ -419,9 +655,19 @@ impl Element for Inline {
         let text_layout = self.styled_text.borrow().layout().clone();
         // Inline links use foreground-only hover feedback (set in request_layout).
         // A list-hover fill can obscure text when theme token palettes differ.
-        self.styled_text
-            .borrow_mut()
-            .paint(global_id, None, bounds, &mut (), &mut (), window, cx);
+        if let Some(cache) = &self.code_paint {
+            cache.borrow_mut().paint(window, cx);
+        } else {
+            self.styled_text.borrow_mut().paint(
+                global_id,
+                None,
+                bounds,
+                &mut (),
+                &mut (),
+                window,
+                cx,
+            );
+        }
 
         // layout selections
         let (is_selectable, is_selection, selection) =
@@ -452,11 +698,16 @@ impl Element for Inline {
 
         if is_selectable {
             if let Some(text_view_state) = GlobalState::global(cx).text_view_state().cloned() {
-                let text_bounds = text_line_bounds(
+                let snapshot = self
+                    .code_paint
+                    .as_ref()
+                    .and_then(|cache| cache.borrow().snapshot.clone());
+                let text_bounds = text_line_bounds_cached(
                     &self.text,
                     &text_layout,
                     text_layout.line_height(),
                     window.content_mask().bounds,
+                    snapshot.as_deref(),
                 );
                 crate::Root::register_selectable_text_inline(
                     &text_view_state,
@@ -512,32 +763,34 @@ impl Element for Inline {
             });
         }
 
-        // mouse move, update hovered link
-        window.on_mouse_event({
-            let hitbox = hitbox.clone();
-            let text_layout = text_layout.clone();
-            let inline_state = self.state.clone();
-            move |event: &MouseMoveEvent, phase, window, cx| {
-                if !phase.bubble() {
-                    return;
+        // Hover indices only affect links; code retains full caret geometry
+        // for actual selection input without probing every line on hover.
+        if !self.links.is_empty() {
+            window.on_mouse_event({
+                let hitbox = hitbox.clone();
+                let text_layout = text_layout.clone();
+                let inline_state = self.state.clone();
+                move |event: &MouseMoveEvent, phase, window, cx| {
+                    if !phase.bubble() {
+                        return;
+                    }
+                    let Ok(mut state) = inline_state.lock() else {
+                        return;
+                    };
+                    let current = state.hovered_index;
+                    let updated = if hitbox.is_hovered(window) {
+                        text_layout.index_for_position(event.position).ok()
+                    } else {
+                        None
+                    };
+                    //  notify update when hovering over different links
+                    if current != updated {
+                        state.hovered_index = updated;
+                        cx.notify(current_view);
+                    }
                 }
-                let Ok(mut state) = inline_state.lock() else {
-                    return;
-                };
-                let current = state.hovered_index;
-                let updated = if hitbox.is_hovered(window) {
-                    text_layout.index_for_position(event.position).ok()
-                } else {
-                    None
-                };
-                //  notify update when hovering over different links
-                if current != updated {
-                    state.hovered_index = updated;
-                    cx.notify(current_view);
-                }
-            }
-        });
-
+            });
+        }
         if !is_selection {
             window.on_mouse_event({
                 let links = self.links.clone();
@@ -570,17 +823,30 @@ impl Element for Inline {
 }
 
 /// Union each visual row's per-char boxes inside `mask_bounds`.
+#[cfg(any(test, feature = "grove-test-support"))]
 fn text_line_bounds(
     text: &str,
     text_layout: &TextLayout,
     line_height: Pixels,
     mask_bounds: Bounds<Pixels>,
 ) -> Vec<Bounds<Pixels>> {
+    text_line_bounds_cached(text, text_layout, line_height, mask_bounds, None)
+}
+fn text_line_bounds_cached(
+    text: &str,
+    text_layout: &TextLayout,
+    line_height: Pixels,
+    mask_bounds: Bounds<Pixels>,
+    snapshot: Option<&LineSnapshot>,
+) -> Vec<Bounds<Pixels>> {
     let mut line_bounds = Vec::new();
     let mut current_line_y = None;
     let mut current_bounds: Option<Bounds<Pixels>> = None;
-    let Some((mut positions, mut offset)) = PositionCursor::visible_start(text_layout, mask_bounds)
-    else {
+    let start = match snapshot {
+        Some(snapshot) => PositionCursor::visible_from_snapshot(text_layout, mask_bounds, snapshot),
+        None => PositionCursor::visible_start(text_layout, mask_bounds),
+    };
+    let Some((mut positions, mut offset)) = start else {
         return line_bounds;
     };
 
@@ -688,7 +954,7 @@ pub fn verify_text_hit_bounds_against_reference(
 /// The layout's lookup rescans every line and glyph before the index, so calling it per char
 /// is quadratic: a pasted 52K-char log line took seconds per frame.
 struct PositionCursor {
-    lines: SmallVec<[Arc<WrappedLineLayout>; 1]>,
+    lines: Arc<[Arc<WrappedLineLayout>]>,
     line_height: Pixels,
     line: usize,
     line_start: usize,
@@ -702,7 +968,7 @@ struct PositionCursor {
 impl PositionCursor {
     fn new(text_layout: &TextLayout) -> Self {
         Self {
-            lines: text_layout.line_layouts(),
+            lines: text_layout.line_layouts().into_vec().into(),
             line_height: text_layout.line_height(),
             line: 0,
             line_start: 0,
@@ -722,49 +988,51 @@ impl PositionCursor {
         if line_height <= px(0.) || mask.size.width <= px(0.) || mask.size.height <= px(0.) {
             return None;
         }
-        let lines = text_layout.line_layouts();
-        let mut line_origin = text_layout.bounds().origin;
-        let mut line_start = 0;
-        for (line_index, line) in lines.iter().enumerate() {
-            let line_bottom = line_origin.y + line.size(line_height).height;
-            if line_origin.y < mask.bottom() && line_bottom > mask.top() {
-                let visible_row =
-                    ((mask.top() - line_origin.y).max(px(0.)) / line_height).floor() as usize;
-                let start_row = visible_row
-                    .saturating_sub(1)
-                    .min(line.wrap_boundaries.len());
-                let start_boundary = start_row
-                    .checked_sub(1)
-                    .map(|row| &line.wrap_boundaries[row]);
-                let start_byte = start_boundary.map_or(0, |boundary| {
-                    line.unwrapped_layout.runs[boundary.run_ix].glyphs[boundary.glyph_ix].index
-                });
-                let row = start_row.saturating_sub(1);
-                let glyph = row.checked_sub(1).map_or((0, 0), |row| {
-                    let boundary = &line.wrap_boundaries[row];
-                    (boundary.run_ix, boundary.glyph_ix)
-                });
-                return Some((
-                    Self {
-                        lines: lines.clone(),
-                        line_height,
-                        line: line_index,
-                        line_start,
-                        line_origin,
-                        row,
-                        row_start_x: None,
-                        glyph,
-                    },
-                    line_start + start_byte,
-                ));
-            }
-            if line_origin.y >= mask.bottom() {
-                return None;
-            }
-            line_origin.y = line_bottom;
-            line_start += line.len() + 1;
+        let snapshot = LineSnapshot::new(text_layout);
+        Self::visible_from_snapshot(text_layout, mask, &snapshot)
+    }
+    fn visible_from_snapshot(
+        text_layout: &TextLayout,
+        mask: Bounds<Pixels>,
+        snapshot: &LineSnapshot,
+    ) -> Option<(Self, usize)> {
+        let line_height = text_layout.line_height();
+        if line_height <= px(0.) {
+            return None;
         }
-        None
+        let origin = text_layout.bounds().origin;
+        let line_index = snapshot.visible(origin, mask).next()?;
+        let line = &snapshot.lines[line_index];
+        let line_origin = origin + point(px(0.), snapshot.ys[line_index]);
+        let line_start = snapshot.bytes[line_index];
+        let visible_row = ((mask.top() - line_origin.y).max(px(0.)) / line_height).floor() as usize;
+        let start_row = visible_row
+            .saturating_sub(1)
+            .min(line.wrap_boundaries.len());
+        let start_boundary = start_row
+            .checked_sub(1)
+            .map(|row| &line.wrap_boundaries[row]);
+        let start_byte = start_boundary.map_or(0, |boundary| {
+            line.unwrapped_layout.runs[boundary.run_ix].glyphs[boundary.glyph_ix].index
+        });
+        let row = start_row.saturating_sub(1);
+        let glyph = row.checked_sub(1).map_or((0, 0), |row| {
+            let boundary = &line.wrap_boundaries[row];
+            (boundary.run_ix, boundary.glyph_ix)
+        });
+        Some((
+            Self {
+                lines: snapshot.lines.clone(),
+                line_height,
+                line: line_index,
+                line_start,
+                line_origin,
+                row,
+                row_start_x: None,
+                glyph,
+            },
+            line_start + start_byte,
+        ))
     }
 
     fn position(&mut self, index: usize) -> Option<Point<Pixels>> {
@@ -950,6 +1218,162 @@ mod tests {
     }
 
     #[gpui::test]
+    fn replacing_code_document_releases_cached_text_layout(cx: &mut TestAppContext) {
+        use super::CODE_LAYOUTS;
+        use crate::text::{TextView, TextViewState};
+        use gpui::AppContext as _;
+        cx.update(crate::init);
+        let owner = cx.update(|cx| {
+            cx.new(|cx| TextViewState::markdown("```text\nlarge retained code\n```", cx))
+        });
+        let cx = cx.add_empty_window();
+        cx.draw(point(px(0.), px(0.)), size(px(480.), px(800.)), |_, _| {
+            TextView::new(&owner)
+        });
+        let key = owner.read_with(cx, |owner, _| owner.code_blocks()[0].render_state_key());
+        assert!(CODE_LAYOUTS.with(|cache| cache.borrow().entries.contains_key(&key)));
+        // Replacement occurs before another frame or cache pressure. Old code
+        // must release its full retained text and shaped glyphs immediately.
+        cx.update(|_, cx| owner.update(cx, |owner, cx| owner.set_text("plain replacement", cx)));
+        assert!(!CODE_LAYOUTS.with(|cache| cache.borrow().entries.contains_key(&key)));
+    }
+
+    #[gpui::test]
+    fn cached_code_resize_matches_fresh_highlighted_text(cx: &mut TestAppContext) {
+        use super::{CODE_LAYOUTS, Inline, InlineState};
+        use gpui::{
+            Context, FontWeight, HighlightStyle, Render, SharedString, Styled as _, Window,
+        };
+        use std::sync::{Arc, Mutex};
+
+        cx.update(crate::init);
+        let text: SharedString = "let café = repeated_identifier + another_identifier;\n    println!(\"wide and narrow code remains highlighted\");\n".repeat(6).into();
+        let highlight = HighlightStyle {
+            color: Some(gpui::rgb(0xd12255).into()),
+            font_weight: Some(FontWeight::BOLD),
+            ..Default::default()
+        };
+        let highlights: Arc<[_]> = vec![(0..3, highlight), (4..9, highlight)].into();
+        let state = Arc::new(Mutex::new(InlineState::default()));
+        state.lock().unwrap().set_text(text.clone());
+        let key = Arc::as_ptr(&state) as usize;
+        struct CodeResizeRoot {
+            state: Arc<Mutex<InlineState>>,
+            highlights: Arc<[(std::ops::Range<usize>, HighlightStyle)]>,
+            text: SharedString,
+            width: Pixels,
+            fresh: Option<TextLayout>,
+        }
+        impl Render for CodeResizeRoot {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                let oracle = StyledText::new(self.text.clone())
+                    .with_highlights(self.highlights.iter().cloned());
+                self.fresh = Some(oracle.layout().clone());
+                div()
+                    .w(self.width)
+                    .child(
+                        Inline::new(
+                            "cached-code",
+                            self.state.clone(),
+                            vec![],
+                            self.highlights.clone(),
+                        )
+                        .cache_layout(),
+                    )
+                    .child(oracle)
+            }
+        }
+        let (view, cx) = cx.add_window_view(|_, _| CodeResizeRoot {
+            state: state.clone(),
+            highlights: highlights.clone(),
+            text: text.clone(),
+            width: px(480.),
+            fresh: None,
+        });
+        let mut narrow_height = None;
+        let mut wide_height = None;
+        // Resize the container while the window stays fixed: this catches pane
+        // resizing that a viewport-width-only cache key cannot observe.
+        for width in [480., 130., 130., 620., 100., 480.] {
+            let width = px(width);
+            for _ in 0..2 {
+                cx.update(|window, cx| {
+                    view.update(cx, |view, cx| {
+                        view.width = width;
+                        cx.notify();
+                    });
+                    let _ = window.draw(cx);
+                });
+            }
+            let (cached, syntax_runs, viewport_paint) = CODE_LAYOUTS.with(|cache| {
+                let cache = cache.borrow();
+                let entry = &cache.entries[&key];
+                let layout = entry.element.borrow().layout().clone();
+                (layout, entry.runs.clone(), entry.code_paint.clone())
+            });
+            let fresh = view.read_with(cx, |view, _| view.fresh.clone().unwrap());
+            assert_eq!(cached.line_height(), fresh.line_height());
+            assert_eq!(
+                cached.bounds().size.height,
+                fresh.bounds().size.height,
+                "height after resizing to {width:?}"
+            );
+            for index in text
+                .char_indices()
+                .map(|(index, _)| index)
+                .chain(std::iter::once(text.len()))
+            {
+                assert_eq!(
+                    cached
+                        .position_for_index(index)
+                        .map(|point| point - cached.bounds().origin),
+                    fresh
+                        .position_for_index(index)
+                        .map(|point| point - fresh.bounds().origin),
+                    "caret geometry at {index}, width {width:?}"
+                );
+            }
+            {
+                let paint = viewport_paint.borrow();
+                let snapshot = paint.snapshot.as_ref().unwrap();
+                assert!(!paint.visible.is_empty());
+                for (&index, line) in &paint.visible {
+                    let start = snapshot.bytes[index];
+                    let end = start + snapshot.lines[index].len();
+                    for local in text[start..end]
+                        .char_indices()
+                        .map(|(local, _)| local)
+                        .chain(std::iter::once(end - start))
+                    {
+                        assert_eq!(
+                            line.text.layout().position_for_index(local),
+                            cached.position_for_index(start + local),
+                            "painted line {index} must retain full-layout caret geometry at width {width:?}"
+                        );
+                    }
+                }
+            }
+            assert_eq!(syntax_runs[0].len, 3);
+            assert_eq!(syntax_runs[0].color, highlight.color.unwrap());
+            assert_eq!(syntax_runs[0].font.weight, FontWeight::BOLD);
+            assert_eq!(
+                syntax_runs.iter().map(|run| run.len).sum::<usize>(),
+                text.len()
+            );
+            if width == px(100.) {
+                narrow_height = Some(cached.bounds().size.height);
+            }
+            if width == px(620.) {
+                wide_height = Some(cached.bounds().size.height);
+            }
+        }
+        assert!(
+            narrow_height.unwrap() > wide_height.unwrap(),
+            "fixture must actually rewrap"
+        );
+    }
+
+    #[gpui::test]
     fn position_cursor_matches_layout_lookup(cx: &mut TestAppContext) {
         let text = "first wrapped paragraph line with several words\n\nü naïve — wraps again here too\nlast";
         let layout = laid_out(text, px(90.), cx);
@@ -987,6 +1411,28 @@ mod tests {
                 reference_line_bounds(text, &layout, line_height, mask)
             );
         }
+    }
+
+    #[gpui::test]
+    fn code_line_snapshot_matches_reference_at_a_distant_viewport(cx: &mut TestAppContext) {
+        let text = "naïve café 界🙂 repeated words wrap correctly here\n\n".repeat(150);
+        let layout = laid_out(&text, px(170.), cx);
+        let snapshot = super::LineSnapshot::new(&layout);
+        let height = layout.line_height();
+        let mask = Bounds::new(point(px(0.), height * 275.), size(px(170.), height * 3.));
+        assert_eq!(
+            super::text_line_bounds_cached(&text, &layout, height, mask, Some(&snapshot)),
+            reference_line_bounds(&text, &layout, height, mask)
+        );
+        let visible = snapshot.visible(layout.bounds().origin, mask);
+        assert!(
+            visible.start > 100,
+            "fixture must seek past a long hidden prefix"
+        );
+        assert!(
+            visible.len() <= 5,
+            "logical line cache must stay viewport bounded"
+        );
     }
 
     #[gpui::test]

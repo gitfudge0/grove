@@ -251,5 +251,31 @@ Applied to `ui/src` (source, not manifests):
 22. **Attach native execution beneath Markdown code.**
     `TextView::code_block_footer` provides an opt-in source-attached footer.
     When present, code actions occupy a normal-flow row before code instead of
-    overlaying it. Footer-bearing code stays eager so process output and controls
-    cannot reuse a stale measured extent. Other consumers retain overlay actions.
+    overlaying it. Footer-bearing code stays eager by default. Grove explicitly
+    opts static footers into layout projection while registering their original
+    Copy/Edit/Run/Directory focus handles offscreen. Editors, errors, reviews,
+    retained runs and customized directories keep eager body layout. Other
+    consumers retain overlay actions.
+
+23. **Retain unchanged code layout and shared syntax styles.**
+    Code blocks share immutable highlight slices and a cached content digest.
+    Foreground code inlines retain shaped text and measured extents across
+    frames; width, text style, rem, source and highlight changes invalidate the
+    cache. Code painting and hit geometry seek only visible logical lines,
+    while the complete immutable layout remains the selection/caret oracle.
+    Visible lines retain their original syntax runs. Width corrections restore
+    runs and propagate wrapped-height changes through the existing measured-body
+    correction path. Replacing or
+    dropping a document releases its foreground code-layout entries. Static
+    code projection is an explicit caller opt-in requiring offscreen control
+    aliases; accessibility, inspector and active-selection fallbacks stay eager.
+    `code_block_layout_revision` invalidates closure-owned geometry independently
+    of Markdown identity, including completion that reveals shell controls.
+
+24. **Own incremental parser buffers.**
+    The parser takes its current content before parsing and keeps a reusable
+    append buffer instead of formatting the entire source each time. Published
+    documents remain immutable. Failed parses preserve the attempted source for
+    later recovery. An open fenced block remains readable as plain code; syntax
+    highlighting runs after a matching closing fence, with prefix edits reused
+    by the language highlighter.

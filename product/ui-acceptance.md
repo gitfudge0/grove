@@ -41,6 +41,14 @@ Inspect the actual native rendering against the selected reference at normal and
 | Native plans/reports/HTML | Plan section above Agents, latest revision per plan, row-to-peek pointer crossing/pinning, keyboard/Escape source focus, complete inline Markdown remains visible while the latest-revision Markdown peek is open, read-only peek and contextual decisions in inline/expanded views, custom answers through the existing composer with saved draft restoration and pending-save locking, workspace navigation retained on expansion, footer outside body scrolling at narrow/wide widths and zoom, explicit decision update versus finalized-revision approval with truthful unavailable/delivery states, exact update/approval payload and revision provenance, inert multiline authored text, linked HTML/return and external links, integrated-report theme/zoom, and motion updates without lost input/document state. |
 | Motion/keyboard routing | Native reduced-motion static endpoints without scheduled animation frames; HTML CSS/Web Animation suppression and cooperating scripts; type spaces into affected inputs; relevant shortcuts route to the owner. |
 
+For transcript code-layout caching, compare warmed and fresh code geometry after
+narrowing and widening the pane, including Unicode carets, syntax styling and rem
+changes. Exercise offscreen Copy/Edit/Run/Directory destinations and expanded tool
+Copy, then open an editor or run output and change the execution directory to
+check that mutable footers reflow. Check source replacement and document removal
+release cached layout. Keep these native/structural checks separate from live
+provider streaming and compositor presentation measurements.
+
 For shared questions, approvals, tasks, subagents, or transcript behavior, name **Codex and Claude** in acceptance checks. Report each as verified, unsupported, or untested with the method or reason. Fixtures do not establish live provider-boundary behavior. Cover affected macOS/Linux/Windows paths when platform behavior changes; do not infer unobserved parity.
 
 ## Verify and maintain

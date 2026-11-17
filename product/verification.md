@@ -1,3 +1,104 @@
+## Transcript performance — issue 45 (November 2026)
+
+Completed the transcript cache work begun alongside issue 44: parsed Review
+summaries, item indexes and work flags, reusable response/minimap preparation,
+lazy response Copy text, bounded minimap labels and a separately sized cached
+rail. Unchanged code retains shaping and paints only visible logical lines;
+full immutable layout remains the selection/caret oracle. Static shell and
+expanded-tool controls retain their original offscreen focus destinations.
+Editors, run output and customized directories use eager layout. Caller-owned
+code-layout revisions cover metadata-only completion; parsed fence metadata
+rejects invalid indented/Unicode-whitespace closers before enabling shell actions.
+
+The optimized `local` baseline is `af97459`; the candidate contains `d11a959`
+and this follow-up. Comparisons therefore include intervening issue-44/main
+changes and cannot attribute every gain to this follow-up alone. Matching Linux
+x86_64 workloads ran in a quiet CPU window, with alternating baseline/candidate
+order, three structural or five native warmup frames and nine samples. Native
+wheel fixtures dispatched 60 forward/reverse events and checked item retention
+and return to the starting offset. These are CPU scene/draw measurements, not
+compositor presentation or displayed FPS; the original issue's Mac timings are
+not a comparable baseline.
+
+Median structural redraw, milliseconds:
+
+| Workload | Baseline | Candidate |
+|---|---:|---:|
+| `many-200`, default history | 1.342 | 1.080 |
+| `many-2000`, default history | 6.299 | 1.419 |
+| `long-400` | 1.084 | 1.126 |
+| `code-2000`, viewport renderer | 7.734 | 0.350 |
+| `many-2000`, all history/work expanded | 146.724 | 100.924 |
+
+The viewport renderer's native scene medians for 200/2000/10000 code lines were
+0.886/0.860/1.020 ms; structural redraw was 0.356/0.359/0.419 ms. A 50-fold line
+increase changed steady-state cost by about 15–18% across this tested range,
+replacing the earlier proportional growth. This does not establish mathematical
+constant cost or bounded first parsing/layout. A 10000-line append still took
+151 ms to settle. The code-2000 structural append-settle comparison improved
+33.785 → 20.055 ms.
+
+Native code-2000 scene/wheel medians improved 9.945/12.389 → 0.877/1.542 ms for
+Codex fixtures and 11.137/12.057 → 1.045/1.680 ms for Claude fixtures. Expanded
+2000-item history improved to 85.595/79.295 ms (Codex) and 80.081/74.943 ms
+(Claude), but remains costly. Whole-list virtualization is still a longer-term
+follow-up; these results do not establish smooth full-history scrolling.
+
+Initial preparation became more expensive when work was moved into caches
+(2.250 → 5.160 ms before the final duplicate-extraction removal). Reusing
+prepared display text then removed repeated full-message copies while deriving
+response groups and minimap entries. The final fresh preparation median was
+3.525 ms, a 32% reduction from the first candidate but still 57% above the
+original baseline. Final incremental tail refresh measured 0.691 ms versus 3.521 ms for full preparation of the same
+2000-item candidate. This is an explicit cold-preparation tradeoff, not a claim
+that every phase improved.
+
+Structural Review/Working redraw medians differed by 1.7% for Codex fixtures
+and 4.8% for Claude fixtures. Native Review stayed near 6.44–6.49 ms while
+Working varied 3.64–5.68 ms; the native within-10% acceptance target is **not
+established**. Repeated short native prose scenes also varied: the initial
+3.863 ms baseline was not reproduced (a repeat measured 6.515 ms versus 6.495 ms
+candidate). Preserve those runs rather than presenting the favorable sample alone.
+The cache invalidation tests establish Review parse reuse, not total native parity.
+
+The final process-isolated transcript/conformance run passed 288 cases, with
+seven ignored cases left skipped. Fifteen targeted vendor checks passed through
+a task-owned copy of the excluded crate, covering code resize/Unicode carets,
+distant viewport hit bounds, syntax runs, parser ownership/recovery, fence closure, footer revision and cache release.
+The vendored subset lacks the unrelated Aurora theme fixture required to compile
+its full test module; only that unselected fixture test was cfg-disabled in the
+scratch harness. Rendering and parsing implementations matched the checkout; a
+later diagnostic-helper cfg change did not alter production behavior. This is
+targeted vendor coverage, not a passing complete upstream suite.
+Source-equivalence, multiple dirty response groups, metadata-only shell completion,
+minimap freshness/navigation/overflow, offscreen Copy/Run controls, source edits,
+directory recovery, resize and selection regressions passed. The production
+build, all-target Clippy with repository test allowances, formatting and artifact
+policy passed. Strict production Clippy still fails on the unchanged
+`src/views/sidebar/project_setup.rs:157` `expect`, also present at `af97459`;
+this is not a clean strict-production-lint result or a full workspace test run.
+
+**Codex: verified live on Linux** with real actor → CodexSession → rendered agent
+TextView ownership, 39 streaming revisions, final code, Review state and preserved
+draft. **Claude: untested live** because its attempt returned an authentication
+failure before streaming. Both providers passed synthetic native wheel fixtures;
+those do not establish live Claude coverage. The initial live Codex attempt
+satisfied its assertions but failed the deterministic test-scheduler oracle;
+the opt-in real-I/O test now uses the pinned scheduler's supported per-context
+parking mode and its corrected run passed. Later allocation-only preparation and
+explicit footer-key changes are covered by source-equivalence/footer regressions;
+the live observation is transport/ownership evidence, not native raster evidence.
+
+Inspected Linux native captures of both provider fixtures, syntax colors and Copy
+controls, the minimap, and contiguous code lines 7474–7509 at a distant viewport.
+Structural fixtures cover narrower panes and rem changes. Native Unicode/bidi
+raster parity, screen-reader behavior, presented frame timing, and macOS/Windows
+remain unverified. A missing Collapse-to-latest disclosure appeared intermittently
+in both baseline and candidate native captures; a repeat reversed which build
+showed it. Its cause remains unresolved rather than attributed to this change.
+Raw binaries, source hashes, logs and captures are retained in ignored
+`.grove-artifacts/issue45/`. No installation, restart, push or release was performed.
+
 ## Performance audit — issue 44 (November 2026)
 
 Motion is preserved, including the focused-composer pulse. Decorative animations
@@ -5,8 +106,9 @@ have leaf owners and repeated transcript/sidebar preparation is cached. The pinn
 GPUI `Window::mark_view_dirty` invalidates every ancestor, so a leaf animation can
 still render Shell, Sidebar and CodexView each frame. The user accepted this engine
 limitation; strict no-whole-window-render acceptance is **unsupported** by this
-application-only change. Cached view hosts were removed after freshness/layout
-regressions; data caches and offscreen layout projection remain.
+application-only change. Broad cached view hosts were removed after freshness/layout
+regressions; data caches and offscreen layout projection remain. Issue 45 adds
+only a separately sized minimap scene with explicit freshness/geometry checks.
 
 Recovery uses small atomic heads and committed append-only transcript journals,
 including child/chat/plan payload patches. Legacy inline sessions migrate on save.

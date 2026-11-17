@@ -29,7 +29,7 @@ impl DocumentCodeBlocks {
         {
             return;
         }
-        self.code_blocks.clear();
+        let previous = std::mem::take(&mut self.code_blocks);
         fn collect(block: &BlockNode, output: &mut Vec<super::node::CodeBlock>) {
             match block {
                 BlockNode::CodeBlock(code) => output.push(code.clone()),
@@ -47,6 +47,16 @@ impl DocumentCodeBlocks {
         for block in blocks.iter() {
             collect(block, &mut self.code_blocks);
         }
+        let retained: std::collections::HashSet<_> = self
+            .code_blocks
+            .iter()
+            .map(|code| code.render_state_key())
+            .collect();
+        for code in previous {
+            if !retained.contains(&code.render_state_key()) {
+                code.release_cached_layout();
+            }
+        }
         self.contains_code = !self.code_blocks.is_empty();
         self.blocks = Some(blocks.clone());
         #[cfg(test)]
@@ -62,10 +72,19 @@ impl DocumentCodeBlocks {
     }
 }
 
+impl Drop for DocumentCodeBlocks {
+    fn drop(&mut self) {
+        for code in &self.code_blocks {
+            code.release_cached_layout();
+        }
+    }
+}
+
 #[derive(Clone)]
 pub(super) struct BodyMeasurement {
     blocks: Arc<Vec<BlockNode>>,
     extensions: u64,
+    code_block_layout_revision: u64,
     style: TextViewStyle,
     text_style: TextStyle,
     rem_size: Pixels,
@@ -76,11 +95,17 @@ pub(super) struct BodyMeasurement {
 }
 
 impl BodyMeasurement {
-    pub(super) fn projectable_for(&self, blocks: &Arc<Vec<BlockNode>>, extensions: u64) -> bool {
+    pub(super) fn projectable_for(
+        &self,
+        blocks: &Arc<Vec<BlockNode>>,
+        extensions: u64,
+        code_block_layout_revision: u64,
+    ) -> bool {
         self.stable
             && self.supported
             && Arc::ptr_eq(&self.blocks, blocks)
             && self.extensions == extensions
+            && self.code_block_layout_revision == code_block_layout_revision
     }
 }
 
@@ -182,6 +207,7 @@ pub(super) fn record_layout(
     state.measured_layout = Some(BodyMeasurement {
         blocks,
         extensions,
+        code_block_layout_revision: state.code_block_layout_revision,
         style: state.text_view_style.clone(),
         text_style,
         rem_size: window.rem_size(),
@@ -276,6 +302,7 @@ impl Element for MeasuredBody {
                 old.projectable_for(
                     &state.parsed_content.document.blocks,
                     state.markdown_extensions.revision(),
+                    state.code_block_layout_revision,
                 ) && old.style == state.text_view_style
                     && old.style.code_block == state.text_view_style.code_block
                     && old.style.table == state.text_view_style.table
@@ -309,6 +336,8 @@ impl Element for MeasuredBody {
                     "blocks"
                 } else if old.extensions != state.markdown_extensions.revision() {
                     "extensions"
+                } else if old.code_block_layout_revision != state.code_block_layout_revision {
+                    "code-controls"
                 } else if old.style != state.text_view_style {
                     "style"
                 } else if old.style.code_block != state.text_view_style.code_block {
@@ -469,6 +498,69 @@ mod tests {
             let _ = window.draw(cx);
         });
     }
+    #[gpui::test]
+    fn code_footer_metadata_revision_invalidates_unchanged_markdown_extent(
+        cx: &mut TestAppContext,
+    ) {
+        struct FooterRevision {
+            owner: Entity<TextViewState>,
+            revision: u64,
+        }
+        impl Render for FooterRevision {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                let height = if self.revision == 0 { 0. } else { 64. };
+                div().w(px(320.)).child(
+                    TextView::new(&self.owner)
+                        .code_block_layout_projection(true)
+                        .code_block_layout_revision(self.revision)
+                        .code_block_footer(move |_, _, _| div().h(px(height))),
+                )
+            }
+        }
+        cx.update(crate::init);
+        let (view, cx) = cx.add_window_view(|_, cx| FooterRevision {
+            owner: cx.new(|cx| TextViewState::markdown("```sh\nprintf unchanged\n```", cx)),
+            revision: 0,
+        });
+        for _ in 0..3 {
+            draw(&view, cx);
+        }
+        let owner = view.read_with(cx, |view, _| view.owner.clone());
+        let (blocks, generation, height) = owner.read_with(cx, |owner, _| {
+            assert!(owner.supports_layout_projection());
+            (
+                owner.parsed_content.document.blocks.clone(),
+                owner.layout_generation(),
+                owner.layout_bounds().size.height,
+            )
+        });
+        owner.update(cx, |owner, _| {
+            // Caller metadata changes before the next body measurement, while
+            // the Markdown and accepted parse generation remain identical.
+            owner.code_block_layout_revision = 1;
+            assert!(
+                !owner.supports_layout_projection(),
+                "old control geometry must stop projecting immediately"
+            );
+        });
+        view.update(cx, |view, cx| {
+            view.revision = 1;
+            cx.notify();
+        });
+        for _ in 0..3 {
+            draw(&view, cx);
+        }
+        owner.read_with(cx, |owner, _| {
+            assert!(Arc::ptr_eq(&blocks, &owner.parsed_content.document.blocks));
+            assert_eq!(owner.layout_generation(), generation);
+            assert_eq!(owner.layout_bounds().size.height, height + px(64.));
+            assert!(
+                owner.supports_layout_projection(),
+                "new footer extent must project after measurement"
+            );
+        });
+    }
+
     #[test]
     fn accepted_document_code_detection_is_cached_by_arc_identity() {
         let code = Arc::new(vec![BlockNode::Root {

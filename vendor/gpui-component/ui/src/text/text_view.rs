@@ -33,6 +33,7 @@ pub struct TextView {
     scrollable: bool,
     code_block_actions: Option<Arc<CodeBlockActionsFn>>,
     code_block_layout_projection: bool,
+    code_block_layout_revision: u64,
     code_block_footer: Option<Arc<CodeBlockActionsFn>>,
     markdown_extensions: Arc<MarkdownExtensions>,
 }
@@ -72,6 +73,7 @@ impl TextView {
             scrollable: false,
             code_block_actions: None,
             code_block_layout_projection: false,
+            code_block_layout_revision: 0,
             code_block_footer: None,
             markdown_extensions: Arc::default(),
         }
@@ -89,6 +91,7 @@ impl TextView {
             scrollable: false,
             code_block_actions: None,
             code_block_layout_projection: false,
+            code_block_layout_revision: 0,
             code_block_footer: None,
             markdown_extensions: Arc::default(),
         }
@@ -106,6 +109,7 @@ impl TextView {
             scrollable: false,
             code_block_actions: None,
             code_block_layout_projection: false,
+            code_block_layout_revision: 0,
             code_block_footer: None,
             markdown_extensions: Arc::default(),
         }
@@ -132,6 +136,13 @@ impl TextView {
     /// every offscreen action's keyboard routing and keep dynamic footers eager.
     pub fn code_block_layout_projection(mut self, enabled: bool) -> Self {
         self.code_block_layout_projection = enabled;
+        self
+    }
+
+    /// Version of caller-owned action/footer geometry independent of Markdown.
+    /// Change it when metadata adds/removes controls without changing the source.
+    pub fn code_block_layout_revision(mut self, revision: u64) -> Self {
+        self.code_block_layout_revision = revision;
         self
     }
 
@@ -263,6 +274,7 @@ impl Element for TextView {
         state.update(cx, |state, cx| {
             state.code_block_actions = self.code_block_actions.clone();
             state.code_block_layout_projection = self.code_block_layout_projection;
+            state.code_block_layout_revision = self.code_block_layout_revision;
             state.code_block_footer = self.code_block_footer.clone();
             state.set_markdown_extensions(self.markdown_extensions.clone(), cx);
             state.selectable = self.selectable;
@@ -326,7 +338,13 @@ impl Element for TextView {
         window: &mut Window,
         cx: &mut App,
     ) -> Self::PrepaintState {
+        // Width-dependent cached code layouts may request an owning body
+        // correction during prepaint, before selectable text is painted.
+        GlobalState::global_mut(cx)
+            .text_view_state_stack
+            .push(request_layout.state.clone());
         request_layout.element.prepaint(window, cx);
+        GlobalState::global_mut(cx).text_view_state_stack.pop();
         window.insert_hitbox(bounds, HitboxBehavior::Normal)
     }
 

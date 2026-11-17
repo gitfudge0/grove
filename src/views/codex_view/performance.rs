@@ -86,6 +86,17 @@ mod performance {
         } else {
             panic!("unknown workload {workload}");
         }
+        if std::env::var("GROVE_PERF_REVIEW").as_deref() == Ok("1") {
+            state.status = Status::Done;
+            state.saved.work_periods = vec![codex::WorkPeriod {
+                start_item: 0,
+                end_item: Some(state.saved.items.len()),
+                duration_ms: Some(1000),
+                subagents: vec![],
+            }];
+            state.saved.session_review.pending = Some(codex::ReviewCompletion { id: 1, period: 0 });
+            state.saved.session_review.summary = "Completed the measured transcript workload. Native presentation remains a separate measurement.".into();
+        }
         if std::env::var("GROVE_PERF_BUSY").as_deref() == Ok("1") {
             state.status = Status::Working;
             state.turn_id = Some("perf-working-turn".into());
@@ -111,6 +122,16 @@ mod performance {
                     subagents: vec![],
                 });
             }
+        }
+        if std::env::var("GROVE_PERF_REVIEW").as_deref() == Ok("1") {
+            assert_eq!(
+                state.session_status(),
+                if state.status.busy() {
+                    "Working"
+                } else {
+                    "Review"
+                }
+            );
         }
         if std::env::var("GROVE_PERF_PROVIDER").as_deref() == Ok("claude") {
             state.saved.provider = codex::Provider::Claude;

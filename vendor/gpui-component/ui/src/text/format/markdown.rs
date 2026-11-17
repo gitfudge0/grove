@@ -367,17 +367,22 @@ fn ast_to_node(source: &str, value: mdast::Node, cx: &mut NodeContext) -> BlockN
             span: new_span(val.position, cx),
         },
         Node::Code(raw) => {
-            let open = raw
+            let fence = raw
                 .position
                 .as_ref()
-                .and_then(|position| source.get(position.start.offset..position.end.offset))
-                .is_some_and(open_code_fence);
+                .and_then(|position| source.get(position.start.offset..position.end.offset));
+            let fenced = fence.is_some_and(|source| {
+                let first = source.lines().next().unwrap_or("").trim_start();
+                first.starts_with("```") || first.starts_with("~~~")
+            });
+            let open = fenced && fence.is_some_and(open_code_fence);
             BlockNode::CodeBlock(
                 CodeBlock::new(
                     raw.value.into(),
                     raw.lang.map(|s| s.into()),
                     new_span(raw.position, cx),
                 )
+                .closed_fence(fenced && !open)
                 .defer_highlighting(open),
             )
         }
@@ -713,7 +718,13 @@ fn open_code_fence(source: &str) -> bool {
     let Some(last) = lines.last() else {
         return true;
     };
-    let last = last.trim();
+    // CommonMark permits at most three ASCII spaces before a closing fence.
+    // A tab reaches column four; Unicode whitespace is literal code content.
+    let indentation = last.bytes().take_while(|byte| *byte == b' ').count();
+    if indentation > 3 {
+        return true;
+    }
+    let last = last[indentation..].trim_end_matches([' ', '\t']);
     !(last.len() >= count && last.chars().all(|c| c == marker))
 }
 
@@ -725,4 +736,35 @@ fn streaming_fence_highlighting_waits_for_a_matching_close() {
     assert!(!open_code_fence("```rust\nlet value = 1;\n```"));
     assert!(!open_code_fence("  ~~~~rust\nvalue\n~~~~~  "));
     assert!(!open_code_fence("ordinary prose"));
+}
+
+#[cfg(test)]
+#[test]
+fn code_fence_closure_metadata_matches_markdown_source() {
+    for (source, closed) in [
+        ("```sh\nprintf hi\n```", true),
+        ("~~~~sh\nprintf hi\n~~~~", true),
+        ("```sh\nprintf hi", false),
+        ("~~~~sh\nprintf hi\n~~~", false),
+        ("    indented code", false),
+        ("```sh\nprintf hi\n    ```", false),
+        ("```sh\nprintf hi\n\t```", false),
+        ("```sh\nprintf hi\n\u{a0}```", false),
+        ("```sh\nprintf hi\n```\u{a0}", false),
+        ("```sh\nprintf hi\n   ``` \t", true),
+    ] {
+        let document = parse(source, &mut NodeContext::default()).unwrap();
+        let code = document
+            .blocks
+            .iter()
+            .find_map(|block| {
+                if let BlockNode::CodeBlock(code) = block {
+                    Some(code)
+                } else {
+                    None
+                }
+            })
+            .unwrap();
+        assert_eq!(code.is_closed_fence(), closed, "{source}");
+    }
 }

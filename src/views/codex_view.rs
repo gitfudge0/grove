@@ -743,43 +743,12 @@ impl TranscriptRenderCache {
                 .cloned()
                 .collect()
         });
-        let mut tail_groups = response_groups(&items[restart..], state.saved.thread_id.as_deref());
-        for group in &mut tail_groups {
-            // Missing-id fallbacks must use absolute indices, not slice offsets.
-            if restart > 0 {
-                if let Some(first) = group.prose.first().copied() {
-                    let first_agent = (0..=first)
-                        .find(|index| items[restart + index]["type"] == "agentMessage")
-                        .unwrap_or(first);
-                    let id = items[restart + first_agent]["id"]
-                        .as_str()
-                        .map_or_else(|| (restart + first_agent).to_string(), str::to_owned);
-                    group.key = format!(
-                        "{}:response:{id}",
-                        state.saved.thread_id.as_deref().unwrap_or_default()
-                    );
-                    group.source_keys = group
-                        .prose
-                        .iter()
-                        .map(|index| {
-                            let id = items[restart + index]["id"]
-                                .as_str()
-                                .map_or_else(|| (restart + index).to_string(), str::to_owned);
-                            format!("{}:source:{id}", group.key)
-                        })
-                        .collect();
-                }
-            }
-            group.end += restart;
-            for index in &mut group.prose {
-                *index += restart;
-            }
-            group.copy_sources = group
-                .prose
-                .iter()
-                .map(|index| item_data[*index].text.clone())
-                .collect();
-        }
+        let tail_groups = response_groups_from(
+            items,
+            state.saved.thread_id.as_deref(),
+            restart,
+            Some(&item_data),
+        );
         groups.extend(tail_groups.into_iter().map(Rc::new));
         let response_groups = groups;
         let mut response_ends = vec![None; items.len() + 1];
@@ -797,10 +766,7 @@ impl TranscriptRenderCache {
                 .cloned()
                 .collect()
         });
-        let mut tail_entries = message_minimap_entries(&items[restart..]);
-        for entry in &mut tail_entries {
-            entry.item_index += restart;
-        }
+        let tail_entries = message_minimap_entries_from(items, restart, Some(&item_data));
         minimap_entries.extend(tail_entries);
         let mut nearest_user = Vec::with_capacity(items.len() + 1);
         let mut latest_user = 0;
@@ -897,7 +863,33 @@ const TASK_SPINNER_PERIOD: std::time::Duration =
 /// Clock ticks per spinner frame, the inverse of `animation_clock::spinner_frame`.
 const SPINNER_TICKS_PER_FRAME: u64 = 3;
 
-/// Separately cached scene: unrelated transcript frames do not rebuild every marker.
+/// The minimap has a definite pane-sized host, so unchanged scenes can be replayed
+/// independently of transcript animation and scroll frames.
+struct TranscriptMinimap {
+    parent: gpui::WeakEntity<CodexView>,
+    prepared: Rc<PreparedTranscript>,
+    active: Option<usize>,
+    preview_width: gpui::Pixels,
+    colors: [gpui::Hsla; 6],
+}
+impl Render for TranscriptMinimap {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.parent
+            .update(cx, |parent, cx| {
+                parent.build_message_minimap(
+                    &self.prepared.minimap_entries,
+                    self.active,
+                    self.preview_width,
+                    window,
+                    cx,
+                )
+            })
+            .unwrap_or_else(|_| div().into_any_element())
+    }
+}
+#[cfg(test)]
+thread_local! { static MINIMAP_BUILDS: Cell<usize> = const { Cell::new(0) }; }
+
 /// A user input and the final (or latest streaming) assistant message before
 /// the next input. Source indices stay distinct from rendered child indices.
 #[derive(Clone, Debug, PartialEq)]
@@ -905,6 +897,10 @@ struct MessageMinimapEntry {
     item_index: usize,
     prompt: String,
     response: String,
+    prompt_preview: gpui::SharedString,
+    response_preview: gpui::SharedString,
+    label: gpui::SharedString,
+    description: gpui::SharedString,
 }
 
 /// Assistant review metadata belongs to the review panel; retain raw saved items.
@@ -917,12 +913,35 @@ fn transcript_item_text(item: &serde_json::Value) -> String {
     }
 }
 
+#[cfg(test)]
 fn message_minimap_entries<T: std::borrow::Borrow<serde_json::Value>>(
     items: &[T],
+) -> Vec<MessageMinimapEntry> {
+    message_minimap_entries_from(items, 0, None)
+}
+
+/// Preparation already extracted lossless display text. Borrow it instead of
+/// repeatedly cloning large provider strings while deriving groups and excerpts.
+fn prepared_item_text<'a, T: std::borrow::Borrow<serde_json::Value>>(
+    items: &'a [T],
+    prepared: Option<&'a [Rc<PreparedItem>]>,
+    index: usize,
+) -> std::borrow::Cow<'a, str> {
+    prepared.map_or_else(
+        || std::borrow::Cow::Owned(transcript_item_text(items[index].borrow())),
+        |prepared| std::borrow::Cow::Borrowed(prepared[index].text.as_ref()),
+    )
+}
+
+fn message_minimap_entries_from<T: std::borrow::Borrow<serde_json::Value>>(
+    items: &[T],
+    restart: usize,
+    prepared: Option<&[Rc<PreparedItem>]>,
 ) -> Vec<MessageMinimapEntry> {
     let inputs: Vec<_> = items
         .iter()
         .enumerate()
+        .skip(restart)
         .filter(|(_, item)| item.borrow()["type"] == "userMessage")
         .map(|(index, _)| index)
         .collect();
@@ -931,29 +950,36 @@ fn message_minimap_entries<T: std::borrow::Borrow<serde_json::Value>>(
         .enumerate()
         .map(|(turn, &index)| {
             let end = inputs.get(turn + 1).copied().unwrap_or(items.len());
-            let replies: Vec<_> = items[index + 1..end]
-                .iter()
-                .filter(|item| item.borrow()["type"] == "agentMessage")
-                .filter(|item| !transcript_item_text(item.borrow()).trim().is_empty())
-                .collect();
-            let response = replies
-                .iter()
-                .rev()
-                .find(|item| item.borrow()["phase"] == "final_answer")
-                .or_else(|| replies.last())
-                .map_or_else(
-                    || "No response yet".into(),
-                    |item| transcript_item_text(item.borrow()),
-                );
-            let prompt = codex::item_text(items[index].borrow());
+            let mut latest = None;
+            let mut final_answer = None;
+            for reply in index + 1..end {
+                if items[reply].borrow()["type"] == "agentMessage"
+                    && !prepared_item_text(items, prepared, reply).trim().is_empty()
+                {
+                    latest = Some(reply);
+                    if items[reply].borrow()["phase"] == "final_answer" {
+                        final_answer = Some(reply);
+                    }
+                }
+            }
+            let response = final_answer.or(latest).map_or_else(
+                || "No response yet".into(),
+                |reply| minimap_source_excerpt(&prepared_item_text(items, prepared, reply)),
+            );
+            let prompt = prepared_item_text(items, prepared, index);
+            let prompt = if prompt.trim().is_empty() {
+                "Image attachment".into()
+            } else {
+                minimap_source_excerpt(&prompt)
+            };
             MessageMinimapEntry {
                 item_index: index,
-                prompt: if prompt.trim().is_empty() {
-                    "Image attachment".into()
-                } else {
-                    minimap_source_excerpt(&prompt)
-                },
-                response: minimap_source_excerpt(&response),
+                prompt_preview: minimap_excerpt(&prompt).into(),
+                response_preview: minimap_excerpt(&response).into(),
+                label: format!("Go to message: {prompt}").into(),
+                description: format!("Response: {response}").into(),
+                prompt,
+                response,
             }
         })
         .collect()
@@ -1539,17 +1565,6 @@ struct RewindConfirmation {
     files_unavailable: Option<String>,
 }
 
-fn closed_shell_fence(fence: &str) -> bool {
-    let mut lines = fence.lines();
-    let first = lines.next().unwrap_or("").trim_start();
-    let marker = if first.starts_with("```") { '`' } else { '~' };
-    let count = first.chars().take_while(|c| *c == marker).count();
-    count >= 3
-        && lines.last().is_some_and(|last| {
-            last.trim().chars().count() >= count && last.trim().chars().all(|c| c == marker)
-        })
-}
-
 fn snippet_shell_supported(language: &str) -> bool {
     let shell = grove_core::env_path::login_shell();
     let shell = std::path::Path::new(&shell)
@@ -1618,6 +1633,7 @@ pub struct CodexView {
     selection_subscriptions: HashMap<String, Subscription>,
     focus_subscriptions: HashMap<String, (Subscription, Subscription)>,
     focus_revision: Option<u64>,
+    focus_thread: Option<String>,
     focus_sources: HashMap<String, codex::TranscriptItem>,
     message_slots:
         rustc_hash::FxHashMap<String, Rc<std::cell::RefCell<measured_slot::Measurement>>>,
@@ -1727,6 +1743,7 @@ pub struct CodexView {
     status_card_keys: HashSet<String>,
     task_cache: Option<Rc<TaskCache>>,
     transcript_cache: Option<Rc<TranscriptRenderCache>>,
+    minimap_view: Option<Entity<TranscriptMinimap>>,
     snippet_sources: std::cell::RefCell<snippets::SnippetSources>,
     turn_history: TurnHistory,
     history_earlier_focus: FocusHandle,
@@ -2264,6 +2281,7 @@ impl CodexView {
             selection_subscriptions: HashMap::new(),
             focus_subscriptions: HashMap::new(),
             focus_revision: None,
+            focus_thread: None,
             focus_sources: HashMap::new(),
             message_slots: rustc_hash::FxHashMap::default(),
             tool_slots: rustc_hash::FxHashMap::default(),
@@ -2369,6 +2387,7 @@ impl CodexView {
             status_card_keys: HashSet::new(),
             task_cache: None,
             transcript_cache: None,
+            minimap_view: None,
             snippet_sources: std::cell::RefCell::default(),
             turn_history: TurnHistory::default(),
             history_earlier_focus: cx.focus_handle().tab_stop(true).tab_index(0),
@@ -4262,6 +4281,7 @@ impl CodexView {
         let tool_key = tool_expansion_key(tool, detail_index);
         let tool_expanded = self.expanded.contains(&tool_key);
         let keyboard_key = tool_key.clone();
+        let copy_key = tool_key.clone();
         let failed = tool_failed(tool);
         let activity = tool_activity_summary(tool, tool_is_running(state, detail_index));
         let data = self.prepared_item(state, detail_index);
@@ -4387,7 +4407,15 @@ impl CodexView {
                 .on_click(cx.listener(move |this, _, _, cx| this.toggle_expansion(&tool_key, cx))),
             );
         if tool_expanded {
-            let copy = data.detail().to_string();
+            let copy = data.detail();
+            let copy_focus = self.ensure_control_focus(
+                &format!(
+                    "tool-copy:{}:{detail_index}:{copy_key}",
+                    state.saved.thread_id.as_deref().unwrap_or_default()
+                ),
+                window,
+                cx,
+            );
             let markdown = data.detail_markdown();
             detail_row = detail_row.child(
                 div()
@@ -4401,7 +4429,10 @@ impl CodexView {
                     .flex()
                     .flex_col()
                     .gap(rpx(SPACE_SM))
-                    .child(copy_control("codex-copy-tool", "Copy tool call", copy))
+                    .child(
+                        copy_control("codex-copy-tool", "Copy tool call", copy)
+                            .track_focus(&copy_focus),
+                    )
                     .child(
                         TextView::markdown(("codex-group-tool-text", detail_index), markdown)
                             .style(markdown_style(window))
@@ -4516,8 +4547,12 @@ impl CodexView {
                 };
                 (text.to_string(), shown)
             });
-            let revealed =
-                super::motion::streamed_text(&text, entry, elapsed, state.status.busy()).to_owned();
+            let revealed = super::motion::streamed_text(&text, entry, elapsed, state.status.busy());
+            let revealed = if revealed.len() == text.len() {
+                text.clone()
+            } else {
+                gpui::SharedString::from(revealed.to_owned())
+            };
             if entry.1 < text.len() {
                 self.smooth_follow |= near_bottom && !self.composer_collapsed;
                 let owner = cx.entity().downgrade();
@@ -4529,7 +4564,7 @@ impl CodexView {
                     });
                 }
             }
-            gpui::SharedString::from(revealed)
+            revealed
         } else {
             if kind == "agentMessage" {
                 let key = item["id"]
@@ -4767,8 +4802,6 @@ impl CodexView {
                             if kind == "agentMessage" {
                                 let owner = cx.entity().downgrade();
                                 let source_digest = data.snippet_source_digest(&text);
-                                let source = text.clone();
-                                let footer_source = text.clone();
                                 let footer_owner = owner.clone();
                                 let footer_key = owner_key.clone();
                                 let footer_cwd = state.saved.cwd.clone();
@@ -4777,13 +4810,18 @@ impl CodexView {
                                     || item["status"] == "completed")
                                     && item["status"] != "inProgress"
                                     && !self.transcript_only();
-                                view.code_block_layout_projection(true)
+                                let project_code = self
+                                    .message_slots
+                                    .get(&format!("{owner_key}:{index}"))
+                                    .is_none_or(|cache| cache.borrow().code_controls_static(self));
+                                view.code_block_layout_projection(project_code)
+                                    .code_block_layout_revision(u64::from(finalized))
                                     .code_block_actions(move |block, window, cx| {
-                                        let code = block.code().to_string();
-                                        let key = snippets::key_with_digest(
+                                        let code = block.code();
+                                        let key = snippets::key_with_digests(
                                             &owner_key,
                                             block.span.as_ref().map_or(0, |span| span.start),
-                                            &code,
+                                            block.content_digest(),
                                             source_digest,
                                         );
                                         let focus = owner
@@ -4848,11 +4886,7 @@ impl CodexView {
                                             div().flex().gap(rpx(SPACE_SM)).child(copy);
                                         let language =
                                             block.lang().map(|s| s.to_string()).unwrap_or_default();
-                                        let closed = block
-                                            .span
-                                            .as_ref()
-                                            .and_then(|span| source.get(span.start..span.end))
-                                            .is_some_and(closed_shell_fence);
+                                        let closed = block.is_closed_fence();
                                         if finalized
                                             && closed
                                             && !code.trim().is_empty()
@@ -4867,25 +4901,19 @@ impl CodexView {
                                         actions
                                     })
                                     .code_block_footer(move |block, window, cx| {
-                                        let code = block.code().to_string();
+                                        let code = block.code();
                                         let language =
                                             block.lang().map(|s| s.to_string()).unwrap_or_default();
-                                        let closed = block
-                                            .span
-                                            .as_ref()
-                                            .and_then(|span| {
-                                                footer_source.get(span.start..span.end)
-                                            })
-                                            .is_some_and(closed_shell_fence);
+                                        let closed = block.is_closed_fence();
                                         if finalized
                                             && closed
                                             && !code.trim().is_empty()
                                             && snippet_shell_supported(&language)
                                         {
-                                            let key = snippets::key_with_digest(
+                                            let key = snippets::key_with_digests(
                                                 &footer_key,
                                                 block.span.as_ref().map_or(0, |span| span.start),
-                                                &code,
+                                                block.content_digest(),
                                                 source_digest,
                                             );
                                             footer_owner
@@ -5359,6 +5387,7 @@ impl CodexView {
         #[cfg(test)]
         let _phase = measured_slot::phases::Section::minimap();
         if prepared.minimap_entries.is_empty() {
+            self.minimap_view = None;
             return div().into_any_element();
         }
         let near_bottom = self.scroll.max_offset().y + self.scroll.offset().y
@@ -5366,18 +5395,63 @@ impl CodexView {
         let active = if near_bottom {
             anchors.last()
         } else {
-            anchors
-                .iter()
-                .rev()
-                .find(|(_, child)| *child <= self.scroll.top_item())
-                .or_else(|| anchors.first())
+            let boundary = anchors.partition_point(|(_, child)| *child <= self.scroll.top_item());
+            anchors.get(boundary.saturating_sub(1))
         }
         .map(|(index, _)| *index);
         let preview_width = (self.scroll.bounds().size.width
             - rpx(SPACE_3XL).to_pixels(window.rem_size()))
         .max(rpx(CHROME_CONTROL_H).to_pixels(window.rem_size()))
         .min(rpx(MINIMAP_PREVIEW_W - SPACE_3XL).to_pixels(window.rem_size()));
-        self.build_message_minimap(&prepared.minimap_entries, active, preview_width, window, cx)
+        // Accessibility and inspector traversal require the ordinary eager tree.
+        if window.is_a11y_active() || window.is_inspector_picking(cx) {
+            return self.build_message_minimap(
+                &prepared.minimap_entries,
+                active,
+                preview_width,
+                window,
+                cx,
+            );
+        }
+        let colors = [
+            c::FG(),
+            c::FG_DIM(),
+            c::BG_HOVER(),
+            c::SURFACE_RAISED(),
+            c::BORDER(),
+            c::BG(),
+        ];
+        let parent = cx.entity().downgrade();
+        let minimap = self
+            .minimap_view
+            .get_or_insert_with(|| {
+                cx.new(|_| TranscriptMinimap {
+                    parent,
+                    prepared: prepared.clone(),
+                    active,
+                    preview_width,
+                    colors,
+                })
+            })
+            .clone();
+        minimap.update(cx, |view, cx| {
+            if !Rc::ptr_eq(&view.prepared, &prepared)
+                || view.active != active
+                || view.preview_width != preview_width
+                || view.colors != colors
+            {
+                view.prepared = prepared;
+                view.active = active;
+                view.preview_width = preview_width;
+                view.colors = colors;
+                cx.notify();
+            }
+        });
+        let mut style = gpui::StyleRefinement::default();
+        style.size.width = Some(rpx(CHROME_CONTROL_H).into());
+        style.size.height = Some(gpui::relative(1.).into());
+        style.flex_shrink = Some(0.);
+        minimap.cached(style).into_any_element()
     }
 
     fn build_message_minimap(
@@ -5388,11 +5462,14 @@ impl CodexView {
         _window: &Window,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
+        #[cfg(test)]
+        MINIMAP_BUILDS.with(|count| count.set(count.get() + 1));
         let rail = div()
             .id("codex-message-minimap")
             .debug_selector(|| "codex-message-minimap".into())
             .role(gpui::Role::Group)
             .aria_label("Conversation messages")
+            .h_full()
             .w(rpx(CHROME_CONTROL_H))
             .flex_shrink_0()
             .min_h_0()
@@ -5415,8 +5492,8 @@ impl CodexView {
         for entry in entries {
             let index = entry.item_index;
             let selected = active == Some(index);
-            let prompt = minimap_excerpt(&entry.prompt);
-            let response = minimap_excerpt(&entry.response);
+            let prompt = entry.prompt_preview.clone();
+            let response = entry.response_preview.clone();
             stack = stack.child(
                 header_control_with_tooltip(
                     "codex-minimap-message",
@@ -5454,8 +5531,8 @@ impl CodexView {
                 .min_h(rpx(SPACE_SM))
                 .max_h(rpx(SPACE_LG))
                 .tab_index(0)
-                .aria_label(format!("Go to message: {}", entry.prompt))
-                .aria_description(format!("Response: {}", entry.response))
+                .aria_label(entry.label.clone())
+                .aria_description(entry.description.clone())
                 .when(selected, |style| {
                     style.bg(c::BG_HOVER()).text_color(c::FG())
                 })
@@ -6872,8 +6949,8 @@ impl Render for CodexView {
                         let focus = self.ensure_control_focus(&focus_key, window, cx);
                         let shimmer = transcript.work.active[detail_index]
                             && transcript.work.tool_visible(&state, detail_index);
-                        let eager = self.expanded.contains(&tool_key)
-                            || tool_is_running(&state, detail_index)
+                        let detail_expanded = self.expanded.contains(&tool_key);
+                        let eager = tool_is_running(&state, detail_index)
                             || shimmer
                             || window.is_a11y_active()
                             || gpui_component::text::has_active_text_selection(window, cx)
@@ -6890,6 +6967,7 @@ impl Render for CodexView {
                                 detail_index,
                                 tool_key,
                                 focus,
+                                detail_expanded,
                                 cache,
                             )
                             .into_any_element()
@@ -8609,9 +8687,17 @@ impl CodexView {
 
     fn prune_transcript_controls(&mut self, transcript: &TranscriptRenderCache) {
         let revision = transcript.state.saved.items.revision();
-        if self.focus_revision == Some(revision) {
+        if self.focus_revision == Some(revision)
+            && self.focus_thread == transcript.state.saved.thread_id
+        {
             return;
         }
+        if self.focus_thread != transcript.state.saved.thread_id {
+            self.message_focus.clear();
+            self.focus_subscriptions.clear();
+        }
+        self.focus_thread
+            .clone_from(&transcript.state.saved.thread_id);
         self.focus_revision = Some(revision);
         let thread = transcript
             .state
@@ -8683,7 +8769,7 @@ impl CodexView {
                     .and_then(|v| v.parse::<usize>().ok())
                     .is_some_and(|index| index <= count);
             }
-            for family in ["tool-row:", "work-header:"] {
+            for family in ["tool-row:", "tool-copy:", "work-header:"] {
                 if let Some(row) = key.strip_prefix(family) {
                     return row
                         .strip_prefix(&prefix)
@@ -8911,13 +8997,11 @@ impl CodexView {
         actions = actions.child(button).child(
             self.fork_control(
                 group.end,
-                projected.saved.items[..group.end]
-                    .iter()
-                    .rev()
-                    .find_map(|item| {
-                        let id = item["id"].as_str()?;
-                        self.source_item_index(id, cx).map(|_| id.to_owned())
-                    }),
+                group
+                    .anchor_index
+                    .and_then(|index| projected.saved.items.get(index))
+                    .and_then(|item| item["id"].as_str())
+                    .map(str::to_owned),
                 false,
                 window,
                 cx,
@@ -8943,8 +9027,13 @@ impl CodexView {
             .into_any_element()
     }
 
-    fn copy_code_block(&mut self, key: String, text: String, cx: &mut Context<Self>) {
-        cx.write_to_clipboard(gpui::ClipboardItem::new_string(text));
+    fn copy_code_block(
+        &mut self,
+        key: String,
+        text: impl Into<gpui::SharedString>,
+        cx: &mut Context<Self>,
+    ) {
+        cx.write_to_clipboard(gpui::ClipboardItem::new_string(text.into().to_string()));
         self.copy_generation = self.copy_generation.wrapping_add(1);
         let generation = self.copy_generation;
         self.copied_code_blocks.insert(key.clone(), generation);
@@ -11716,6 +11805,7 @@ struct ResponseGroup {
     source_keys: Vec<String>,
     copy_text: std::cell::OnceCell<String>,
     copy_sources: Vec<gpui::SharedString>,
+    anchor_index: Option<usize>,
     received_at: Option<u64>,
 }
 
@@ -11733,19 +11823,39 @@ impl ResponseGroup {
     }
 }
 
+#[cfg(test)]
 fn response_groups<T: std::borrow::Borrow<serde_json::Value>>(
     items: &[T],
     thread_id: Option<&str>,
 ) -> Vec<ResponseGroup> {
+    response_groups_from(items, thread_id, 0, None)
+}
+
+fn response_groups_from<T: std::borrow::Borrow<serde_json::Value>>(
+    items: &[T],
+    thread_id: Option<&str>,
+    restart: usize,
+    prepared: Option<&[Rc<PreparedItem>]>,
+) -> Vec<ResponseGroup> {
     let mut groups = Vec::new();
-    let mut start = 0;
-    for end in (0..=items.len())
+    let mut start = restart;
+    // Compute the last usable fork anchor once, including idless trailing items.
+    let mut anchors = Vec::with_capacity(items.len() + 1);
+    let mut anchor = None;
+    anchors.push(anchor);
+    for (index, item) in items.iter().enumerate() {
+        if item.borrow()["id"].is_string() {
+            anchor = Some(index);
+        }
+        anchors.push(anchor);
+    }
+    for end in (restart..=items.len())
         .filter(|index| *index == items.len() || items[*index].borrow()["type"] == "userMessage")
     {
         let prose = (start..end)
             .filter(|index| {
                 items[*index].borrow()["type"] == "agentMessage"
-                    && !transcript_item_text(items[*index].borrow())
+                    && !prepared_item_text(items, prepared, *index)
                         .trim()
                         .is_empty()
             })
@@ -11765,6 +11875,7 @@ fn response_groups<T: std::borrow::Borrow<serde_json::Value>>(
                 source_id(first)
             );
             groups.push(ResponseGroup {
+                anchor_index: anchors[end],
                 source_keys: prose
                     .iter()
                     .map(|index| format!("{key}:source:{}", source_id(*index)))
@@ -11772,7 +11883,12 @@ fn response_groups<T: std::borrow::Borrow<serde_json::Value>>(
                 copy_text: std::cell::OnceCell::default(),
                 copy_sources: prose
                     .iter()
-                    .map(|index| transcript_item_text(items[*index].borrow()).into())
+                    .map(|index| {
+                        prepared.map_or_else(
+                            || transcript_item_text(items[*index].borrow()).into(),
+                            |prepared| prepared[*index].text.clone(),
+                        )
+                    })
                     .collect(),
                 received_at: items[*last].borrow()["groveReceivedAt"].as_u64(),
                 key,
@@ -15483,13 +15599,26 @@ mod tests {
         );
     }
 
-    #[test]
-    fn shell_execution_requires_a_closed_fence() {
-        assert!(super::closed_shell_fence("```sh\necho hi\n```"));
-        assert!(super::closed_shell_fence("~~~~bash\nprintf x\n~~~~"));
-        assert!(!super::closed_shell_fence("```sh\necho hi"));
-        assert!(!super::closed_shell_fence("```sh\necho hi\n``"));
-        assert!(!super::closed_shell_fence("echo hi"));
+    #[gpui::test]
+    fn shell_execution_requires_a_closed_fence(cx: &mut gpui::TestAppContext) {
+        cx.update(gpui_component::init);
+        for (source, expected) in [
+            ("```sh\necho hi\n```", true),
+            ("~~~~bash\nprintf x\n~~~~", true),
+            ("```sh\necho hi", false),
+            ("```sh\necho hi\n``", false),
+            ("echo hi", false),
+            ("```sh\necho hi\n    ```", false),
+            ("```sh\necho hi\n\u{a0}```", false),
+        ] {
+            let owner = cx.update(|cx| cx.new(|cx| TextViewState::markdown(source, cx)));
+            cx.run_until_parked();
+            owner.read_with(cx, |owner, _| {
+                let blocks = owner.code_blocks();
+                let closed = !blocks.is_empty() && blocks[0].is_closed_fence();
+                assert_eq!(closed, expected, "{source}");
+            });
+        }
     }
 
     use super::*;
@@ -15543,6 +15672,19 @@ mod tests {
         assert!(minimap_excerpt(&"🦀".repeat(500)).ends_with('…'));
     }
 
+    // Pinned GPUI replays cached hitboxes but not its debug-selector map.
+    // Request a fresh inspection frame before looking up a cached marker.
+    fn minimap_bounds(
+        cx: &mut gpui::VisualTestContext,
+        selector: &'static str,
+    ) -> Option<gpui::Bounds<gpui::Pixels>> {
+        cx.update(|window, cx| {
+            window.refresh();
+            window.draw(cx).clear();
+        });
+        cx.debug_bounds(selector)
+    }
+
     #[gpui::test]
     fn minimap_click_uses_rendered_anchor_and_streaming_does_not_snap_back(
         cx: &mut gpui::TestAppContext,
@@ -15564,10 +15706,10 @@ mod tests {
             });
         }));
         draw(cx);
-        let rail = cx.debug_bounds("codex-message-minimap").unwrap();
-        let first = cx.debug_bounds("codex-minimap-message-0").unwrap();
-        let mark = cx.debug_bounds("codex-minimap-message-3").unwrap();
-        let last = cx.debug_bounds("codex-minimap-message-5").unwrap();
+        let rail = minimap_bounds(cx, "codex-message-minimap").unwrap();
+        let first = minimap_bounds(cx, "codex-minimap-message-0").unwrap();
+        let mark = minimap_bounds(cx, "codex-minimap-message-3").unwrap();
+        let last = minimap_bounds(cx, "codex-minimap-message-5").unwrap();
         let row_height = rpx(SPACE_LG).to_pixels(gpui::px(16.0));
         assert!((mark.top() - first.bottom()).abs() < gpui::px(1.0));
         assert_eq!(
@@ -15701,8 +15843,8 @@ mod tests {
                 });
             });
             draw(cx);
-            let rail = cx.debug_bounds("codex-message-minimap").unwrap();
-            let marker = cx.debug_bounds("codex-minimap-message-0").unwrap();
+            let rail = minimap_bounds(cx, "codex-message-minimap").unwrap();
+            let marker = minimap_bounds(cx, "codex-minimap-message-0").unwrap();
             let transcript = cx.debug_bounds("codex-messages").unwrap();
             let composer = cx.debug_bounds("codex-composer").unwrap();
             cx.update(|_, cx| view.update(cx, CodexView::toggle_tasks));
@@ -15710,8 +15852,11 @@ mod tests {
             assert!(
                 cx.debug_bounds("codex-messages").unwrap().size.height < transcript.size.height
             );
-            assert_eq!(cx.debug_bounds("codex-message-minimap").unwrap(), rail);
-            assert_eq!(cx.debug_bounds("codex-minimap-message-0").unwrap(), marker);
+            assert_eq!(minimap_bounds(cx, "codex-message-minimap").unwrap(), rail);
+            assert_eq!(
+                minimap_bounds(cx, "codex-minimap-message-0").unwrap(),
+                marker
+            );
             cx.update(|window, cx| {
                 view.update(cx, |view, cx| {
                     view.composer_collapsed = false;
@@ -15723,8 +15868,11 @@ mod tests {
             });
             draw(cx);
             assert!(cx.debug_bounds("codex-composer").unwrap().size.height > composer.size.height);
-            assert_eq!(cx.debug_bounds("codex-message-minimap").unwrap(), rail);
-            assert_eq!(cx.debug_bounds("codex-minimap-message-0").unwrap(), marker);
+            assert_eq!(minimap_bounds(cx, "codex-message-minimap").unwrap(), rail);
+            assert_eq!(
+                minimap_bounds(cx, "codex-minimap-message-0").unwrap(),
+                marker
+            );
         }
     }
 
@@ -15742,7 +15890,7 @@ mod tests {
             });
         }));
         draw(cx);
-        let rail = cx.debug_bounds("codex-message-minimap").unwrap();
+        let rail = minimap_bounds(cx, "codex-message-minimap").unwrap();
         let transcript = cx.debug_bounds("codex-messages").unwrap();
         assert!(rail.right() <= transcript.left());
         for selector in [
@@ -15751,12 +15899,12 @@ mod tests {
             "codex-minimap-message-50",
             "codex-minimap-message-98",
         ] {
-            let mark = cx.debug_bounds(selector).unwrap();
+            let mark = minimap_bounds(cx, selector).unwrap();
             assert!(mark.size.height > gpui::Pixels::ZERO);
             assert!(mark.top() >= rail.top());
             assert!(mark.bottom() <= rail.bottom());
         }
-        let mark = cx.debug_bounds("codex-minimap-message-50").unwrap();
+        let mark = minimap_bounds(cx, "codex-minimap-message-50").unwrap();
         cx.simulate_click(mark.center(), gpui::Modifiers::default());
         draw(cx);
         assert!(
@@ -15780,8 +15928,8 @@ mod tests {
             });
         }));
         draw(cx);
-        let rail = cx.debug_bounds("codex-message-minimap").unwrap();
-        let first = cx.debug_bounds("codex-minimap-message-0").unwrap();
+        let rail = minimap_bounds(cx, "codex-message-minimap").unwrap();
+        let first = minimap_bounds(cx, "codex-minimap-message-0").unwrap();
         assert!(first.top() >= rail.top());
         assert!(first.bottom() <= rail.bottom());
         let scroll_rail = |delta, cx: &mut gpui::VisualTestContext| {
@@ -15794,7 +15942,7 @@ mod tests {
             draw(cx);
         };
         scroll_rail(-100000.0, cx);
-        let last = cx.debug_bounds("codex-minimap-message-199").unwrap();
+        let last = minimap_bounds(cx, "codex-minimap-message-199").unwrap();
         assert!(last.top() >= rail.top());
         assert!(last.bottom() <= rail.bottom());
         cx.simulate_click(last.center(), gpui::Modifiers::default());
@@ -15803,7 +15951,7 @@ mod tests {
             assert!(view.scroll.offset().y < gpui::Pixels::ZERO);
         });
         scroll_rail(100000.0, cx);
-        let first = cx.debug_bounds("codex-minimap-message-0").unwrap();
+        let first = minimap_bounds(cx, "codex-minimap-message-0").unwrap();
         assert!(first.top() >= rail.top());
         assert!(first.bottom() <= rail.bottom());
     }
@@ -18944,7 +19092,7 @@ mod tests {
             view.read_with(cx, |view, _| assert_eq!(view.turn_history.start, 158));
             // The minimap retains hidden source messages and reveals before mapping
             // their item identity to the new physical scroll-child index.
-            let marker = cx.debug_bounds("codex-minimap-message-14").unwrap();
+            let marker = minimap_bounds(cx, "codex-minimap-message-14").unwrap();
             cx.simulate_click(marker.center(), gpui::Modifiers::default());
             draw(cx);
             view.read_with(cx, |view, _| {
@@ -18982,6 +19130,7 @@ mod tests {
 
     include!("codex_view/performance.rs");
     include!("codex_view/native_hit_geometry.rs");
+    include!("codex_view/live_performance.rs");
 
     pub(super) fn draw(cx: &mut gpui::VisualTestContext) {
         cx.run_until_parked();
@@ -20057,6 +20206,13 @@ mod tests {
                             );
                             assert_eq!(cache.work.active[index], work_is_active_at(&state, index));
                             assert_eq!(
+                                cache.work.parent_activity[index],
+                                work_has_parent_activity(&state, index)
+                            );
+                            if index < state.saved.items.len() {
+                                assert_eq!(cache.commentary[index], work_commentary(&state, index));
+                            }
+                            assert_eq!(
                                 cache.work.tool_visible(&state, index),
                                 tool_visible(&state, index)
                             );
@@ -20434,6 +20590,164 @@ mod tests {
         assert_ne!(acknowledged_cache.content, changed_thread.content);
     }
 
+    #[gpui::test]
+    #[cfg(unix)]
+    fn completed_shell_footer_reflows_without_markdown_change_for_both_providers(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        for provider in [codex::Provider::Codex, codex::Provider::Claude] {
+            let (view, cx, _, _) = fixture(cx);
+            cx.update(|_, cx| { cx.set_reduce_motion(true); view.update(cx, |view, cx| {
+                view.session.update(cx, |session, cx| {
+                    let mut state = snapshot(); state.saved.provider = provider; state.status = Status::Working;
+                    state.saved.items = vec![json!({"id":"finishing-shell","type":"agentMessage","text":"```sh\nprintf x\n```","phase":"final_answer","status":"inProgress"})].into();
+                    session.state = state.into(); cx.notify();
+                });
+            }); });
+            for _ in 0..4 {
+                draw(cx);
+            }
+            let before = cx.debug_bounds("codex-message-body-0").unwrap().size.height;
+            let owner = view.read_with(cx, |view, _| {
+                view.selection_views.values().next().unwrap().clone()
+            });
+            assert!(cx.debug_bounds("codex-run-code").is_none());
+            cx.update(|_, cx| {
+                view.update(cx, |view, cx| {
+                    view.session.update(cx, |session, cx| {
+                        session.state.saved.items[0]["status"] = json!("completed");
+                        session.state.saved.items[0]["groveCompleted"] = json!(true);
+                        session.state.status = Status::Done;
+                        cx.notify();
+                    });
+                });
+            });
+            for _ in 0..4 {
+                draw(cx);
+            }
+            let after = cx.debug_bounds("codex-message-body-0").unwrap().size.height;
+            let current = view.read_with(cx, |view, _| {
+                view.selection_views.values().next().unwrap().clone()
+            });
+            assert_eq!(
+                owner.entity_id(),
+                current.entity_id(),
+                "same Markdown owner must be retained"
+            );
+            assert!(
+                cx.debug_bounds("codex-run-code").is_some(),
+                "completed closed shell must expose Run"
+            );
+            assert!(after > before + gpui::px(10.), "metadata-only {provider:?} completion must make room for its footer: {before:?} -> {after:?}");
+        }
+    }
+
+    #[test]
+    fn incremental_preparation_preserves_absolute_response_keys_and_lazy_copy() {
+        for provider in [codex::Provider::Codex, codex::Provider::Claude] {
+            let mut state = snapshot();
+            state.saved.provider = provider;
+            state.saved.thread_id = Some("incremental".into());
+            state.saved.items = (0..5).flat_map(|turn| [
+                json!({"id":format!("user-{turn}"),"type":"userMessage","text":format!("Input {turn}")}),
+                json!({"type":"agentMessage","text":format!("Answer {turn}")}),
+                json!({"type":"reasoning"}),
+            ]).collect();
+            let initial = TranscriptRenderCache::new(Rc::new(state.clone()), vec![]);
+            assert!(initial
+                .response_groups
+                .iter()
+                .all(|group| group.copy_text.get().is_none()));
+            // Dirty a middle turn, requiring several independently keyed tail groups.
+            state.saved.items[4]["text"] = json!("Changed middle response");
+            let refreshed =
+                TranscriptRenderCache::refreshed(Rc::new(state.clone()), vec![], Some(&initial));
+            let fresh = TranscriptRenderCache::new(Rc::new(state), vec![]);
+            assert!(Rc::ptr_eq(
+                &initial.response_groups[0],
+                &refreshed.response_groups[0]
+            ));
+            assert_eq!(refreshed.response_groups.len(), fresh.response_groups.len());
+            for (actual, expected) in refreshed.response_groups.iter().zip(&fresh.response_groups) {
+                assert_eq!(actual.key, expected.key);
+                assert_eq!(actual.source_keys, expected.source_keys);
+                assert_eq!(actual.prose, expected.prose);
+                assert_eq!(actual.anchor_index, expected.anchor_index);
+                assert_eq!(actual.copy_text(), expected.copy_text());
+            }
+            assert_eq!(refreshed.minimap_entries, fresh.minimap_entries);
+            assert_eq!(
+                fresh.minimap_entries,
+                message_minimap_entries(&fresh.state.saved.items)
+            );
+            let reference = response_groups(
+                &fresh.state.saved.items,
+                fresh.state.saved.thread_id.as_deref(),
+            );
+            for (actual, expected) in fresh.response_groups.iter().zip(&reference) {
+                assert_eq!(actual.key, expected.key);
+                assert_eq!(actual.copy_text(), expected.copy_text());
+                assert_eq!(actual.prose, expected.prose);
+            }
+        }
+    }
+
+    #[gpui::test]
+    fn minimap_replays_unchanged_frames_and_refreshes_changed_content(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (view, cx, _, _) = fixture(cx);
+        for provider in [codex::Provider::Codex, codex::Provider::Claude] {
+            cx.update(|_, cx| view.update(cx, |view, cx| view.session.update(cx, |session, cx| {
+                let mut state = snapshot(); state.saved.provider = provider;
+                state.saved.items = (0..80).flat_map(|turn| [
+                    json!({"id":format!("user-{turn}"),"type":"userMessage","text":format!("Input {turn}")}),
+                    json!({"id":format!("answer-{turn}"),"type":"agentMessage","text":"Response","phase":"final_answer"}),
+                ]).collect();
+                session.state = state.into(); cx.notify();
+            })));
+            draw(cx);
+            for _ in 0..4 {
+                cx.update(|_, cx| view.update(cx, |_, cx| cx.notify()));
+                draw(cx);
+            }
+            let before = MINIMAP_BUILDS.with(Cell::get);
+            for _ in 0..3 {
+                cx.update(|_, cx| view.update(cx, |_, cx| cx.notify()));
+                draw(cx);
+            }
+            assert_eq!(
+                MINIMAP_BUILDS.with(Cell::get),
+                before,
+                "unchanged {provider:?} frames must reuse the marker scene"
+            );
+            cx.update(|_, cx| {
+                view.update(cx, |view, cx| {
+                    view.session.update(cx, |session, cx| {
+                        session.state.saved.items[159]["text"] = json!("Updated response");
+                        cx.notify();
+                    });
+                });
+            });
+            draw(cx);
+            assert!(MINIMAP_BUILDS.with(Cell::get) > before);
+            view.read_with(cx, |view, cx| {
+                assert_eq!(
+                    view.minimap_view
+                        .as_ref()
+                        .unwrap()
+                        .read(cx)
+                        .prepared
+                        .minimap_entries
+                        .last()
+                        .unwrap()
+                        .response,
+                    "Updated response"
+                );
+            });
+        }
+    }
+
     #[test]
     fn metadata_only_notifications_reuse_work_index_and_review_parse() {
         let mut state = snapshot();
@@ -20522,6 +20836,60 @@ mod tests {
             "retained tool bytes"
         );
         assert_eq!(before.state.saved.items[0]["text"], "one");
+    }
+
+    #[test]
+    #[ignore = "manual incremental transcript preparation comparison"]
+    fn transcript_incremental_preparation_benchmark() {
+        use std::{hint::black_box, time::Instant};
+        let mut state = snapshot();
+        state.saved.items = (0..2000).map(|index| json!({
+            "id":format!("message-{index}"), "type":if index % 2 == 0 { "userMessage" } else { "agentMessage" },
+            "text":"Representative transcript content with code and prose. ".repeat(20)
+        })).collect();
+        let original = Rc::new(state);
+        let previous = TranscriptRenderCache::new(original.clone(), vec![]);
+        let mut updated = original.as_ref().clone();
+        updated.saved.items[1999]["text"] = json!("Appended streaming content");
+        let updated = Rc::new(updated);
+        for sample in 0..12 {
+            let full = || {
+                let start = Instant::now();
+                for _ in 0..50 {
+                    black_box(TranscriptRenderCache::new(updated.clone(), vec![]));
+                }
+                start.elapsed().as_secs_f64() * 1000. / 50.
+            };
+            let incremental = || {
+                let start = Instant::now();
+                for _ in 0..50 {
+                    let cache =
+                        TranscriptRenderCache::refreshed(updated.clone(), vec![], Some(&previous));
+                    assert!(Rc::ptr_eq(
+                        &previous.response_groups[0],
+                        &cache.response_groups[0]
+                    ));
+                    assert_eq!(
+                        cache.response_groups.last().unwrap().copy_sources[0].as_ref(),
+                        "Appended streaming content"
+                    );
+                    black_box(cache);
+                }
+                start.elapsed().as_secs_f64() * 1000. / 50.
+            };
+            let (full, incremental) = if sample % 2 == 0 {
+                (full(), incremental())
+            } else {
+                let incremental = incremental();
+                (full(), incremental)
+            };
+            if sample >= 3 {
+                println!(
+                    "TRANSCRIPT_INCREMENTAL {}",
+                    json!({"sample":sample-3,"items":2000,"full_ms":full,"incremental_ms":incremental,"measurement":"tail-change preparation CPU only"})
+                );
+            }
+        }
     }
 
     /// Measures preparation only, excluding GPUI element construction/layout/paint.

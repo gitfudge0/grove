@@ -110,6 +110,7 @@ pub(super) struct Snippet {
     source_signature: Option<u64>,
     cwd: String,
     cwd_available: bool,
+    custom_directory: bool,
     editor: Option<Entity<InputState>>,
     editor_observer: Option<Subscription>,
     run_focus: FocusHandle,
@@ -139,7 +140,12 @@ pub(super) fn key(owner: &str, offset: usize, code: &str, source: &str) -> Strin
     key_with_digest(owner, offset, code, source_digest(source))
 }
 
+#[cfg(test)]
 pub(super) fn key_with_digest(owner: &str, offset: usize, code: &str, source: u64) -> String {
+    key_with_digests(owner, offset, source_digest(code), source)
+}
+
+pub(super) fn key_with_digests(owner: &str, offset: usize, code: u64, source: u64) -> String {
     let mut hash = std::collections::hash_map::DefaultHasher::new();
     code.hash(&mut hash);
     source.hash(&mut hash);
@@ -200,6 +206,7 @@ impl CodexView {
                 source_signature: sources.borrow_mut().signature(state, key),
                 cwd: cwd.to_owned(),
                 cwd_available: std::path::Path::new(cwd).is_dir(),
+                custom_directory: false,
                 editor: None,
                 editor_observer: None,
                 run_focus: cx.focus_handle(),
@@ -216,7 +223,8 @@ impl CodexView {
     /// is projected offscreen. Dynamic editors/output retain the real row.
     pub(super) fn snippet_requires_eager(&self, key: &str) -> bool {
         self.snippets.get(key).is_some_and(|snippet| {
-            snippet.editor.is_some()
+            snippet.custom_directory
+                || snippet.editor.is_some()
                 || snippet.review.is_some()
                 || snippet.error.is_some()
                 || !snippet.runs.is_empty()
@@ -236,8 +244,7 @@ impl CodexView {
             .last()
             .is_some_and(|run| !run.terminal.read(cx).has_exited());
         let mut controls = Vec::new();
-        if !running && snippet.review.is_none() && snippet.editor.is_none() && snippet.cwd_available
-        {
+        if !running && snippet.review.is_none() && snippet.editor.is_none() {
             controls.push((snippet.edit_focus.clone(), SnippetControl::Edit));
             controls.push((snippet.run_focus.clone(), SnippetControl::Run));
         }
@@ -268,10 +275,7 @@ impl CodexView {
                 self.choose_snippet_directory(key.to_owned(), window, cx);
             }
             SnippetControl::Edit | SnippetControl::Run
-                if !running
-                    && snippet.review.is_none()
-                    && snippet.editor.is_none()
-                    && std::path::Path::new(&snippet.cwd).is_dir() =>
+                if !running && snippet.review.is_none() && snippet.editor.is_none() =>
             {
                 match kind {
                     SnippetControl::Edit => self.edit_snippet(key, window, cx),
@@ -296,7 +300,6 @@ impl CodexView {
             .runs
             .last()
             .is_some_and(|run| !run.terminal.read(cx).has_exited());
-        let available = snippet.cwd_available;
         let review = snippet.review.is_some();
         let edited = snippet.editor.is_some();
         let label = if running {
@@ -316,11 +319,11 @@ impl CodexView {
                 transcript_action("snippet-edit", "Edit & run", false, window, cx)
                     .with_focus_handle(snippet.edit_focus.clone())
                     .icon(action_icon("edit"))
-                    .disabled(running || review || edited || !available)
+                    .disabled(running || review || edited)
                     .map(|button| {
                         bound_action(
                             button,
-                            !running && !review && !edited && available,
+                            !running && !review && !edited,
                             cx,
                             move |this, window, cx| {
                                 this.edit_snippet(&edit_key, window, cx);
@@ -333,11 +336,11 @@ impl CodexView {
                     .with_focus_handle(snippet.run_focus.clone())
                     .debug_selector(|| "codex-run-code".into())
                     .icon(action_icon(if running { "status-working" } else { "play" }))
-                    .disabled(running || review || edited || !available)
+                    .disabled(running || review || edited)
                     .map(|button| {
                         bound_action(
                             button,
-                            !running && !review && !edited && available,
+                            !running && !review && !edited,
                             cx,
                             move |this, window, cx| {
                                 this.request_snippet_run(&run_key, false, window, cx);
@@ -365,6 +368,7 @@ impl CodexView {
         {
             return;
         }
+        snippet.cwd_available = std::path::Path::new(&snippet.cwd).is_dir();
         let input = cx.new(|cx| {
             InputState::new(window, cx)
                 .multi_line(true)
@@ -408,6 +412,10 @@ impl CodexView {
         {
             return;
         }
+        // Availability is a last observation for footer copy, never an action
+        // gate: an external process may create or remove this directory while
+        // the transcript is idle. Recheck on activation, not on every frame.
+        snippet.cwd_available = std::path::Path::new(&snippet.cwd).is_dir();
         let command = snippet.review.clone().unwrap_or_else(|| {
             snippet.editor.as_ref().map_or_else(
                 || snippet.source.clone(),
@@ -524,6 +532,9 @@ impl CodexView {
                     return;
                 }
                 if let Some(snippet) = this.snippets.get_mut(&key) {
+                    // A custom path can wrap the footer independently of Markdown.
+                    // Keep that uncommon mutable footer on the eager layout path.
+                    snippet.custom_directory = true;
                     snippet.cwd = path.to_string_lossy().into_owned();
                     snippet.cwd_available = true;
                     snippet.error = None;
@@ -1188,6 +1199,54 @@ mod tests {
                 )),
                 "Sharing only edits the draft"
             );
+        }
+    }
+
+    #[gpui::test]
+    #[cfg(unix)]
+    fn inline_snippet_directory_creation_can_recover_through_projected_run(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        for provider in [codex::Provider::Codex, codex::Provider::Claude] {
+            let root = tempfile::tempdir().unwrap();
+            let directory = root.path().join("created-later");
+            let (view, cx, actions, _updates) = fixture(cx);
+            cx.update(|window, cx| {
+                view.update(cx, |view, cx| {
+                    let key = prepare(
+                        view,
+                        "exit 0",
+                        provider,
+                        directory.to_str().unwrap(),
+                        window,
+                        cx,
+                    );
+                    assert!(!view.snippets[&key].cwd_available);
+                    assert_eq!(view.snippet_projection_controls(&key, cx).len(), 3);
+                    assert!(!view.snippet_requires_eager(&key));
+                    // No item revision or render occurs between the directory
+                    // appearing and activation of its original offscreen action.
+                    fs_err::create_dir(&directory).unwrap();
+                    view.activate_snippet_control(&key, SnippetControl::Run, window, cx);
+                    let snippet = &view.snippets[&key];
+                    assert!(snippet.cwd_available);
+                    assert!(snippet.error.is_none());
+                    assert_eq!(snippet.runs.len(), 1);
+                    assert_eq!(
+                        snippet.runs[0].terminal.read(cx).initial_cwd(),
+                        directory.to_str()
+                    );
+                    assert!(view.snippet_requires_eager(&key));
+                    assert_eq!(view.input.read(cx).value().as_ref(), "keep my draft");
+                });
+            });
+            assert!(!actions.try_iter().any(|action| matches!(
+                action,
+                codex::Action::Submit { .. }
+                    | codex::Action::SubmitWithMode { .. }
+                    | codex::Action::Prompt(_)
+                    | codex::Action::PromptWithImages { .. }
+            )));
         }
     }
 

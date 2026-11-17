@@ -60,6 +60,7 @@ pub struct TextViewState {
     pub(super) text_view_style: TextViewStyle,
     pub(super) code_block_actions: Option<std::sync::Arc<CodeBlockActionsFn>>,
     pub(super) code_block_layout_projection: bool,
+    pub(super) code_block_layout_revision: u64,
     pub(super) code_block_footer: Option<std::sync::Arc<CodeBlockActionsFn>>,
     pub(super) markdown_extensions: Arc<MarkdownExtensions>,
 
@@ -150,6 +151,7 @@ impl TextViewState {
             text_view_style: TextViewStyle::default(),
             code_block_actions: None,
             code_block_layout_projection: false,
+            code_block_layout_revision: 0,
             code_block_footer: None,
             markdown_extensions: Arc::default(),
             is_selecting: false,
@@ -179,6 +181,7 @@ impl TextViewState {
             layout.projectable_for(
                 &self.parsed_content.document.blocks,
                 self.markdown_extensions.revision(),
+                self.code_block_layout_revision,
             )
         }) && self.body_measurement_supported()
             && !self.layout_correction_pending
@@ -599,13 +602,30 @@ impl Future for UpdateFuture {
                     let hit_coalesce_budget =
                         merge_pending_options(&mut options, self.rx.as_ref().get_ref());
 
+                    let original_source = self.content.document.source.clone();
                     let base = std::mem::take(&mut self.content);
                     let res = parse_content(self.format, base, &options);
-                    let res = res.map(|content| {
-                        let published = content.clone();
-                        self.content = content;
-                        published
-                    });
+                    let res = match res {
+                        Ok(content) => {
+                            let published = content.clone();
+                            self.content = content;
+                            Ok(published)
+                        }
+                        Err(error) => {
+                            // Retain the complete attempted source even if an
+                            // extension/parser rejects it. The next append can
+                            // recover by parsing the full source, without losing
+                            // previously accepted or temporarily invalid text.
+                            let mut source = if options.append {
+                                original_source.to_string()
+                            } else {
+                                String::new()
+                            };
+                            source.push_str(&options.pending_text);
+                            self.content.document.source = source.into();
+                            Err(error)
+                        }
+                    };
                     _ = self.tx_result.try_send(ParsedUpdate {
                         revision: options.revision,
                         append: options.append,
@@ -687,7 +707,10 @@ fn parse_content(
     }
 
     let mut source = String::new();
-    if options.append
+    if options.append && content.document.blocks.is_empty() {
+        source.push_str(&content.document.source);
+        source.push_str(&options.pending_text);
+    } else if options.append
         && let Some(last_block) = Arc::make_mut(&mut content.document.blocks).pop()
         && let Some(span) = last_block.span()
     {
@@ -787,6 +810,52 @@ mod tests {
                 "synchronous replacement refreshes cached features"
             );
         });
+    }
+
+    #[test]
+    fn append_buffer_is_owned_by_parser_and_recovers_missing_blocks() {
+        let options = |revision, text: &str, append| UpdateOptions {
+            revision,
+            pending_text: text.to_owned(),
+            append,
+            markdown_extensions: Arc::default(),
+        };
+        let content = parse_content(
+            TextViewFormat::Markdown,
+            ParsedContent::default(),
+            &options(1, "first\n\n```rust\nlet a = 1;", false),
+        )
+        .unwrap();
+        assert_eq!(content.append_source, content.document.source.as_str());
+        let published = content.clone();
+        assert!(published.append_source.is_empty());
+        let content = parse_content(
+            TextViewFormat::Markdown,
+            content,
+            &options(2, "\n```\n\nlast", true),
+        )
+        .unwrap();
+        assert_eq!(
+            published.document.source.as_str(),
+            "first\n\n```rust\nlet a = 1;"
+        );
+        assert_eq!(
+            content.document.source.as_str(),
+            "first\n\n```rust\nlet a = 1;\n```\n\nlast"
+        );
+        assert_eq!(content.append_source, content.document.source.as_str());
+        // The async worker preserves source after a parse failure, but has no
+        // accepted block tree. A subsequent append must reparse the full source.
+        let mut recovering = ParsedContent::default();
+        recovering.document.source = "prior source".into();
+        let recovered = parse_content(
+            TextViewFormat::Markdown,
+            recovering,
+            &options(3, " plus tail", true),
+        )
+        .unwrap();
+        assert_eq!(recovered.document.source.as_str(), "prior source plus tail");
+        assert_eq!(recovered.document.text(), "prior source plus tail\n");
     }
 
     #[test]

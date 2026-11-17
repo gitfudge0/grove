@@ -1,6 +1,7 @@
 use std::{
     cell::RefCell,
     collections::HashMap,
+    hash::{Hash, Hasher},
     ops::Range,
     sync::{Arc, Mutex},
 };
@@ -611,6 +612,8 @@ struct CachedCodeBlockStyles {
 pub struct CodeBlock {
     lang: Option<SharedString>,
     highlighting_enabled: bool,
+    closed_fence: bool,
+    content_digest: u64,
     styles: Arc<Mutex<Option<CachedCodeBlockStyles>>>,
     state: Arc<Mutex<InlineState>>,
     pub span: Option<Span>,
@@ -619,6 +622,7 @@ pub struct CodeBlock {
 impl PartialEq for CodeBlock {
     fn eq(&self, other: &Self) -> bool {
         self.lang == other.lang
+            && self.closed_fence == other.closed_fence
             && self.highlighting_enabled == other.highlighting_enabled
             && self.code() == other.code()
             && self.span == other.span
@@ -628,6 +632,19 @@ impl PartialEq for CodeBlock {
 impl CodeBlock {
     pub fn lang(&self) -> Option<SharedString> {
         self.lang.clone()
+    }
+
+    pub(super) fn render_state_key(&self) -> usize {
+        Arc::as_ptr(&self.state) as usize
+    }
+
+    pub(super) fn release_cached_layout(&self) {
+        super::inline::release_cached_layout(&self.state);
+    }
+
+    /// Content identity computed once when this immutable block is parsed.
+    pub fn content_digest(&self) -> u64 {
+        self.content_digest
     }
 
     pub fn code(&self) -> SharedString {
@@ -642,6 +659,9 @@ impl CodeBlock {
         lang: Option<SharedString>,
         span: Option<impl Into<Span>>,
     ) -> Self {
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        code.as_str().hash(&mut hasher);
+        let content_digest = hasher.finish();
         let state = Arc::new(Mutex::new(InlineState::default()));
         if let Ok(mut state) = state.lock() {
             state.set_text(code);
@@ -649,11 +669,23 @@ impl CodeBlock {
 
         Self {
             lang,
+            content_digest,
             highlighting_enabled: true,
+            closed_fence: false,
             styles: Arc::new(Mutex::new(None)),
             state,
             span: span.map(|s| s.into()),
         }
+    }
+
+    /// True only for an explicitly closed Markdown fence, computed while parsing.
+    pub fn is_closed_fence(&self) -> bool {
+        self.closed_fence
+    }
+
+    pub(crate) fn closed_fence(mut self, closed: bool) -> Self {
+        self.closed_fence = closed;
+        self
     }
 
     pub(crate) fn defer_highlighting(mut self, defer: bool) -> Self {
@@ -798,12 +830,15 @@ impl CodeBlock {
                             )
                         })
                     })
-                    .child(Inline::new(
-                        "code",
-                        self.state.clone(),
-                        vec![],
-                        self.styles(&cx.theme().highlight_theme),
-                    ))
+                    .child(
+                        Inline::new(
+                            "code",
+                            self.state.clone(),
+                            vec![],
+                            self.styles(&cx.theme().highlight_theme),
+                        )
+                        .cache_layout(),
+                    )
                     .when_some(
                         node_cx
                             .code_block_actions
@@ -1901,6 +1936,8 @@ mod tests {
         let second = CodeBlock::new("let value = 2;".into(), Some("rust".into()), None::<Span>);
 
         assert_ne!(first, second);
+        assert_ne!(first.content_digest(), second.content_digest());
+        assert_eq!(first.content_digest(), first.clone().content_digest());
     }
 
     #[cfg(feature = "tree-sitter")]
@@ -1993,6 +2030,10 @@ mod tests {
         let equivalent_light_theme = Arc::new(light_theme.as_ref().clone());
         let repeated_light_styles = block.styles(&equivalent_light_theme);
         assert_eq!(repeated_light_styles, light_styles);
+        assert!(
+            Arc::ptr_eq(&repeated_light_styles, &light_styles),
+            "unchanged styles share storage"
+        );
         assert!(
             Arc::ptr_eq(
                 &cached_highlight_theme(&block).unwrap(),

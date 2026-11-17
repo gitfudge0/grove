@@ -35,6 +35,14 @@ pub(super) struct Measurement {
     was_visible: bool,
 }
 
+impl Measurement {
+    pub(super) fn code_controls_static(&self, view: &CodexView) -> bool {
+        self.controls
+            .iter()
+            .all(|control| !view.snippet_requires_eager(&control.source_key))
+    }
+}
+
 #[cfg(test)]
 impl Measurement {
     pub(super) fn retains_source_for_test(&self) -> bool {
@@ -128,6 +136,21 @@ impl Element for ControlAlias {
         self.proxy.paint(bounds, window, cx);
     }
 }
+pub(super) fn control_alias(
+    layout: LayoutId,
+    focus: FocusHandle,
+    mut control: gpui::Stateful<gpui::Div>,
+) -> AnyElement {
+    ControlAlias {
+        layout,
+        proxy: FocusProxy {
+            focus,
+            interactivity: std::mem::take(control.interactivity()),
+        },
+    }
+    .into_any_element()
+}
+
 fn user_control_proxy(
     layout: LayoutId,
     target: &ControlTarget,
@@ -277,10 +300,10 @@ impl MeasuredTranscriptSlot {
                             .snippet_source_digest(&source);
                         for block in owner.read(cx).code_blocks() {
                             let code = block.code();
-                            let key = snippets::key_with_digest(
+                            let key = snippets::key_with_digests(
                                 &self.owner_key,
                                 block.span.map_or(0, |span| span.start),
-                                &code,
+                                block.content_digest(),
                                 source_digest,
                             );
                             if let Some(focus) = view.message_focus.get(&key) {
@@ -327,10 +350,11 @@ impl MeasuredTranscriptSlot {
         let item = &self.frame.state.saved.items[self.index];
         let id = item["id"].as_str().unwrap_or("");
         let cache = self.cache.borrow();
-        if cache.controls.iter().any(|control| {
-            matches!(control.kind, UserControl::Snippet(_))
-                && view.snippet_requires_eager(&control.source_key)
-        }) {
+        if cache
+            .controls
+            .iter()
+            .any(|control| view.snippet_requires_eager(&control.source_key))
+        {
             return true;
         }
         let html_id = item["id"]
@@ -363,8 +387,6 @@ impl MeasuredTranscriptSlot {
             })
             // Retained runs and editors have source-owned controls and changing
             // terminal geometry; do not replace their response with a cached proxy.
-            || view.snippets.keys().any(|key| key.strip_prefix(&self.owner_key)
-                .is_some_and(|tail| tail.starts_with(":code:")))
             || view.message_hover.contains(&cache.hover_key)
             || cache.controls.iter().any(|control| control.focus.contains_focused(window, cx))
             || cache
@@ -761,14 +783,9 @@ impl Element for MeasuredResponseFooter {
         let fork = self
             .view
             .update(cx, |view, cx| {
-                let anchor = self.frame.state.saved.items[..group.end]
-                    .iter()
-                    .rev()
-                    .find(|item| {
-                        item["id"]
-                            .as_str()
-                            .is_some_and(|id| view.source_item_index(id, cx).is_some())
-                    })
+                let anchor = group
+                    .anchor_index
+                    .and_then(|index| self.frame.state.saved.items.get(index))
                     .cloned()
                     .unwrap_or_else(|| serde_json::Value::Null.into());
                 (view.ensure_control_focus(&fork_key, window, cx), anchor)
