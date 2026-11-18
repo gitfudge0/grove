@@ -74,6 +74,7 @@ pub struct CodexSession {
     pub state: SessionSnapshot,
     pub catalog_loading: bool,
     pub catalog_error: Option<String>,
+    pub(crate) catalog_missing_executable: Option<grove_core::agent::MissingExecutable>,
     pub handle: Handle,
     updates_task: Task<()>,
     skill_watch: Option<Task<()>>,
@@ -112,6 +113,7 @@ impl CodexSession {
             catalog_scope: None,
             catalog_loading: false,
             catalog_error: None,
+            catalog_missing_executable: None,
             catalog_selection_error: false,
             dashboard_title_waiting: None,
             dashboard_launch: None,
@@ -271,7 +273,12 @@ impl CodexSession {
     /// A composer-owned draft with no conversation, persistence, or registry entry.
     /// Capability discovery uses a temporary metadata-only provider handshake.
     pub fn draft(saved: SavedSession, args: Vec<String>, cx: &mut Context<Self>) -> Self {
-        let cwd = saved.cwd.clone();
+        let mut session = Self::draft_pending(saved, cx);
+        session.refresh_catalog(session.state.saved.cwd.clone(), args, cx);
+        session
+    }
+
+    pub(crate) fn draft_pending(saved: SavedSession, cx: &mut Context<Self>) -> Self {
         let (wake, mut wakes) = futures::channel::mpsc::channel(1);
         let wake = std::sync::Mutex::new(wake);
         let (handle, receiver) = Handle::channel_with_wake(std::sync::Arc::new(move || {
@@ -290,7 +297,7 @@ impl CodexSession {
                 }
             }
         });
-        let mut session = Self {
+        Self {
             has_transport: false,
             skill_startup_ready: None,
             restored: None,
@@ -303,14 +310,13 @@ impl CodexSession {
             deferred: Some(receiver),
             catalog_generation: 0,
             catalog_scope: None,
-            catalog_loading: false,
+            catalog_loading: true,
             catalog_error: None,
+            catalog_missing_executable: None,
             catalog_selection_error: false,
             dashboard_title_waiting: None,
             dashboard_launch: None,
-        };
-        session.refresh_catalog(cwd, args, cx);
-        session
+        }
     }
     /// Refresh checkout-specific skills/config and provider-advertised models.
     /// A late response cannot replace a newer destination or an activated session.
@@ -337,6 +343,7 @@ impl CodexSession {
             self.state.error = None;
         }
         self.catalog_error = None;
+        self.catalog_missing_executable = None;
         self.catalog_selection_error = false;
         // Skills and resolved defaults belong to a checkout/provider pair. Do
         // not expose the previous destination's configuration during refresh.
@@ -363,6 +370,10 @@ impl CodexSession {
         saved.cwd = cwd;
         let scope = Scope::new(&saved, &args);
         self.catalog_scope = Some(scope);
+        if let Err(missing) = saved.provider.agent().check_executable() {
+            self.complete_catalog(generation, Err(missing.to_string()), cx);
+            return;
+        }
         if !retry {
             if let Some(catalog) = composer_catalog::cached(&saved, &args) {
                 self.complete_catalog(generation, Ok(catalog), cx);
@@ -370,6 +381,12 @@ impl CodexSession {
             }
         }
         let discovery = cx.background_spawn(async move {
+            grove_core::env_path::wait_for_initial_environment();
+            saved
+                .provider
+                .agent()
+                .check_executable()
+                .map_err(|missing| missing.to_string())?;
             if retry {
                 composer_catalog::invalidate(&saved, &args);
             }
@@ -402,6 +419,7 @@ impl CodexSession {
         self.catalog_generation = self.catalog_generation.wrapping_add(1);
         self.catalog_loading = false;
         self.catalog_error = None;
+        self.catalog_missing_executable = None;
         self.catalog_selection_error = false;
         self.state.error = None;
         cx.notify();
@@ -417,8 +435,22 @@ impl CodexSession {
             return;
         }
         self.catalog_loading = false;
+        let result = match self.state.saved.provider.agent().check_executable() {
+            Ok(()) => result,
+            Err(missing) => {
+                let error = missing.to_string();
+                self.catalog_missing_executable = Some(missing);
+                self.state.models.clear();
+                Err(error)
+            }
+        };
         match result {
             Ok(catalog) => {
+                if self.catalog_missing_executable.take().is_some()
+                    && self.state.error == self.catalog_error
+                {
+                    self.state.error = None;
+                }
                 self.state.models = catalog.models;
                 self.state.skills = catalog.skills;
                 self.state.permission_modes = catalog.permission_modes;
@@ -494,6 +526,10 @@ impl CodexSession {
         if model.is_empty() {
             return Err("Choose an advertised model before switching providers.".into());
         }
+        provider
+            .agent()
+            .check_executable()
+            .map_err(|missing| missing.to_string())?;
         provider.launch_options(&args)?;
         self.drain_deferred(cx);
         let provider_changed = self.state.saved.provider != provider;
@@ -553,6 +589,11 @@ impl CodexSession {
     ) -> Result<(), String> {
         if !self.is_deferred() {
             return Err("This session has already been launched.".into());
+        }
+        if let Err(missing) = self.state.saved.provider.agent().check_executable() {
+            let error = missing.to_string();
+            self.complete_catalog(self.catalog_generation, Err(error.clone()), cx);
+            return Err(error);
         }
         self.state.saved.provider.launch_options(&args)?;
         let paths = std::iter::once(std::path::PathBuf::from(&cwd))
@@ -674,6 +715,7 @@ impl CodexSession {
             catalog_scope: None,
             catalog_loading: false,
             catalog_error: None,
+            catalog_missing_executable: None,
             catalog_selection_error: false,
             dashboard_title_waiting: None,
             dashboard_launch: None,
@@ -686,9 +728,11 @@ impl CodexSession {
             let mut previous = None;
             loop {
                 let Ok(ready) = this.read_with(cx, |this, _| {
-                    this.skill_startup_ready
-                        .as_ref()
-                        .is_none_or(|ready| ready.load(std::sync::atomic::Ordering::Acquire))
+                    (!this.is_deferred() || !this.catalog_loading)
+                        && this
+                            .skill_startup_ready
+                            .as_ref()
+                            .is_none_or(|ready| ready.load(std::sync::atomic::Ordering::Acquire))
                 }) else {
                     return;
                 };
@@ -698,7 +742,7 @@ impl CodexSession {
                     }
                     continue;
                 }
-                let Ok(request) = this.read_with(cx, |this, _| {
+                let Ok((request, draft_generation)) = this.read_with(cx, |this, _| {
                     let saved = &this.state.saved;
                     // Discovery needs launch configuration, never a transcript,
                     // recovery checkpoints or private composer attachments.
@@ -711,7 +755,10 @@ impl CodexSession {
                     request.roots.clone_from(&saved.roots);
                     request.config_args.clone_from(&saved.config_args);
                     request.native_config_version = saved.native_config_version;
-                    request
+                    (
+                        request,
+                        this.is_deferred().then_some(this.catalog_generation),
+                    )
                 }) else {
                     break;
                 };
@@ -719,8 +766,16 @@ impl CodexSession {
                 let old = previous.clone();
                 let (revision, catalog) = cx
                     .background_spawn(async move {
+                        if draft_generation.is_some() {
+                            grove_core::env_path::wait_for_initial_environment();
+                        }
                         let inputs = composer_catalog::inputs(&request, &options);
                         let key = (Scope::new(&request, &options), inputs.revision());
+                        if draft_generation.is_some() {
+                            if let Err(missing) = request.provider.agent().check_executable() {
+                                return (key, Some(Err(missing.to_string())));
+                            }
+                        }
                         let catalog =
                             if old.as_ref() != Some(&key) || inputs.models_require_refresh() {
                                 Some(composer_catalog::discover_automatically_with_inputs(
@@ -733,27 +788,36 @@ impl CodexSession {
                     })
                     .await;
                 let successful = catalog.as_ref().is_none_or(std::result::Result::is_ok);
-                if let Some(Ok(catalog)) = catalog {
+                if let Some(result) = catalog {
                     if this
                         .update(cx, |this, cx| {
                             if Scope::new(&this.state.saved, &args) != revision.0 {
                                 return;
                             }
-                            if this.is_deferred() {
-                                this.complete_catalog(this.catalog_generation, Ok(catalog), cx);
+                            if let Some(generation) = draft_generation {
+                                if result.is_ok()
+                                    || this
+                                        .state
+                                        .saved
+                                        .provider
+                                        .agent()
+                                        .check_executable()
+                                        .is_err()
+                                {
+                                    this.complete_catalog(generation, result, cx);
+                                }
                                 return;
                             }
+                            let Ok(catalog) = result else { return };
                             if this.state.models != catalog.models {
                                 this.update_models(catalog.models.to_vec(), cx);
                             }
                             if this.state.skills != catalog.skills {
                                 this.state.skills.clone_from(&catalog.skills);
-                                if !this.is_deferred() {
-                                    this.refreshed_skills = Some(catalog.skills.to_vec());
-                                    let _ = this
-                                        .handle
-                                        .send(Action::UpdateSkills(catalog.skills.to_vec()));
-                                }
+                                this.refreshed_skills = Some(catalog.skills.to_vec());
+                                let _ = this
+                                    .handle
+                                    .send(Action::UpdateSkills(catalog.skills.to_vec()));
                                 cx.notify();
                             }
                         })
@@ -764,6 +828,8 @@ impl CodexSession {
                 }
                 if successful {
                     previous = Some(revision);
+                } else if draft_generation.is_some() {
+                    previous = None;
                 }
                 let periods = if successful { 1 } else { 6 };
                 for _ in 0..periods {

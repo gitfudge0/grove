@@ -64,6 +64,15 @@ conversation. Successful refresh replaces the shared model catalog. The last
 successful disk record survives a failed refresh; it does not turn that refresh
 into a success.
 
+For a Dashboard draft, Grove rechecks executable resolution before reusing
+provider models and before launch. Confirmed missing executables remove
+provider groups and cached rows from the picker and gate launch while
+retaining the successful disk catalog. An inconclusive
+lookup still allows the Unix login-shell fallback. Retry resolves the
+executable again, so installation into an existing search directory can
+recover without restarting Grove. A live conversation can continue to use
+models from its running transport.
+
 `native_catalog_smoke PROVIDER EMPTY_CWD` checks full metadata discovery and warm
 reuse. Its optional `models` mode checks model-only reuse in another process;
 `refresh-models` forces a fresh lookup. Use disposable `GROVE_CONFIG_DIR` and

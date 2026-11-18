@@ -703,6 +703,14 @@ refresh failures still appear in the shared slot with Retry.
 Only Dashboard-originated first-message handoffs use this presentation; existing
 conversation connection/activity states retain their current owners. A provider
 catalog error is shown once, rather than repeated as a session notice.
+When Codex is confirmed missing and Claude is available, a fresh Dashboard
+draft starts with Claude selected. Restored drafts retain their selected
+provider. The Dashboard picker omits provider tabs and favorite rows for
+confirmed missing CLIs. If the active tab disappears, the picker opens an
+available group when one exists. Refresh rechecks provider availability.
+A missing CLI for the selected draft provider appears in the Dashboard
+preparation slot with install guidance and Retry and blocks ordinary Send.
+Switching providers preserves the draft and destination.
 When a focused preparation disclosure or Retry action disappears after async
 completion, focus returns to the writing field. Completion never steals focus
 from another control. Dashboard handoff observation does not extend a launched

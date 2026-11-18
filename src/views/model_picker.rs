@@ -10,6 +10,7 @@ const RAIL_TARGET_H: f32 = 32.0;
 const SEARCH_H: f32 = 36.0;
 const MODEL_ROW_H: f32 = 48.0;
 const MODEL_NAME_LINE_H: f32 = 17.0;
+const PROVIDERS: [codex::Provider; 2] = [codex::Provider::Codex, codex::Provider::Claude];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Filter {
@@ -29,6 +30,7 @@ enum Catalog {
     Loading,
     Ready(Vec<Model>),
     Error(String),
+    Missing,
 }
 #[derive(Clone, Debug)]
 pub(super) enum PickerEvent {
@@ -59,6 +61,8 @@ pub(super) struct ModelPicker {
     _search_events: Subscription,
     #[cfg(test)]
     catalog_fixture: Option<(codex::Provider, Vec<Value>, bool)>,
+    #[cfg(test)]
+    missing_fixture: Option<codex::Provider>,
 }
 impl gpui::EventEmitter<PickerEvent> for ModelPicker {}
 fn index(provider: codex::Provider) -> usize {
@@ -138,6 +142,8 @@ impl ModelPicker {
             _search_events: events,
             #[cfg(test)]
             catalog_fixture: None,
+            #[cfg(test)]
+            missing_fixture: None,
         };
         picker.search.focus_handle(cx).focus(window, cx);
         picker
@@ -146,8 +152,13 @@ impl ModelPicker {
     pub(super) fn seed_test_catalogs(&mut self) {
         tests::seed(self);
     }
-    fn needs_provider(&self, provider: codex::Provider, cx: &App) -> bool {
+    fn shows_provider(&self, provider: codex::Provider) -> bool {
         (self.allow_switch || provider == self.saved.provider)
+            && !matches!(self.catalogs[index(provider)], Catalog::Missing)
+    }
+
+    fn needs_provider(&self, provider: codex::Provider, cx: &App) -> bool {
+        self.shows_provider(provider)
             && match self.filter {
                 Filter::Provider(selected) => provider == selected,
                 Filter::Favorites => cx
@@ -159,7 +170,11 @@ impl ModelPicker {
             }
     }
     pub(super) fn discover(&mut self, cx: &mut Context<Self>) {
-        for provider in [codex::Provider::Codex, codex::Provider::Claude] {
+        self.update_provider_groups(cx);
+        for provider in PROVIDERS {
+            if !self.needs_provider(provider, cx) {
+                continue;
+            }
             let needs_catalog = matches!(self.catalogs[index(provider)], Catalog::Unloaded);
             let stale = if matches!(self.catalogs[index(provider)], Catalog::Ready(_)) {
                 let mut saved = self.saved.clone();
@@ -181,18 +196,68 @@ impl ModelPicker {
             } else {
                 false
             };
-            if self.needs_provider(provider, cx) && (needs_catalog || stale) {
+            if needs_catalog || stale {
                 self.load(provider, false, cx);
             }
         }
     }
+    fn update_provider_groups(&mut self, cx: &mut Context<Self>) {
+        if !self.allow_switch {
+            return;
+        }
+        for provider in PROVIDERS {
+            if !self.check_missing(provider, cx)
+                && matches!(self.catalogs[index(provider)], Catalog::Missing)
+            {
+                self.catalogs[index(provider)] = Catalog::Unloaded;
+                cx.notify();
+            }
+        }
+        if matches!(self.filter, Filter::Provider(provider) if !self.shows_provider(provider)) {
+            self.filter = PROVIDERS
+                .into_iter()
+                .find(|provider| self.shows_provider(*provider))
+                .map_or(Filter::Favorites, Filter::Provider);
+            self.cursor = 0;
+            self.keyboard_cursor = false;
+            self.legacy_open = false;
+            cx.notify();
+        }
+    }
+
+    fn check_missing(&mut self, provider: codex::Provider, cx: &mut Context<Self>) -> bool {
+        // A running conversation can still use models supplied by its transport.
+        if !self.allow_switch {
+            return false;
+        }
+        let missing = provider.agent().check_executable().is_err();
+        #[cfg(test)]
+        let missing = missing || self.missing_fixture == Some(provider);
+        if missing {
+            self.mark_missing(provider, cx);
+        }
+        missing
+    }
+
+    pub(super) fn mark_missing(&mut self, provider: codex::Provider, cx: &mut Context<Self>) {
+        let i = index(provider);
+        if matches!(self.catalogs[i], Catalog::Missing) {
+            return;
+        }
+        self.generations[i] = self.generations[i].wrapping_add(1);
+        self.refreshing[i] = false;
+        self.refresh_errors[i] = None;
+        self.catalogs[i] = Catalog::Missing;
+        cx.notify();
+    }
+
     fn load(&mut self, provider: codex::Provider, refresh: bool, cx: &mut Context<Self>) {
         let i = index(provider);
-        if self.refreshing[i] {
+        if self.check_missing(provider, cx) || self.refreshing[i] {
             return;
         }
         let retry = refresh
-            || matches!(self.catalogs[i], Catalog::Error(_))
+            || matches!(self.catalogs[i], Catalog::Error(_) | Catalog::Missing)
             || self.refresh_errors[i].is_some();
         self.generations[i] = self.generations[i].wrapping_add(1);
         let generation = self.generations[i];
@@ -252,10 +317,18 @@ impl ModelPicker {
             .catalog_fixture
             .as_ref()
             .is_some_and(|(selected, _, _)| *selected == provider);
+        let draft = self.allow_switch;
         let task = cx.background_spawn(async move {
             #[cfg(test)]
             if fixture {
                 return Err("offline catalog fixture".into());
+            }
+            if draft {
+                grove_core::env_path::wait_for_initial_environment();
+                provider
+                    .agent()
+                    .check_executable()
+                    .map_err(|missing| missing.to_string())?;
             }
             if retry {
                 grove_core::composer_catalog::invalidate(&saved, &args);
@@ -293,6 +366,10 @@ impl ModelPicker {
         if self.generations[i] != generation {
             return;
         }
+        if self.check_missing(provider, cx) {
+            self.discover(cx);
+            return;
+        }
         self.refreshing[i] = false;
         match result {
             Ok(values) => {
@@ -311,8 +388,9 @@ impl ModelPicker {
         if self.passive || self.refreshing.iter().any(|pending| *pending) {
             return;
         }
-        for provider in [codex::Provider::Codex, codex::Provider::Claude] {
-            if !self.needs_provider(provider, cx) || self.refreshing[index(provider)] {
+        self.update_provider_groups(cx);
+        for provider in PROVIDERS {
+            if !self.needs_provider(provider, cx) {
                 continue;
             }
             self.load(provider, true, cx);
@@ -358,8 +436,12 @@ impl ModelPicker {
         self.legacy_open = false;
         cx.notify();
     }
-    fn choose(&self, model: &Model, cx: &mut Context<Self>) {
+    fn choose(&mut self, model: &Model, cx: &mut Context<Self>) {
         if self.passive {
+            return;
+        }
+        if self.check_missing(model.provider, cx) {
+            self.discover(cx);
             return;
         }
         let advertised = matches!(&self.catalogs[index(model.provider)],Catalog::Ready(models) if models.iter().any(|m|m.id==model.id));
@@ -463,7 +545,7 @@ impl Render for ModelPicker {
             ),
         ] {
             if let Filter::Provider(provider) = filter {
-                if !self.allow_switch && provider != self.saved.provider {
+                if !self.shows_provider(provider) {
                     continue;
                 }
             }
@@ -676,7 +758,7 @@ impl Render for ModelPicker {
                 )),
             );
         }
-        for provider in [codex::Provider::Codex, codex::Provider::Claude] {
+        for provider in PROVIDERS {
             if !self.needs_provider(provider, cx) {
                 continue;
             }
@@ -705,11 +787,11 @@ impl Render for ModelPicker {
                         || matches!(&self.catalogs[index(provider)], Catalog::Error(_)) =>
                 {
                     let error = refresh_error
+                        .cloned()
                         .or_else(|| match &self.catalogs[index(provider)] {
-                            Catalog::Error(error) => Some(error),
+                            Catalog::Error(error) => Some(error.clone()),
                             _ => None,
                         })
-                        .cloned()
                         .unwrap_or_default();
                     rows = rows.child(
                         div()
@@ -750,10 +832,10 @@ impl Render for ModelPicker {
                             ),
                     );
                 }
-                Catalog::Unloaded | Catalog::Ready(_) | Catalog::Error(_) => {}
+                Catalog::Unloaded | Catalog::Ready(_) | Catalog::Error(_) | Catalog::Missing => {}
             }
         }
-        let all_ready = [codex::Provider::Codex, codex::Provider::Claude]
+        let all_ready = PROVIDERS
             .into_iter()
             .filter(|provider| self.needs_provider(*provider, cx))
             .all(|provider| matches!(self.catalogs[index(provider)], Catalog::Ready(_)));
@@ -763,7 +845,9 @@ impl Render for ModelPicker {
                     .p(rpx(SPACE_LG))
                     .text_color(c::FG_DIM())
                     .whitespace_normal()
-                    .child(if self.search.read(cx).value().is_empty() {
+                    .child(if !PROVIDERS.into_iter().any(|provider| self.shows_provider(provider)) {
+                        "No provider CLIs available."
+                    } else if self.search.read(cx).value().is_empty() {
                         if self.filter == Filter::Favorites {
                             if cx.global::<SettingsState>().store.model_favorites.iter().any(|favorite| self.allow_switch || favorite.provider == self.saved.provider) {
                                 "No saved favorites are currently available. Choose a provider to browse models."
@@ -953,6 +1037,89 @@ mod tests {
         cx.update(|window, cx| {
             window.simulate_next_frame(cx);
             let _ = window.draw(cx);
+        });
+    }
+
+    #[gpui::test]
+    fn missing_provider_hides_its_group_and_cached_favorites(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            cx.set_global(SettingsState::new(grove_core::storage::Store::default()));
+        });
+        let (picker, cx) = cx.add_window_view(|window, cx| {
+            let mut picker = ModelPicker::new(&state(), true, window, cx);
+            seed(&mut picker);
+            picker.saved.cwd = std::env::temp_dir().to_string_lossy().into_owned();
+            picker
+        });
+        cx.update(|_, cx| {
+            for (missing, available, missing_model, available_model) in [
+                (
+                    codex::Provider::Codex,
+                    codex::Provider::Claude,
+                    "code-1",
+                    "claude-1",
+                ),
+                (
+                    codex::Provider::Claude,
+                    codex::Provider::Codex,
+                    "claude-1",
+                    "code-1",
+                ),
+            ] {
+                cx.global_mut::<SettingsState>()
+                    .store
+                    .toggle_model_favorite(missing, missing_model);
+                cx.global_mut::<SettingsState>()
+                    .store
+                    .toggle_model_favorite(available, available_model);
+                picker.update(cx, |picker, cx| {
+                    seed(picker);
+                    picker.missing_fixture = Some(missing);
+                    let generation = picker.generations[index(missing)];
+                    let rows = vec![serde_json::json!({"model": missing_model})];
+                    picker.change_filter(Filter::Favorites, cx);
+                    assert!(matches!(picker.catalogs[index(missing)], Catalog::Missing));
+                    assert_eq!(
+                        picker
+                            .visible(cx)
+                            .iter()
+                            .map(|m| m.id.as_str())
+                            .collect::<Vec<_>>(),
+                        [available_model]
+                    );
+                    picker.complete_models(missing, generation, Ok(rows.clone()), cx);
+                    assert!(matches!(picker.catalogs[index(missing)], Catalog::Missing));
+                    assert!(cx
+                        .global::<SettingsState>()
+                        .store
+                        .is_model_favorite(missing, missing_model));
+
+                    picker.change_filter(Filter::Provider(missing), cx);
+                    assert_eq!(picker.filter, Filter::Provider(available));
+                    assert_eq!(picker.saved.provider, codex::Provider::Codex);
+
+                    picker.missing_fixture = None;
+                    picker.catalog_fixture = Some((missing, rows.clone(), false));
+                    cx.global_mut::<SettingsState>()
+                        .store
+                        .toggle_model_favorite(available, available_model);
+                    picker.filter = Filter::Favorites;
+                    picker.refresh_visible(cx);
+                    assert!(picker.shows_provider(missing));
+                    assert!(matches!(picker.catalogs[index(missing)], Catalog::Loading));
+                    picker.complete_models(
+                        missing,
+                        picker.generations[index(missing)],
+                        Ok(rows),
+                        cx,
+                    );
+                    assert!(picker.visible(cx).iter().any(|m| m.id == missing_model));
+                });
+                cx.global_mut::<SettingsState>()
+                    .store
+                    .toggle_model_favorite(missing, missing_model);
+            }
         });
     }
     #[gpui::test]
@@ -1501,7 +1668,7 @@ mod tests {
                 cx.activate(true);
                 cx.spawn(async move |cx| {
                     for provider in [codex::Provider::Codex, codex::Provider::Claude] {
-                        for mode in ["ready", "refreshing", "failure"] {
+                        for mode in ["ready", "refreshing", "missing", "failure"] {
                             cx.update_window(window.into(), |_, window, cx| {
                                 picker.update(cx, |picker, cx| {
                                     seed(picker);
@@ -1517,7 +1684,19 @@ mod tests {
                                                 .into(),
                                         );
                                     }
-                                    picker.refresh_focus.focus(window, cx);
+                                    if mode == "missing" {
+                                        picker.missing_fixture = Some(provider);
+                                        picker.discover(cx);
+                                        picker.missing_fixture = None;
+                                        let Filter::Provider(available) = picker.filter else {
+                                            panic!("available provider should be selected");
+                                        };
+                                        assert_ne!(available, provider);
+                                        assert!(!picker.shows_provider(provider));
+                                        picker.rail_focus[index(available) + 1].focus(window, cx);
+                                    } else {
+                                        picker.refresh_focus.focus(window, cx);
+                                    }
                                     cx.notify();
                                 });
                                 window.refresh();

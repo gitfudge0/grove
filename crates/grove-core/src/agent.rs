@@ -11,7 +11,42 @@ pub enum Agent {
     Terminal,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MissingExecutable(pub Agent);
+
+impl std::fmt::Display for MissingExecutable {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let provider = match self.0 {
+            Agent::Codex => "Codex",
+            Agent::Claude => "Claude",
+            Agent::OpenCode => "OpenCode",
+            Agent::Terminal => "Terminal",
+        };
+        write!(f, "Install the {provider} CLI and retry.")
+    }
+}
+
 impl Agent {
+    /// Resolve again even if the shell environment has not changed. Installation
+    /// and removal can change the contents of an existing PATH directory.
+    pub fn executable_available(self) -> Option<bool> {
+        if self == Self::Terminal {
+            return Some(true);
+        }
+        if !cfg!(windows) && crate::env_path::session_environment().is_none() {
+            // Launch may still resolve the executable in an interactive shell.
+            return None;
+        }
+        Some(self.detect())
+    }
+
+    pub fn check_executable(self) -> Result<(), MissingExecutable> {
+        if self.executable_available() == Some(false) {
+            return Err(MissingExecutable(self));
+        }
+        Ok(())
+    }
+
     pub const ALL: [Agent; 4] = [
         Agent::Claude,
         Agent::Codex,
@@ -252,7 +287,7 @@ impl Agent {
             .is_some_and(|(_, _, available)| available[index])
     }
 
-    /// Uncached; called only when the session environment changes.
+    /// Resolve using the same search paths as invocation.
     fn detect(self) -> bool {
         let name = self.binary_name();
         #[cfg(windows)]

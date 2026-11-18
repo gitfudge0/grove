@@ -2126,6 +2126,16 @@ impl CodexView {
                 if this.menu.is_some() && !this.composer_menu_valid(cx) {
                     this.close_menu(cx);
                 }
+                if let Some(picker) = &this.model_picker {
+                    let session = this.session.read(cx);
+                    if session.catalog_missing_executable.is_some() {
+                        let provider = session.state.saved.provider;
+                        picker.update(cx, |picker, cx| {
+                            picker.mark_missing(provider, cx);
+                            picker.discover(cx);
+                        });
+                    }
+                }
                 cx.notify();
             }),
             cx.observe(&input, |this, _, cx| {
@@ -9223,6 +9233,17 @@ impl CodexView {
         self.effort_pending = None;
         cx.notify();
     }
+    pub(crate) fn update_provider_placeholder(
+        &mut self,
+        provider: codex::Provider,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.input.update(cx, |input, cx| {
+            input.set_placeholder(composer_placeholder(provider), window, cx);
+        });
+    }
+
     fn open_menu(&mut self, menu: ComposerMenu, window: &mut Window, cx: &mut Context<Self>) {
         self.clear_stop_confirmation(cx);
         let state = self.session.read(cx).state.clone();
@@ -9272,9 +9293,14 @@ impl CodexView {
                     match event {
                         model_picker::PickerEvent::CatalogUpdated(provider, models) => {
                             if this.session.read(cx).state.saved.provider == *provider {
+                                let recovered_cli =
+                                    this.session.read(cx).catalog_missing_executable.is_some();
                                 this.session.update(cx, |session, cx| {
                                     session.update_models(models.clone(), cx);
                                 });
+                                if recovered_cli {
+                                    this.retry_dashboard_catalog(cx);
+                                }
                             }
                         }
                         model_picker::PickerEvent::Dismiss => {
@@ -9307,13 +9333,7 @@ impl CodexView {
                                     });
                                     return;
                                 }
-                                this.input.update(cx, |input, cx| {
-                                    input.set_placeholder(
-                                        composer_placeholder(*provider),
-                                        window,
-                                        cx,
-                                    );
-                                });
+                                this.update_provider_placeholder(*provider, window, cx);
                                 this.model_from_card = false;
                                 this.open_menu(ComposerMenu::Settings, window, cx);
                             } else if *provider == current {

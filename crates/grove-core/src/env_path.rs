@@ -99,6 +99,14 @@ pub fn wait_for_initial_environment() {
     }
 }
 
+pub fn initial_environment_pending() -> bool {
+    CAPTURE_SCHEDULED.load(std::sync::atomic::Ordering::Acquire)
+        && !*INITIAL_CAPTURE
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 fn inherited_environment() -> &'static [(OsString, OsString)] {
     BASELINE_ENV.get_or_init(|| std::env::vars_os().collect())
 }

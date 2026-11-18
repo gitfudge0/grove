@@ -2462,8 +2462,12 @@ impl Sidebar {
         {
             return None;
         }
-        let name = self
-            .snapshot
+        let name = self.launch_project_name(project, &path, cx)?;
+        Some((name, path, agent))
+    }
+
+    fn launch_project_name(&self, project: usize, path: &str, cx: &App) -> Option<String> {
+        self.snapshot
             .projects
             .iter()
             .find(|p| p.idx == project)
@@ -2480,12 +2484,11 @@ impl Sidebar {
                                 && cx
                                     .global::<SettingsState>()
                                     .store
-                                    .project_workspace_id(&path)
+                                    .project_workspace_id(path)
                                     == cx.global::<SettingsState>().store.workspaces.active
                         })
             })
-            .map(|p| p.name.clone())?;
-        Some((name, path, agent))
+            .map(|p| p.name.clone())
     }
     fn launch(
         &mut self,

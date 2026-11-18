@@ -1,3 +1,18 @@
+## Missing provider in the Dashboard composer
+
+Linux picker and draft fixtures exercise both providers, including omitted
+provider groups and cached favorites, a superseded catalog response, refresh,
+switching before launch, and draft retention. Linux native captures exercise
+provider grouping and the existing Dashboard preparation slot. The window manager gave the
+wide and narrow picker captures the same viewport, so the captures establish
+one native viewport.
+
+With an isolated Grove configuration and only one CLI on the search path at a
+time, live Codex and Claude catalog discovery succeeded for the available CLI.
+Codex also completed a transport submission. Claude initialized, but its
+submission was blocked by sign-in. A live end-to-end Dashboard send after
+switching providers, macOS, and Windows remain unverified.
+
 ## Dormant session checkout validation (November 2026)
 
 Restored native sessions retain Runtime's checkout preflight through hydration

@@ -12,6 +12,24 @@ use worktree_scope::{ScopePicker, ScopePickerEvent, ScopeTarget};
 const NO_PROJECT: usize = usize::MAX;
 const WORKTREE_CACHE_FRESHNESS: std::time::Duration = std::time::Duration::from_secs(10);
 
+fn fresh_dashboard_provider(
+    codex_available: Option<bool>,
+    claude_available: Option<bool>,
+) -> grove_core::codex::Provider {
+    if codex_available == Some(false) && claude_available == Some(true) {
+        grove_core::codex::Provider::Claude
+    } else {
+        grove_core::codex::Provider::Codex
+    }
+}
+
+fn detect_dashboard_provider() -> grove_core::codex::Provider {
+    fresh_dashboard_provider(
+        Agent::Codex.executable_available(),
+        Agent::Claude.executable_available(),
+    )
+}
+
 #[derive(Default)]
 struct WorktreeDiscovery {
     scope: Option<(usize, String, u64)>,
@@ -112,6 +130,7 @@ pub(super) struct Dashboard {
     pub session: Entity<CodexSession>,
     pub view: Entity<CodexView>,
     pub tray: Entity<DestinationTray>,
+    provider_pending: bool,
     viewport_height: std::rc::Rc<std::cell::Cell<gpui::Pixels>>,
     _events: Vec<gpui::Subscription>,
 }
@@ -829,11 +848,18 @@ impl Sidebar {
             let project_path = project
                 .as_ref()
                 .map_or_else(dashboard_home_dir, |p| p.path.clone());
-            let provider = defaults
-                .as_ref()
-                .map_or(grove_core::codex::Provider::Codex, |defaults| {
-                    defaults.provider
-                });
+            let provider_pending =
+                defaults.is_none() && grove_core::env_path::initial_environment_pending();
+            let provider = defaults.as_ref().map_or_else(
+                || {
+                    if provider_pending {
+                        grove_core::codex::Provider::Codex
+                    } else {
+                        detect_dashboard_provider()
+                    }
+                },
+                |defaults| defaults.provider,
+            );
             let checkout = defaults
                 .as_ref()
                 .filter(|defaults| defaults.project == idx)
@@ -890,16 +916,13 @@ impl Sidebar {
                 native_config_version: 1,
                 activity_reporting: false,
             };
-            let args = dashboard_launch_args(
-                provider,
-                &defaults
-                    .as_ref()
-                    .map(|d| d.scope.clone())
-                    .unwrap_or_default(),
-                &saved.cwd,
-                cx,
-            );
-            let session = cx.new(|cx| CodexSession::draft(saved, args, cx));
+            let session = if provider_pending {
+                cx.new(|cx| CodexSession::draft_pending(saved, cx))
+            } else {
+                let scope = defaults.as_ref().map_or(&[][..], |d| d.scope.as_slice());
+                let args = dashboard_launch_args(provider, scope, &saved.cwd, cx);
+                cx.new(|cx| CodexSession::draft(saved, args, cx))
+            };
             let tray = cx.new(|_| {
                 let mut tray = DestinationTray::new(projects, idx, checkout);
                 if let Some(worktrees) = defaults
@@ -1059,6 +1082,7 @@ impl Sidebar {
                 session,
                 view,
                 tray,
+                provider_pending,
                 viewport_height: std::rc::Rc::new(std::cell::Cell::new(
                     defaults
                         .as_ref()
@@ -1066,6 +1090,9 @@ impl Sidebar {
                 )),
                 _events: events,
             });
+            if provider_pending {
+                self.resolve_dashboard_provider(window, cx);
+            }
         }
         self.refresh_dashboard_projects(cx);
         self.refresh_dashboard_worktrees(cx);
@@ -1075,6 +1102,44 @@ impl Sidebar {
             d.view.focus_handle(cx).focus(window, cx);
         }
         cx.notify();
+    }
+
+    fn resolve_dashboard_provider(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(dashboard) = &self.dashboard else {
+            return;
+        };
+        let session = dashboard.session.downgrade();
+        cx.spawn_in(window, async move |this, cx| {
+            let provider = cx
+                .background_spawn(async {
+                    grove_core::env_path::wait_for_initial_environment();
+                    detect_dashboard_provider()
+                })
+                .await;
+            let _ = this.update_in(cx, |this, window, cx| {
+                let Some(dashboard) = &mut this.dashboard else {
+                    return;
+                };
+                if session.upgrade().as_ref() != Some(&dashboard.session) {
+                    return;
+                }
+                dashboard.provider_pending = false;
+                let state = &dashboard.session.read(cx).state;
+                if !dashboard.session.read(cx).is_deferred() || state.saved.composer.model.is_some()
+                {
+                    return;
+                }
+                dashboard.session.update(cx, |session, _| {
+                    session.state.saved.provider = provider;
+                    session.state.saved.label = provider.label().into();
+                });
+                dashboard.view.update(cx, |view, cx| {
+                    view.update_provider_placeholder(provider, window, cx);
+                });
+                this.refresh_dashboard_catalog(cx);
+            });
+        })
+        .detach();
     }
     /// Reconcile by repository path: removal or reordering must not retarget a draft.
     pub(super) fn refresh_dashboard_projects(&mut self, cx: &mut Context<Self>) {
@@ -1169,7 +1234,8 @@ impl Sidebar {
                 provider.agent(),
             ))
         } else {
-            self.launch_target(idx, path, provider.agent(), cx)
+            self.launch_project_name(idx, &path, cx)
+                .map(|name| (name, path, provider.agent()))
         }) else {
             self.content_error = Some("Select an available project and worktree.".into());
             cx.notify();
@@ -1197,7 +1263,9 @@ impl Sidebar {
             s.state.saved.roots = scope_roots(&scope);
             s.activate(name, path, args, cx)
         }) {
-            self.content_error = Some(error);
+            if d.session.read(cx).catalog_missing_executable.is_none() {
+                self.content_error = Some(error);
+            }
             cx.notify();
             return;
         }
@@ -1269,6 +1337,9 @@ impl Sidebar {
         let Some(d) = &self.dashboard else {
             return;
         };
+        if d.provider_pending {
+            return;
+        }
         let path = d.tray.read(cx).path.clone();
         let idx = d.tray.read(cx).project;
         let scope = d.tray.read(cx).scope.clone();
@@ -3516,5 +3587,19 @@ mod native_snapshots {
                 .unwrap();
             eprintln!("Native Dashboard fixture: {output}");
         }
+    }
+}
+#[test]
+fn fresh_dashboard_defaults_to_claude_only_when_codex_is_confirmed_missing() {
+    use grove_core::codex::Provider::{Claude, Codex};
+    for (codex, claude, expected) in [
+        (Some(false), Some(true), Claude),
+        (Some(true), Some(false), Codex),
+        (Some(true), Some(true), Codex),
+        (Some(false), Some(false), Codex),
+        (None, Some(true), Codex),
+        (Some(false), None, Codex),
+    ] {
+        assert_eq!(fresh_dashboard_provider(codex, claude), expected);
     }
 }
