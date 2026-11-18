@@ -1099,7 +1099,34 @@ impl Sidebar {
         self.dashboard_open = true;
         self.enter_dashboard_timeline_scope(cx);
         if let Some(d) = &self.dashboard {
-            d.view.focus_handle(cx).focus(window, cx);
+            let scope = self
+                .dashboard_timelines
+                .return_focus
+                .take()
+                .filter(|(workspace, _)| *workspace == self.active_workspace);
+            if let Some((workspace, id)) = scope {
+                self.dashboard_timelines
+                    .session_focus(workspace, id, cx)
+                    .focus(window, cx);
+                if let Some(anchor) = self
+                    .dashboard_timelines
+                    .row_anchors
+                    .get(&(workspace, id))
+                    .cloned()
+                {
+                    let owner = cx.entity().downgrade();
+                    window.on_next_frame(move |window, cx| {
+                        if owner.upgrade().is_some_and(|sidebar| {
+                            let sidebar = sidebar.read(cx);
+                            sidebar.dashboard_open && sidebar.active_workspace == workspace
+                        }) {
+                            anchor.scroll_to(window, cx);
+                        }
+                    });
+                }
+            } else {
+                d.view.focus_handle(cx).focus(window, cx);
+            }
         }
         cx.notify();
     }
@@ -1560,6 +1587,11 @@ impl Sidebar {
             .review_holds
             .entries(self.active_workspace, grouping_entries);
         let groups = super::group_sessions_for_list(&grouping_entries, Instant::now());
+        self.dashboard_timelines.review_order = groups
+            .iter()
+            .find(|(section, _)| *section == "Review")
+            .map(|(_, indices)| indices.iter().map(|index| sessions[*index].0.id).collect())
+            .unwrap_or_default();
         let summary = div()
             .id("dashboard-summary")
             .debug_selector(|| "dashboard-summary".into())
@@ -1815,6 +1847,7 @@ impl Sidebar {
                     .id("dashboard-scroll")
                     .size_full()
                     .overflow_y_scroll()
+                    .track_scroll(&self.dashboard_timelines.scroll)
                     .child(
                         div()
                             .w_full()
@@ -1945,6 +1978,187 @@ fn seed_activity_fixture(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[gpui::test]
+    fn activity_triage_shows_mixed_session_facts_and_routes_the_pending_request(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        use grove_core::codex::{Provider, ReviewCompletion, Status, WorkPeriod};
+        use serde_json::json;
+
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            cx.set_global(SettingsState::new(grove_core::storage::Store::default()));
+            cx.set_global(crate::zoom::CurrentPtyDims::default());
+            cx.set_reduce_motion(true);
+        });
+        let mut ids = Vec::new();
+        let mut actions = Vec::new();
+        let (sidebar, cx) = cx.add_window_view(|window, cx| {
+            let runtime = cx.new(Runtime::new);
+            let mut sidebar = Sidebar::new(runtime, window, cx);
+            sidebar.open_dashboard(window, cx);
+            let registry = sidebar.runtime.read(cx).registry.clone();
+            let base = sidebar.dashboard.as_ref().unwrap().session.read(cx).state.saved.clone();
+            for (kind, provider, title) in [
+                (0, Provider::Codex, "QA snapshot cleanup"),
+                (1, Provider::Claude, "QHIN health data integration research"),
+                (2, Provider::Codex, "Verify installer builds"),
+                (3, Provider::Claude, "Update integration fixtures"),
+                (4, Provider::Codex, "Explore Activity layouts"),
+            ] {
+                let mut saved = base.clone();
+                saved.key = format!("activity-triage-{kind}");
+                saved.provider = provider;
+                saved.title = Some(title.into());
+                let mut state = grove_core::codex::Snapshot::new(saved);
+                match kind {
+                    0 => {
+                        state.status = Status::Working;
+                        state.approvals.push(json!({"id":"qa","method":"item/commandExecution/requestApproval","params":{"command":"pwd","reason":"Confirm the QA directory."}}));
+                    }
+                    1 | 2 => {
+                        state.status = Status::Done;
+                        state.saved.items = vec![
+                            json!({"type":"plan","plan":[{"id":"older","step":"Complete earlier work","status":"completed"}]}),
+                            json!({"type":"userMessage","text":"Open the explainer folder"}),
+                            json!({"type":"agentMessage","text":"Done."}),
+                        ].into();
+                        state.saved.work_periods = vec![WorkPeriod {
+                            start_item: 1, end_item: Some(3), duration_ms: None, subagents: vec![],
+                        }];
+                        state.saved.session_review.pending = Some(ReviewCompletion { id: 1, period: 0 });
+                        state.saved.session_review.summary = if kind == 1 {
+                            "Opened the motion explainer folder.\nDeliverable: [Open explainer](https://example.com/explainer)".into()
+                        } else {
+                            "Linux installer passed.\nVerification: Windows still needs a live run.".into()
+                        };
+                    }
+                    3 => {
+                        state.status = Status::Working;
+                        state.turn_id = Some("turn".into());
+                        state.saved.activity_reporting = true;
+                        let report = json!({"id":"fixtures","task_id":"","status":"in_progress","label":"Running integration fixtures"});
+                        state.saved.items = vec![
+                            json!({"type":"userMessage","text":"Update fixtures"}),
+                            json!({"type":"mcpToolCall","server":"grove_activity","tool":"report_activity","status":"completed","arguments":report,"result":{"structuredContent":{"accepted":true,"report":report,"turn_id":"turn"}}}),
+                        ].into();
+                    }
+                    _ => state.status = Status::Idle,
+                }
+                let (handle, receive_actions) = grove_core::codex::Handle::channel();
+                actions.push(receive_actions);
+                let (_updates, receive) = std::sync::mpsc::channel();
+                let session = cx.new(|cx| CodexSession::from_connection(state, grove_core::codex::Connection { handle: handle.clone(), updates: receive.into() }, cx));
+                let cwd = session.read(cx).state.saved.cwd.clone();
+                ids.push(registry.update(cx, |registry, _| {
+                    let id = registry.insert_meta(String::new(), cwd, provider.agent());
+                    registry.attach_codex(id, session, handle);
+                    id
+                }));
+            }
+            sidebar.sync(window, cx);
+            sidebar
+        });
+        let [request, deliverable, review, working, ready] = ids.as_slice() else {
+            panic!()
+        };
+        for (width, rem) in [(1100., crate::zoom::REM_BASE), (560., 20.)] {
+            cx.simulate_resize(gpui::size(gpui::px(width), gpui::px(900.)));
+            cx.update(|window, _| window.set_rem_size(gpui::px(rem)));
+            cx.run_until_parked();
+            cx.update(|window, cx| {
+                let _ = window.draw(cx);
+            });
+            for selector in [
+                format!("dashboard-review-request-{}", request.raw()),
+                format!("dashboard-review-summary-{}-link-0", deliverable.raw()),
+                format!("dashboard-review-summary-{}-verification", review.raw()),
+                format!("dashboard-mark-reviewed-{}", review.raw()),
+                format!("dashboard-current-action-{}", working.raw()),
+                format!("dashboard-open-session-{}", ready.raw()),
+            ] {
+                let bounds = cx
+                    .debug_bounds(Box::leak(selector.into_boxed_str()))
+                    .expect("Activity fixture control is visible");
+                let activity = cx.debug_bounds("dashboard-recent").unwrap();
+                assert!(
+                    bounds.left() >= activity.left() && bounds.right() <= activity.right(),
+                    "{bounds:?} escapes {activity:?}"
+                );
+            }
+        }
+        let request_button = cx
+            .debug_bounds(Box::leak(
+                format!("dashboard-review-request-{}", request.raw()).into_boxed_str(),
+            ))
+            .unwrap();
+        cx.simulate_click(request_button.center(), gpui::Modifiers::default());
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            let _ = window.draw(cx);
+            assert_eq!(sidebar.read(cx).selected_session(), Some(*request));
+            assert!(sidebar.read(cx).codex_views.contains_key(request));
+        });
+        cx.update(|window, cx| {
+            sidebar.update(cx, |sidebar, cx| sidebar.open_dashboard(window, cx));
+            let _ = window.draw(cx);
+        });
+        cx.update(|window, cx| {
+            sidebar.update(cx, |sidebar, cx| {
+                let focus = sidebar.dashboard_timelines.session_focus(
+                    sidebar.active_workspace,
+                    *request,
+                    cx,
+                );
+                assert!(focus.is_focused(window));
+            });
+        });
+        // Activate the first review action by keyboard, then deliver the
+        // actor's acknowledgment through the observed snapshot.
+        cx.update(|window, cx| {
+            sidebar.update(cx, |sidebar, cx| {
+                assert_eq!(
+                    sidebar.dashboard_timelines.review_order,
+                    [*deliverable, *review]
+                );
+                sidebar
+                    .dashboard_timelines
+                    .review_action_focus((sidebar.active_workspace, *deliverable))
+                    .unwrap()
+                    .focus(window, cx);
+            });
+        });
+        cx.simulate_keystrokes("enter");
+        assert!(actions[1].try_iter().any(|action| matches!(
+            action,
+            grove_core::codex::Action::MarkReviewed { work_period: 1 }
+        )));
+        cx.update(|_, cx| {
+            let session = sidebar
+                .read(cx)
+                .runtime
+                .read(cx)
+                .registry
+                .read(cx)
+                .codex(*deliverable)
+                .unwrap()
+                .clone();
+            session.update(cx, |session, cx| {
+                session.state.mark_reviewed(1).unwrap();
+                cx.notify();
+            });
+        });
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            sidebar.update(cx, |sidebar, cx| {
+                assert!(sidebar
+                    .dashboard_timelines
+                    .session_focus(sidebar.active_workspace, *review, cx)
+                    .is_focused(window));
+            });
+        });
+    }
 
     #[test]
     fn worktree_cache_reuses_only_fresh_matching_results_or_current_inflight() {

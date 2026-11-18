@@ -89,6 +89,7 @@ pub(super) struct TaskGlanceCache {
     list: Option<std::sync::Arc<TaskList>>,
     timeline: std::sync::Arc<super::dashboard_timeline::TimelineData>,
     dashboard_status: Option<Status>,
+    dashboard_request: Option<super::super::codex_view::ActivityRequest>,
     lifecycle_status: Option<Status>,
     presentation: Option<(&'static str, Option<usize>)>,
     title_generation_pending: bool,
@@ -104,6 +105,9 @@ impl TaskGlanceCache {
         self.refresh(items)
     }
     pub fn refresh_dashboard_snapshot(&mut self, state: &grove_core::codex::Snapshot) -> bool {
+        let request = super::super::codex_view::activity_request(state);
+        let request_changed = self.dashboard_request != request;
+        self.dashboard_request = request;
         let signature = (
             state.saved.items.revision(),
             state.status,
@@ -111,7 +115,7 @@ impl TaskGlanceCache {
             state.saved.activity_reporting,
         );
         if self.dashboard_signature.as_ref() == Some(&signature) {
-            return false;
+            return request_changed;
         }
         self.dashboard_signature = Some(signature);
         self.refresh_dashboard_reporting(
@@ -119,7 +123,11 @@ impl TaskGlanceCache {
             state.status,
             state.turn_id.as_deref(),
             state.saved.activity_reporting,
-        )
+        ) || request_changed
+    }
+
+    pub fn dashboard_request(&self) -> Option<super::super::codex_view::ActivityRequest> {
+        self.dashboard_request.clone()
     }
 
     /// Connection and lifecycle controls are visible even with Dashboard closed.
@@ -254,13 +262,13 @@ impl Sidebar {
                 cache.refresh_snapshot(&state.saved.items);
                 cache.refresh_lifecycle(state.status);
                 cache.title_generation_pending = state.title_generation_pending;
-                if self.dashboard_open && self.dashboard_owns_session(id) {
+                if self.dashboard_open && self.dashboard_renders_session(id, cx) {
                     cache.refresh_dashboard_snapshot(state);
                 }
             }
             self.task_glances.insert(id, cache);
             let observer = cx.observe(&session, move |this, session, cx| {
-                let visible = this.dashboard_open && this.dashboard_owns_session(id);
+                let visible = this.dashboard_open && this.dashboard_renders_session(id, cx);
                 let state = &session.read(cx).state;
                 let cache = this.task_glances.entry(id).or_default();
                 let changed = cache.refresh_snapshot(&state.saved.items);

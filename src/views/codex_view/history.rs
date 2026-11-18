@@ -31,6 +31,17 @@ pub(super) struct TurnHistory {
 }
 
 impl TurnHistory {
+    pub(super) fn reveal_through(
+        &mut self,
+        item: usize,
+        items: &[codex::TranscriptItem],
+        entries: &[MessageMinimapEntry],
+    ) {
+        while item < self.start {
+            self.reveal(items, entries);
+        }
+    }
+
     #[cfg(test)]
     pub(super) fn expand_all_for_test(&mut self, items: &[codex::TranscriptItem]) {
         self.set_start(0, items);
@@ -112,10 +123,11 @@ impl CodexView {
         cx: &mut Context<Self>,
     ) {
         if let Some(transcript) = &self.transcript_cache {
-            while index < self.turn_history.start {
-                self.turn_history
-                    .reveal(&transcript.state.saved.items, &transcript.minimap_entries);
-            }
+            self.turn_history.reveal_through(
+                index,
+                &transcript.state.saved.items,
+                &transcript.minimap_entries,
+            );
         }
         self.pending_history_jump = Some(index);
         self.smooth_follow = false;

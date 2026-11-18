@@ -9,6 +9,8 @@ scope, preserved controls and the selected variant first.
 Inspect the actual owning controls and their relevant open/selected states before
 mocking them. Preserve existing interactions and options unless the user has
 asked to replace them; matching colors and dimensions does not establish parity.
+For Dashboard Activity, use the [Activity design rubric](ui-acceptance.md#activity-design-rubric)
+to judge the proposed content and actions before selecting a layout.
 Read [Use the owning components](ui-implementation.md#use-the-owning-components)
 for native tokens, theme, fonts, catalog icons and component recipes, with
 [design.md](design.md) as the semantic authority. Mark illustrative data and any

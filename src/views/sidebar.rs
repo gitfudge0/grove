@@ -3722,21 +3722,60 @@ impl Sidebar {
                 self.cancel_focus.focus(window, cx);
             }
             Action::MarkReviewed(id, work_period) => {
-                self.dashboard_timelines.review_holds.begin(
-                    self.active_workspace,
-                    id,
-                    window.last_input_was_keyboard(),
-                );
+                let keyboard = window.last_input_was_keyboard();
+                let workspace = self.active_workspace;
                 let session = self.runtime.read(cx).registry.read(cx).codex(id).cloned();
                 if let Some(session) = session {
-                    session.update(cx, |session, cx| {
-                        if session.state.session_status() == "Review"
-                            && session.state.review_completion() == Some(work_period)
-                        {
+                    let state = &session.read(cx).state;
+                    if state.session_status() == "Review"
+                        && state.review_completion() == Some(work_period)
+                    {
+                        let review = &state.saved.session_review;
+                        let end = review
+                            .pending
+                            .as_ref()
+                            .and_then(|receipt| state.saved.work_periods.get(receipt.period))
+                            .and_then(|period| period.end_item);
+                        let epoch = state.interaction_epoch;
+                        let error = state.error.clone();
+                        self.dashboard_timelines
+                            .review_holds
+                            .begin(workspace, id, keyboard);
+                        self.dashboard_timelines.review_advance = (keyboard && self.dashboard_open)
+                            .then(|| {
+                                let row_focus =
+                                    self.dashboard_timelines.session_focus(workspace, id, cx);
+                                cx.observe_in(&session, window, move |this, session, window, cx| {
+                                    let state = &session.read(cx).state;
+                                    let review = &state.saved.session_review;
+                                    if !this.dashboard_open
+                                        || this.active_workspace != workspace
+                                        || state.interaction_epoch != epoch
+                                        || !row_focus.is_focused(window)
+                                    {
+                                        this.dashboard_timelines.review_advance = None;
+                                        return;
+                                    }
+                                    if state.review_completion() == Some(work_period) {
+                                        if state.error != error {
+                                            this.dashboard_timelines.review_advance = None;
+                                        }
+                                        return;
+                                    }
+                                    this.dashboard_timelines.review_advance = None;
+                                    if review.pending.is_none()
+                                        && end == Some(review.reviewed_through)
+                                        && state.session_status() == "Ready"
+                                    {
+                                        this.focus_next_dashboard_review(id, window, cx);
+                                    }
+                                })
+                            });
+                        session.update(cx, |session, cx| {
                             session
                                 .send(grove_core::codex::Action::MarkReviewed { work_period }, cx);
-                        }
-                    });
+                        });
+                    }
                 }
                 self.dashboard_timelines.restore_review_focus(
                     self.active_workspace,

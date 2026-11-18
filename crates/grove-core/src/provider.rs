@@ -984,6 +984,11 @@ pub struct QuestionOption {
 }
 pub type QuestionAnswers = HashMap<String, Vec<String>>;
 impl QuestionRequest {
+    /// Local identity of this request, including when a provider ID is reused.
+    pub fn instance(&self) -> u64 {
+        self.instance
+    }
+
     /// Async message questions remain live after their originating turn ends.
     pub fn turn_bound(&self) -> bool {
         self.source != QuestionSource::AsyncMessage

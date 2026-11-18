@@ -10,6 +10,8 @@ use std::{collections::HashMap, path::Path};
 pub(super) struct ReviewSummary {
     pub text: String,
     pub links: Vec<ReviewLink>,
+    verification: Option<String>,
+    deliverable: Option<ReviewLink>,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct ReviewLink {
@@ -108,6 +110,74 @@ impl ReviewSummary {
     pub fn parse(source: &str, cwd: &Path) -> Self {
         Self::parse_bounded(source, cwd, 240)
     }
+
+    fn from_brief(source: &str, cwd: &Path) -> Self {
+        if !source
+            .lines()
+            .map(str::trim)
+            .any(|line| line.starts_with("Verification:") || line.starts_with("Deliverable:"))
+        {
+            return Self::parse_bounded(source, cwd, usize::MAX);
+        }
+        let Ok(root) = markdown::to_mdast(source, &markdown::ParseOptions::gfm()) else {
+            return Self::default();
+        };
+        let fields: std::collections::HashSet<_> = root
+            .children()
+            .into_iter()
+            .flatten()
+            .filter_map(|node| match node {
+                Node::Paragraph(paragraph) => paragraph.position.as_ref(),
+                _ => None,
+            })
+            .flat_map(|position| position.start.line..=position.end.line)
+            .collect();
+        let mut outcome = Vec::new();
+        let mut verification = Vec::new();
+        let mut deliverables = Vec::new();
+        for (index, line) in source.lines().enumerate() {
+            if !fields.contains(&(index + 1)) {
+                outcome.push(line);
+                continue;
+            }
+            if let Some(value) = line.trim().strip_prefix("Verification:") {
+                let value = value.trim();
+                if !value.is_empty() {
+                    verification.push(value);
+                }
+            } else if let Some(value) = line.trim().strip_prefix("Deliverable:") {
+                deliverables.push(value.trim());
+            } else {
+                outcome.push(line);
+            }
+        }
+        let mut summary = Self::parse_bounded(&outcome.join("\n"), cwd, usize::MAX);
+        summary.links = Self::parse(source, cwd).links;
+        if !verification.is_empty() {
+            summary.verification = Some(verification.join(" "));
+        }
+        if let [value] = deliverables.as_slice() {
+            let root = markdown::to_mdast(value, &markdown::ParseOptions::gfm()).ok();
+            let labeled_link = root
+                .as_ref()
+                .and_then(Node::children)
+                .is_some_and(|nodes| {
+                    matches!(nodes.as_slice(), [Node::Paragraph(p)] if matches!(p.children.as_slice(), [Node::Link(_)]))
+                });
+            if labeled_link && value.starts_with('[') {
+                summary.deliverable = Self::parse(value, cwd).links.into_iter().next();
+            }
+        }
+        summary
+    }
+
+    pub(super) fn session_text(&self) -> String {
+        match &self.verification {
+            Some(verification) if self.text.is_empty() => verification.clone(),
+            Some(verification) => format!("{} {}", self.text, verification),
+            None => self.text.clone(),
+        }
+    }
     fn parse_bounded(source: &str, cwd: &Path, limit: usize) -> Self {
         fn definitions_in(node: &Node, out: &mut HashMap<String, String>) {
             if let Node::Definition(def) = node {
@@ -171,10 +241,9 @@ impl ReviewSummary {
                 .min(period.start_item)..period.end_item?,
         )?;
         if !state.saved.session_review.summary.is_empty() {
-            let mut summary = Self::parse_bounded(
+            let mut summary = Self::from_brief(
                 &state.saved.session_review.summary,
                 Path::new(&state.saved.cwd),
-                usize::MAX,
             );
             // Keep artifacts from all unreviewed responses, independently of the brief.
             for item in items
@@ -218,7 +287,24 @@ impl ReviewSummary {
         open_link: impl Fn(&str, &mut gpui::Window, &mut App) + 'static,
         cx: &mut App,
     ) -> AnyElement {
+        let state = disclosure
+            .get_or_insert_with(|| {
+                cx.new(|cx| SummaryDisclosure {
+                    text: self.text.clone(),
+                    expanded: false,
+                    focus: cx.focus_handle(),
+                    links_expanded: false,
+                    links_focus: cx.focus_handle(),
+                    measured: 0.,
+                    from: 0.,
+                    painted: std::rc::Rc::new(std::cell::Cell::new(0.)),
+                    revision: 0,
+                })
+            })
+            .clone();
+        state.update(cx, |view, _| view.text.clone_from(&self.text));
         let open_link = std::rc::Rc::new(open_link);
+        let links_expanded = state.read(cx).links_expanded;
         focus.retain(|identity, _| {
             self.links
                 .iter()
@@ -229,7 +315,16 @@ impl ReviewSummary {
             .flex_wrap()
             .gap_x(rpx(SPACE_3XL))
             .gap_y(rpx(SPACE_SM));
+        let mut primary = None;
         for (index, link) in self.links.iter().enumerate() {
+            let designated = self
+                .deliverable
+                .as_ref()
+                .filter(|item| item.url == link.url);
+            if designated.is_none() && !links_expanded {
+                continue;
+            }
+            let link = designated.unwrap_or(link);
             let id = format!("{key}-link-{index}");
             let handle = focus
                 .entry(format!("{key}:{}", link.url))
@@ -240,53 +335,55 @@ impl ReviewSummary {
             let key_url = url.clone();
             let click_link = open_link.clone();
             let keyboard_link = open_link.clone();
-            links = links.child(
-                inline_disclosure(id.clone(), link.label.clone())
-                    .debug_selector(move || id.clone())
-                    .role(gpui::Role::Link)
-                    .track_focus(&handle)
-                    .tab_index(0)
-                    .tab_stop(true)
-                    .focus_visible(|style| style.bg(c::BG_HOVER()))
-                    .w_auto()
-                    .max_w_full()
-                    .h_auto()
-                    .min_w_0()
-                    .justify_start()
-                    .items_start()
-                    .gap(rpx(SPACE_SM))
-                    .text_size(rpx(TEXT_SMALL))
-                    .text_color(c::STATUS_INFO())
-                    .child(
-                        div()
-                            .h(rpx(TEXT_BODY + SPACE_LG))
-                            .flex_shrink_0()
-                            .flex()
-                            .items_center()
-                            .child(icon("external-link", ICON_SM, c::STATUS_INFO())),
-                    )
-                    .child(
-                        div()
-                            .min_w_0()
-                            .whitespace_normal()
-                            .child(link.label.clone()),
-                    )
-                    .on_click(move |_, window, cx| {
+            let control = inline_disclosure(id.clone(), link.label.clone())
+                .debug_selector(move || id.clone())
+                .role(gpui::Role::Link)
+                .track_focus(&handle)
+                .tab_index(0)
+                .tab_stop(true)
+                .focus_visible(|style| style.bg(c::BG_HOVER()))
+                .w_auto()
+                .max_w_full()
+                .h_auto()
+                .min_w_0()
+                .justify_start()
+                .items_start()
+                .gap(rpx(SPACE_SM))
+                .text_size(rpx(TEXT_SMALL))
+                .text_color(c::STATUS_INFO())
+                .child(
+                    div()
+                        .h(rpx(TEXT_BODY + SPACE_LG))
+                        .flex_shrink_0()
+                        .flex()
+                        .items_center()
+                        .child(icon("external-link", ICON_SM, c::STATUS_INFO())),
+                )
+                .child(
+                    div()
+                        .min_w_0()
+                        .whitespace_normal()
+                        .child(link.label.clone()),
+                )
+                .on_click(move |_, window, cx| {
+                    cx.stop_propagation();
+                    click_focus.focus(window, cx);
+                    click_link(&url, window, cx);
+                })
+                .on_key_down(move |event, window, cx| {
+                    if !event.is_held && matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                        window.prevent_default();
                         cx.stop_propagation();
-                        click_focus.focus(window, cx);
-                        click_link(&url, window, cx);
-                    })
-                    .on_key_down(move |event, window, cx| {
-                        if !event.is_held
-                            && matches!(event.keystroke.key.as_str(), "enter" | "space")
-                        {
-                            window.prevent_default();
-                            cx.stop_propagation();
-                            keyboard_link(&key_url, window, cx);
-                        }
-                    }),
-            );
+                        keyboard_link(&key_url, window, cx);
+                    }
+                });
+            if designated.is_some() {
+                primary = Some(control);
+            } else {
+                links = links.child(control);
+            }
         }
+        let other_count = self.links.len() - usize::from(primary.is_some());
         div()
             .id(gpui::SharedString::from(key.to_owned()))
             .debug_selector({
@@ -303,34 +400,60 @@ impl ReviewSummary {
             .gap(rpx(SPACE_SM))
             .text_size(rpx(TEXT_BODY))
             .line_height(rpx(TEXT_BODY + SPACE_LG))
-            .child(
-                div()
-                    .text_size(rpx(TEXT_SMALL))
-                    .text_color(c::STATUS_SUCCESS())
-                    .child("Review summary"),
-            )
-            .when(!self.text.is_empty(), |el| {
+            .when(!self.text.is_empty(), |el| el.child(state.clone()))
+            .when_some(self.verification.clone(), |el, verification| {
+                let id = format!("{key}-verification");
                 el.child(
-                    disclosure
-                        .get_or_insert_with(|| {
-                            cx.new(|cx| SummaryDisclosure {
-                                text: self.text.clone(),
-                                expanded: false,
-                                focus: cx.focus_handle(),
-                                measured: 0.,
-                                from: 0.,
-                                painted: std::rc::Rc::new(std::cell::Cell::new(0.)),
-                                revision: 0,
-                            })
+                    div()
+                        .debug_selector(move || id.clone())
+                        .whitespace_normal()
+                        .child(verification),
+                )
+            })
+            .when_some(primary, |el, link| el.child(link))
+            .when(other_count > 0, |el| {
+                let label = format!("Links and artifacts · {other_count}");
+                let id = format!("{key}-links");
+                let links_focus = state.read(cx).links_focus.clone();
+                let click_state = state.clone();
+                el.child(
+                    inline_disclosure(id.clone(), label.clone())
+                        .debug_selector(move || id.clone())
+                        .track_focus(&links_focus)
+                        .tab_index(0)
+                        .tab_stop(true)
+                        .aria_expanded(links_expanded)
+                        .focus_visible(|style| style.bg(c::BG_HOVER()))
+                        .h_auto()
+                        .justify_start()
+                        .gap(rpx(SPACE_SM))
+                        .child(icon(
+                            if links_expanded {
+                                "chev-down"
+                            } else {
+                                "chev-right"
+                            },
+                            ICON_SM,
+                            c::FG_DIM(),
+                        ))
+                        .child(label)
+                        .on_click(move |_, window, cx| {
+                            cx.stop_propagation();
+                            links_focus.focus(window, cx);
+                            click_state.update(cx, SummaryDisclosure::toggle_links);
                         })
-                        .clone()
-                        .update(cx, |view, cx| {
-                            view.text.clone_from(&self.text);
-                            cx.entity()
+                        .on_key_down(move |event, window, cx| {
+                            if !event.is_held
+                                && matches!(event.keystroke.key.as_str(), "enter" | "space")
+                            {
+                                window.prevent_default();
+                                cx.stop_propagation();
+                                state.update(cx, SummaryDisclosure::toggle_links);
+                            }
                         }),
                 )
             })
-            .when(!self.links.is_empty(), |el| el.child(links))
+            .when(other_count > 0 && links_expanded, |el| el.child(links))
             .into_any_element()
     }
 }
@@ -340,12 +463,18 @@ pub(super) struct SummaryDisclosure {
     text: String,
     expanded: bool,
     focus: FocusHandle,
+    links_expanded: bool,
+    links_focus: FocusHandle,
     measured: f32,
     from: f32,
     painted: std::rc::Rc<std::cell::Cell<f32>>,
     revision: u64,
 }
 impl SummaryDisclosure {
+    fn toggle_links(&mut self, cx: &mut gpui::Context<Self>) {
+        self.links_expanded = !self.links_expanded;
+        cx.notify();
+    }
     fn toggle(&mut self, cx: &mut gpui::Context<Self>) {
         self.from = self.painted.get();
         self.expanded = !self.expanded;
@@ -603,7 +732,7 @@ mod tests {
     ) {
         cx.update(gpui_component::init);
         let (view, cx) = cx.add_window_view(|_, _| Probe {
-            summary: ReviewSummary::parse("Added a review summary.\n\n[View the long mock artifact label](https://example.com/mock%20file.html) [Read notes](https://example.com/notes)", Path::new("/checkout")),
+            summary: ReviewSummary::from_brief("Added a review summary.\nVerification: Windows is untested.\nDeliverable: [View the long mock artifact label](https://example.com/mock%20file.html)\n\n[Read notes](https://example.com/notes)", Path::new("/checkout")),
             focus: HashMap::new(),
             disclosure: None,
         });
@@ -613,6 +742,14 @@ mod tests {
                 window.set_rem_size(gpui::px(rem));
                 let _ = window.draw(cx);
             });
+            cx.run_until_parked();
+            cx.update(|window, cx| {
+                let _ = window.draw(cx);
+            });
+            assert!(cx.debug_bounds("review-test-verification").is_some());
+            assert!(cx.debug_bounds("review-test-link-1").is_none());
+            let links = cx.debug_bounds("review-test-links").unwrap();
+            cx.simulate_click(links.center(), gpui::Modifiers::default());
             cx.run_until_parked();
             cx.update(|window, cx| {
                 let _ = window.draw(cx);
@@ -663,6 +800,33 @@ mod tests {
                 cx.opened_url().as_deref(),
                 Some("https://example.com/mock%20file.html")
             );
+            cx.simulate_click(links.center(), gpui::Modifiers::default());
         }
+    }
+}
+#[test]
+fn only_a_single_labeled_deliverable_is_promoted() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("demo.mp4"), "").unwrap();
+    let brief = ReviewSummary::from_brief(
+            "Recorded a demo.\nVerification: macOS playback is untested.\nDeliverable: [Open demo](demo.mp4)",
+            dir.path(),
+        );
+    assert_eq!(brief.text, "Recorded a demo.");
+    assert_eq!(
+        brief.verification.as_deref(),
+        Some("macOS playback is untested.")
+    );
+    assert_eq!(brief.deliverable.unwrap().label, "Open demo");
+    for ambiguous in [
+        "Deliverable: [Demo](demo.mp4) [Notes](https://example.com/notes)",
+        "Deliverable: [Demo](demo.mp4)\nDeliverable: [Demo](demo.mp4)",
+        "Deliverable: [Demo](missing.mp4)",
+        "Deliverable: https://example.com/demo",
+        "Example:\n\n```\nDeliverable: [Demo](demo.mp4)\n```",
+    ] {
+        assert!(ReviewSummary::from_brief(ambiguous, dir.path())
+            .deliverable
+            .is_none());
     }
 }

@@ -38,6 +38,8 @@ use std::{
     sync::Arc,
 };
 
+mod activity_request;
+pub(crate) use activity_request::{activity_request, ActivityRequest, ActivityRequestTarget};
 mod dashboard_status;
 mod history;
 mod measured_slot;
@@ -1246,11 +1248,13 @@ struct ElicitationFieldDraft {
     _subscription: Subscription,
 }
 struct ElicitationDraft {
+    activity_anchor: activity_request::RequestAnchor,
     fields: Vec<ElicitationFieldDraft>,
     submitting: bool,
 }
 
 struct ApprovalDraft {
+    activity_anchor: activity_request::RequestAnchor,
     input: Entity<InputState>,
     feedback: Entity<InputState>,
     editing: bool,
@@ -1277,6 +1281,8 @@ struct QuestionReceipt {
 }
 
 struct QuestionGroupDraft {
+    activity_anchor: activity_request::RequestAnchor,
+    request_instance: u64,
     reviewing: bool,
     row_anchors: Vec<gpui::ScrollAnchor>,
     questions: Vec<QuestionDraft>,
@@ -1655,6 +1661,9 @@ pub struct CodexView {
     question_generation: u64,
     approval_drafts: HashMap<String, ApprovalDraft>,
     elicitation_drafts: HashMap<String, ElicitationDraft>,
+    activity_request_focus: Option<activity_request::PendingRequestFocus>,
+    agent_controls_scroll: gpui::ScrollHandle,
+    agent_controls_anchor: gpui::ScrollAnchor,
     interaction_scope: String,
     menu: Option<ComposerMenu>,
     popup_motion: super::motion::PopupMotion,
@@ -2262,6 +2271,7 @@ impl CodexView {
         );
         let next_reply_seen =
             grove_core::next_reply::Request::capture(&session.read(cx).state).map(|r| r.key);
+        let composer_rail_scroll = gpui::ScrollHandle::new();
         let mut view = Self {
             preview_child: None,
             history_readonly,
@@ -2301,7 +2311,7 @@ impl CodexView {
             selection_reply_focus: cx.focus_handle(),
             submitted_images: Vec::new(),
             transcript_bounds: Rc::default(),
-            composer_rail_scroll: gpui::ScrollHandle::new(),
+            composer_rail_scroll: composer_rail_scroll.clone(),
             expanded: HashSet::new(),
             agents_in_checkout: false,
             work_tick_pending: Rc::new(Cell::new(false)),
@@ -2310,6 +2320,9 @@ impl CodexView {
             question_generation: 0,
             approval_drafts: HashMap::new(),
             elicitation_drafts: HashMap::new(),
+            activity_request_focus: None,
+            agent_controls_scroll: gpui::ScrollHandle::new(),
+            agent_controls_anchor: gpui::ScrollAnchor::for_handle(composer_rail_scroll.clone()),
             interaction_scope: String::new(),
             menu: None,
             popup_motion: super::motion::PopupMotion::default(),
@@ -3432,7 +3445,7 @@ impl CodexView {
         let summary = self.transcript_cache.as_ref().map_or_else(
             || {
                 super::review_summary::ReviewSummary::from_snapshot(state)
-                    .map(|summary| review_overview(&summary.text))
+                    .map(|summary| review_overview(&summary.session_text()))
                     .filter(|summary| !summary.is_empty())
             },
             |cache| {
@@ -3440,7 +3453,7 @@ impl CodexView {
                     .review_overview
                     .get_or_init(|| {
                         super::review_summary::ReviewSummary::from_snapshot(state)
-                            .map(|summary| review_overview(&summary.text))
+                            .map(|summary| review_overview(&summary.session_text()))
                             .filter(|summary| !summary.is_empty())
                     })
                     .clone()
@@ -6251,17 +6264,22 @@ impl Render for CodexView {
         let scope = format!("{:?}:{}", state.saved.thread_id, state.interaction_epoch);
         if self.interaction_scope != scope {
             let restore_focus = self.approval_drafts.values().any(|draft| {
-                draft.input.focus_handle(cx).is_focused(window)
+                draft.activity_anchor.focus.is_focused(window)
+                    || draft.input.focus_handle(cx).is_focused(window)
                     || draft.feedback.focus_handle(cx).is_focused(window)
             }) || self.elicitation_drafts.values().any(|draft| {
-                draft.fields.iter().any(|field| {
-                    field.input.focus_handle(cx).is_focused(window)
-                        || field
-                            .choice_focus
-                            .values()
-                            .any(|focus| focus.is_focused(window))
-                })
-            });
+                draft.activity_anchor.focus.is_focused(window)
+                    || draft.fields.iter().any(|field| {
+                        field.input.focus_handle(cx).is_focused(window)
+                            || field
+                                .choice_focus
+                                .values()
+                                .any(|focus| focus.is_focused(window))
+                    })
+            }) || self
+                .question_drafts
+                .values()
+                .any(|draft| draft.activity_anchor.focus.is_focused(window));
             self.approval_drafts.clear();
             self.question_drafts.clear();
             self.question_receipts.clear();
@@ -6531,6 +6549,8 @@ impl Render for CodexView {
             self.turn_history
                 .sync(&state.saved.items, &transcript.minimap_entries, following)
         };
+        let history_start =
+            self.reveal_activity_request(history_start, &state, &transcript, window, cx);
         let response_groups = &transcript.response_groups;
         let response_ends = &transcript.response_ends;
         let minimap_entries = &transcript.minimap_entries;
@@ -7531,6 +7551,8 @@ impl Render for CodexView {
                             .min(window.viewport_size().height * APPROVAL_TRAY_VIEWPORT_SHARE),
                     )
                     .overflow_y_scroll()
+                    .track_scroll(&self.agent_controls_scroll)
+                    .anchor_scroll(Some(self.agent_controls_anchor.clone()))
                     .flex()
                     .flex_col()
                     .gap(rpx(SPACE_LG))
@@ -13158,13 +13180,14 @@ impl CodexView {
             .collect();
         let restore_focus = self.elicitation_drafts.iter().any(|(key, draft)| {
             !keys.contains(key)
-                && draft.fields.iter().any(|field| {
-                    field.input.focus_handle(cx).is_focused(window)
-                        || field
-                            .choice_focus
-                            .values()
-                            .any(|focus| focus.is_focused(window))
-                })
+                && (draft.activity_anchor.focus.is_focused(window)
+                    || draft.fields.iter().any(|field| {
+                        field.input.focus_handle(cx).is_focused(window)
+                            || field
+                                .choice_focus
+                                .values()
+                                .any(|focus| focus.is_focused(window))
+                    }))
         });
         self.elicitation_drafts.retain(|key, _| keys.contains(key));
         if restore_focus {
@@ -13227,6 +13250,10 @@ impl CodexView {
             self.elicitation_drafts.insert(
                 key,
                 ElicitationDraft {
+                    activity_anchor: activity_request::RequestAnchor::new(
+                        &self.agent_controls_scroll,
+                        cx,
+                    ),
                     fields,
                     submitting: false,
                 },
@@ -13429,6 +13456,10 @@ impl CodexView {
             );
             let mut group = div()
                 .id(("agent-elicitation", request_index))
+                .track_focus(&draft.activity_anchor.focus)
+                .tab_group()
+                .anchor_scroll(Some(draft.activity_anchor.scroll.clone()))
+                .focus_visible(|style| style.border_color(c::BORDER_STRONG()))
                 .p(rpx(SPACE_2XL))
                 .rounded(rpx(RADIUS_PANEL))
                 .border_1()
@@ -13808,7 +13839,8 @@ impl CodexView {
             .collect();
         let restore_focus = self.approval_drafts.iter().any(|(key, draft)| {
             !keys.contains(key)
-                && (draft.input.focus_handle(cx).is_focused(window)
+                && (draft.activity_anchor.focus.is_focused(window)
+                    || draft.input.focus_handle(cx).is_focused(window)
                     || draft.feedback.focus_handle(cx).is_focused(window))
         });
         self.approval_drafts.retain(|key, _| keys.contains(key));
@@ -13838,6 +13870,10 @@ impl CodexView {
             self.approval_drafts.insert(
                 key,
                 ApprovalDraft {
+                    activity_anchor: activity_request::RequestAnchor::new(
+                        &self.agent_controls_scroll,
+                        cx,
+                    ),
                     input,
                     feedback,
                     editing: false,
@@ -13924,6 +13960,10 @@ impl CodexView {
             let draft = &self.approval_drafts[&key];
             let mut group = div()
                 .id(("codex-approval", index))
+                .track_focus(&draft.activity_anchor.focus)
+                .tab_group()
+                .anchor_scroll(Some(draft.activity_anchor.scroll.clone()))
+                .focus_visible(|style| style.border_color(c::BORDER_STRONG()))
                 .p(rpx(SPACE_2XL))
                 .rounded(rpx(RADIUS_PANEL))
                 .border_1()
@@ -14199,14 +14239,18 @@ impl CodexView {
             self.question_drafts.clear();
             self.question_generation = state.cleared_conversations;
         }
-        let keys: HashSet<_> = state
+        let instances: HashMap<_, _> = state
             .questions
             .iter()
-            .map(|r| question_key(state, r))
+            .map(|r| (question_key(state, r), r.instance()))
             .collect();
+        let current = |key: &String, draft: &QuestionGroupDraft| {
+            instances.get(key) == Some(&draft.request_instance)
+        };
         let restore_focus = self.question_drafts.iter().any(|(key, group)| {
-            !keys.contains(key)
-                && (group.row_focus.iter().any(|focus| focus.is_focused(window))
+            !current(key, group)
+                && (group.activity_anchor.focus.is_focused(window)
+                    || group.row_focus.iter().any(|focus| focus.is_focused(window))
                     || group.questions.iter().any(|question| {
                         question.input.focus_handle(cx).is_focused(window)
                             || question
@@ -14249,7 +14293,8 @@ impl CodexView {
                     .any(|item| item["type"] == "userMessage" && codex::item_text(item) == *echo)
             })
         });
-        self.question_drafts.retain(|key, _| keys.contains(key));
+        self.question_drafts
+            .retain(|key, draft| current(key, draft));
         if restore_focus {
             self.input.focus_handle(cx).focus(window, cx);
         }
@@ -14318,6 +14363,8 @@ impl CodexView {
             self.question_drafts.insert(
                 key,
                 QuestionGroupDraft {
+                    activity_anchor: activity_request::RequestAnchor::new(&self.scroll, cx),
+                    request_instance: request.instance(),
                     reviewing: false,
                     row_anchors: request
                         .questions
@@ -14637,6 +14684,10 @@ impl CodexView {
         let next_key = key.clone();
         let mut group = div()
             .id(("agent-question-group", request_index))
+            .track_focus(&draft.activity_anchor.focus)
+            .tab_group()
+            .anchor_scroll(Some(draft.activity_anchor.scroll.clone()))
+            .focus_visible(|style| style.bg(c::BG_HOVER()))
             .role(gpui::Role::Group)
             .aria_label(format!(
                 "Questions from {}",

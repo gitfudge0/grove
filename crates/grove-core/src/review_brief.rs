@@ -43,8 +43,11 @@ pub fn context(review: &SessionReview) -> String {
         "{CONTEXT}{}. \
          At the end of your final response include <grove-review-summary> followed by \
          one concise paragraph (aim for 2–3 sentences, at most 600 characters), then \
-         </grove-review-summary>. Describe the requested outcome or problem and what \
-         was actually done since that review boundary, including earlier unreviewed work. \
+         </grove-review-summary>. Lead with what actually changed since that review \
+         boundary, including earlier unreviewed work. For a material verification gap, add \
+         a short plain-text line beginning with Verification:. When the outcome has one \
+         specific openable output, add a Deliverable: line containing only one labeled \
+         Markdown link to it. Omit either line when it does not apply. \
          State material verification gaps, partial completion, unsuccessful attempts or \
          discussion-only outcomes truthfully. Do not claim checks you did not run. \
          A commit-only follow-up must preserve the substantive brief. Update the prior \

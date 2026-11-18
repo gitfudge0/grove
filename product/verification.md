@@ -2643,3 +2643,26 @@ through the first completed turn and returned only that turn, while a read from
 the source server confirmed the second turn was still in progress. A live
 end-to-end Grove walkthrough remains untested. Live Claude remains untested
 because its CLI reported that it was signed out.
+
+## Activity insights and direct actions
+
+The Linux GPUI fixture exercised a request, two reviews, a working session,
+and a Ready session at 1100px and 560px with increased rem and reduced motion.
+It verified the visible verification caveat and current action, the direct
+deliverable, request navigation into an unvisited session, return focus, and
+keyboard acknowledgment advancing after the review receipt was observed. Request
+and summary fixtures cover stale or reused identities, link eligibility, and
+legacy brief handling. All 33 UI source-conformance checks passed.
+
+The existing baseline geometry fixture passed. A matched native screenshot
+comparison remains unverified because the Linux headless capture reported that
+no renderer was configured. The wider Dashboard run excluded two previously
+recorded layout failures and found two fork-event tests expecting the old
+error wording. That wording mismatch already exists on the parent commit.
+
+Live Codex transport checks observed a question and its acknowledged response,
+an accepted explicit activity report, and a persisted review brief with a
+verification line. Native request focus was exercised in GPUI fixtures.
+Live Claude remains unverified because its CLI is signed out. The shared
+request and review fixtures include Claude snapshot coverage. Participant
+testing and native macOS and Windows validation remain unverified.

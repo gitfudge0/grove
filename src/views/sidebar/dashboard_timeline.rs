@@ -1,4 +1,5 @@
 //! Dashboard progress derived from cached structured-session facts; never provider guesses.
+use super::super::codex_view::ActivityRequestTarget;
 use super::*;
 use gpui::AnimationExt as _;
 use grove_core::{
@@ -133,6 +134,20 @@ pub(super) struct TimelineData {
     pub task_scope: Arc<grove_core::tasks::TaskScope>,
     pub current_turn: Option<String>,
 }
+
+impl TimelineData {
+    fn current_action(&self, status: Status) -> Option<&str> {
+        let index = shimmering_activity(&self.activity, status)?;
+        let activity = self
+            .activity
+            .iter()
+            .find(|activity| activity.index == index)?;
+        (activity.explicit_status == Some(grove_core::activity::StepStatus::InProgress)
+            && self.current_turn.is_some()
+            && activity.turn_id == self.current_turn)
+            .then_some(activity.text.as_str())
+    }
+}
 /// A short excerpt of the provider's own progress prose, never a command or reasoning.
 fn activity_excerpt(text: &str) -> Option<String> {
     let line = text.lines().map(str::trim).find(|line| !line.is_empty())?;
@@ -225,6 +240,10 @@ pub(super) struct DashboardTimelines {
     opened: HashSet<Scope>,
     focus: HashMap<Scope, FocusHandle>,
     open_focus: HashMap<Scope, FocusHandle>,
+    request_focus: HashMap<Scope, FocusHandle>,
+    pub(super) return_focus: Option<Scope>,
+    pub(super) scroll: gpui::ScrollHandle,
+    pub(super) row_anchors: HashMap<Scope, gpui::ScrollAnchor>,
     reveals: HashMap<Scope, TimelineReveal>,
     entrances: HashMap<Scope, SessionEntrance>,
     task_opened: HashSet<(Scope, String)>,
@@ -236,6 +255,8 @@ pub(super) struct DashboardTimelines {
         HashMap<Scope, Option<gpui::Entity<super::super::review_summary::SummaryDisclosure>>>,
     review_link_focus: HashMap<Scope, HashMap<String, FocusHandle>>,
     review_focus: HashMap<Scope, (FocusHandle, Vec<gpui::Subscription>)>,
+    pub(super) review_order: Vec<SessionId>,
+    pub(super) review_advance: Option<gpui::Subscription>,
     group_opened: HashSet<(Scope, String)>,
     group_focus: HashMap<(Scope, String), FocusHandle>,
 }
@@ -252,6 +273,10 @@ impl DashboardTimelines {
             .entry((workspace, id))
             .or_insert_with(|| cx.focus_handle())
             .clone()
+    }
+
+    pub(super) fn review_action_focus(&self, scope: Scope) -> Option<FocusHandle> {
+        self.review_focus.get(&scope).map(|entry| entry.0.clone())
     }
     /// Review acknowledgment removes its action; return keyboard focus to the
     /// surviving row for the same session rather than a different row.
@@ -289,6 +314,8 @@ impl DashboardTimelines {
     ) -> bool {
         if !open {
             self.review_holds.clear();
+            self.review_order.clear();
+            self.review_advance = None;
             self.invalidate_scope();
             self.clear_entrances();
             return false;
@@ -330,6 +357,9 @@ impl DashboardTimelines {
         self.opened.retain(keep);
         self.focus.retain(|key, _| keep(key));
         self.open_focus.retain(|key, _| keep(key));
+        self.request_focus.retain(|key, _| keep(key));
+        self.row_anchors.retain(|key, _| keep(key));
+        self.return_focus = self.return_focus.filter(keep);
         self.reveals.retain(|key, _| keep(key));
         self.entrances.retain(|key, _| keep(key));
         self.review_hovered.retain(keep);
@@ -380,11 +410,46 @@ impl TimelineReveal {
     }
 }
 impl Sidebar {
+    pub(super) fn focus_next_dashboard_review(
+        &self,
+        id: SessionId,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        let timelines = &self.dashboard_timelines;
+        let Some(index) = timelines.review_order.iter().position(|item| *item == id) else {
+            return;
+        };
+        let registry = self.runtime.read(cx).registry.read(cx);
+        let next = timelines.review_order[index + 1..].iter().find(|next| {
+            registry.codex(**next).is_some_and(|session| {
+                let state = &session.read(cx).state;
+                matches!(state.session_status(), "Review" | "Review · unread")
+                    && state.review_completion().is_some()
+            })
+        });
+        if let Some(focus) =
+            next.and_then(|next| timelines.focus.get(&(self.active_workspace, *next)))
+        {
+            focus.focus(window, cx);
+        }
+    }
+
     pub(super) fn dashboard_owns_session(&self, id: SessionId) -> bool {
         self.snapshot
             .projects
             .iter()
             .any(|project| project.sessions.contains(&id))
+    }
+    pub(super) fn dashboard_renders_session(&self, id: SessionId, cx: &App) -> bool {
+        self.dashboard_owns_session(id)
+            || self
+                .runtime
+                .read(cx)
+                .registry
+                .read(cx)
+                .meta(id)
+                .is_some_and(|meta| meta.project.is_empty())
     }
     pub(super) fn enter_dashboard_timeline_scope(&mut self, cx: &mut Context<Self>) {
         self.dashboard_timelines.invalidate_scope();
@@ -395,7 +460,7 @@ impl Sidebar {
             .task_glances
             .keys()
             .copied()
-            .filter(|id| self.dashboard_owns_session(*id))
+            .filter(|id| self.dashboard_renders_session(*id, cx))
             .collect();
         if self.dashboard_timelines.needs_activity_warm(
             self.active_workspace,
@@ -427,6 +492,7 @@ impl Sidebar {
         if !self.navigation_available() {
             return;
         }
+        self.dashboard_timelines.return_focus = Some((self.active_workspace, id));
         self.navigate_to_session(id, window, cx);
         // Materialize the owning transcript before opening, including sessions
         // that have never been visited in this app process.
@@ -439,6 +505,42 @@ impl Sidebar {
                     browser.open(target, window, cx);
                 });
             cx.notify();
+        }
+    }
+
+    fn open_activity_request(
+        &mut self,
+        scope: Scope,
+        target: ActivityRequestTarget,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let id = scope.1;
+        let registry = self.runtime.read(cx).registry.read(cx);
+        let in_scope = self.dashboard_renders_session(id, cx);
+        let current = registry
+            .codex(id)
+            .is_some_and(|session| target.is_current(&session.read(cx).state));
+        if !self.dashboard_open
+            || self.active_workspace != scope.0
+            || !in_scope
+            || !self.navigation_available()
+            || !current
+        {
+            if self.dashboard_open && self.active_workspace == scope.0 {
+                self.dashboard_timelines
+                    .restore_review_focus(scope.0, id, window, cx);
+            }
+            cx.notify();
+            return;
+        }
+        self.dashboard_timelines.return_focus = Some(scope);
+        self.navigate_to_session(id, window, cx);
+        let _ = self.terminal_content(id, false, window, cx);
+        if let Some(view) = self.codex_views.get(&id) {
+            view.update(cx, |view, cx| {
+                view.focus_activity_request(target, window, cx)
+            });
         }
     }
 
@@ -455,7 +557,7 @@ impl Sidebar {
             .all()
             .iter()
             .filter_map(|meta| {
-                if !self.dashboard_owns_session(meta.id) {
+                if !self.dashboard_renders_session(meta.id, cx) {
                     return None;
                 }
                 self.runtime
@@ -484,6 +586,13 @@ impl Sidebar {
         let status = metadata.status;
         let age = &metadata.age;
         let key = (self.active_workspace, id);
+        let scroll = self.dashboard_timelines.scroll.clone();
+        let anchor = self
+            .dashboard_timelines
+            .row_anchors
+            .entry(key)
+            .or_insert_with(|| gpui::ScrollAnchor::for_handle(scroll))
+            .clone();
         let open = self.dashboard_timelines.opened.contains(&key);
         let focus = self
             .dashboard_timelines
@@ -506,6 +615,13 @@ impl Sidebar {
             .unwrap_or_default();
         let accessible = format!("Activity history · {}", metadata.context);
         let review_completion = dashboard_review_completion(metadata);
+        let request = matches!(metadata.display_status, "Approval needed" | "Answer needed")
+            .then(|| {
+                self.task_glances
+                    .get(&id)
+                    .and_then(super::task_glance::TaskGlanceCache::dashboard_request)
+            })
+            .flatten();
         let review_summary = review_completion.and_then(|_| {
             let registry = self.runtime.read(cx).registry.read(cx);
             registry.codex(id).and_then(|session| {
@@ -557,17 +673,14 @@ impl Sidebar {
                 .review_focus
                 .insert(key, (handle, subscriptions));
         }
-        let review_focus = self
-            .dashboard_timelines
-            .review_focus
-            .get(&key)
-            .map(|entry| entry.0.clone());
-        let show_review = status_action.is_some()
-            && (self.dashboard_timelines.review_hovered.contains(&key)
-                || window.last_input_was_keyboard()
-                    && review_focus
-                        .as_ref()
-                        .is_some_and(|focus| focus.contains_focused(window, cx)));
+        let review_focus = self.dashboard_timelines.review_action_focus(key);
+        let show_action = review_completion.is_some()
+            || status_action.is_some()
+                && (self.dashboard_timelines.review_hovered.contains(&key)
+                    || window.last_input_was_keyboard()
+                        && review_focus
+                            .as_ref()
+                            .is_some_and(|focus| focus.contains_focused(window, cx)));
         let status_label = super::super::status::label(
             format!("dashboard-session-{}", id.raw()),
             super::super::status::session_kind(metadata.display_status),
@@ -593,8 +706,7 @@ impl Sidebar {
                 .text_size(rpx(TEXT_SMALL))
                 .child(icon("check", ICON_SM, c::FG_DIM()))
                 .child(label);
-            // The invisible label reserves the native status geometry; the action
-            // stays mounted so Tab can discover it before pointer hover.
+            // Both states keep the same trailing geometry.
             div()
                 .relative()
                 .flex_shrink_0()
@@ -605,11 +717,11 @@ impl Sidebar {
                 .justify_end()
                 .child(
                     div()
-                        .opacity(if show_review { 0. } else { 1. })
+                        .opacity(if show_action { 0. } else { 1. })
                         .child(status_label),
                 )
-                .child(div().absolute().right_0().top_0().child(if show_review {
-                    if cx.reduce_motion() {
+                .child(div().absolute().right_0().top_0().child(if show_action {
+                    if review_completion.is_some() || cx.reduce_motion() {
                         action.into_any_element()
                     } else {
                         action
@@ -769,6 +881,7 @@ impl Sidebar {
         let detail = self.dashboard_progress_reveal(key, open, body, cx);
         let row = div()
             .id(("dashboard-progress", id.raw()))
+            .anchor_scroll(Some(anchor))
             .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
                 if *hovered {
                     this.dashboard_timelines.review_hovered.insert(key);
@@ -802,6 +915,81 @@ impl Sidebar {
                         .child(summary),
                 )
             })
+            .when_some(request, |row, request| {
+                let focus = self
+                    .dashboard_timelines
+                    .request_focus
+                    .entry(key)
+                    .or_insert_with(|| cx.focus_handle())
+                    .clone();
+                let mouse_target = request.target.clone();
+                let action = super::super::components::inline_disclosure(
+                    ("dashboard-review-request", id.raw()),
+                    "Review request",
+                )
+                .debug_selector(move || format!("dashboard-review-request-{}", id.raw()))
+                .track_focus(&focus)
+                .tab_index(0)
+                .tab_stop(true)
+                .focus_visible(|style| style.bg(c::BG_HOVER()))
+                .justify_start()
+                .w_auto()
+                .gap(rpx(SPACE_SM))
+                .text_size(rpx(TEXT_SMALL))
+                .child(icon("arrow-right", ICON_SM, c::FG_DIM()))
+                .child("Review request")
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    cx.stop_propagation();
+                    this.open_activity_request(key, mouse_target.clone(), window, cx);
+                }))
+                .on_key_down(cx.listener(
+                    move |this, event: &gpui::KeyDownEvent, window, cx| {
+                        if !event.is_held
+                            && matches!(event.keystroke.key.as_str(), "enter" | "space")
+                        {
+                            window.prevent_default();
+                            cx.stop_propagation();
+                            this.open_activity_request(key, request.target.clone(), window, cx);
+                        }
+                    },
+                ));
+                row.child(
+                    div()
+                        .pl(rpx(ICON_LG + SPACE_LG))
+                        .pt(rpx(SPACE_SM))
+                        .flex()
+                        .flex_wrap()
+                        .items_center()
+                        .gap_x(rpx(SPACE_LG))
+                        .child(
+                            div()
+                                .min_w_0()
+                                .whitespace_normal()
+                                .text_size(rpx(TEXT_SMALL))
+                                .child(request.cue),
+                        )
+                        .child(action),
+                )
+            })
+            .when_some(
+                matches!(metadata.display_status, "Starting" | "Working")
+                    .then(|| data.current_action(status).map(str::to_owned))
+                    .flatten(),
+                |row, action| {
+                    row.child(
+                        div()
+                            .debug_selector(move || {
+                                format!("dashboard-current-action-{}", id.raw())
+                            })
+                            .min_w_0()
+                            .pl(rpx(ICON_LG + SPACE_LG))
+                            .pt(rpx(SPACE_SM))
+                            .text_size(rpx(TEXT_SMALL))
+                            .whitespace_normal()
+                            .child(action),
+                    )
+                },
+            )
             .child(detail)
             .into_any_element();
         let row = self.wrap_activity_reply(key, title, row, window, cx);

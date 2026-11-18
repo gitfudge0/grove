@@ -51,6 +51,37 @@ provider streaming and compositor presentation measurements.
 
 For shared questions, approvals, tasks, subagents, or transcript behavior, name **Codex and Claude** in acceptance checks. Report each as verified, unsupported, or untested with the method or reason. Fixtures do not establish live provider-boundary behavior. Cover affected macOS/Linux/Windows paths when platform behavior changes; do not infer unobserved parity.
 
+## Activity design rubric
+
+Use this rubric before selecting a Dashboard Activity design and again when
+reviewing the native implementation. Start with a short set of real or
+sanitized session examples. For each, write down what changed, what still
+needs attention, and which action the session state actually permits. Try the
+copy on its own before choosing a layout. Apply the
+[design contract](design.md#dashboard-session-launch) for visual and interaction
+rules.
+
+| Check | Pass when | Look for |
+|---|---|---|
+| **Insight at a glance** | With zero clicks, a reader can identify the session and explain the latest outcome, current work, or decision it needs. Any verification gap that affects the next decision is visible. Quiet sessions can stay brief. | Status words repeated as summaries, old task completion presented as progress on the latest request, vague success claims, and the key caveat clipped at narrow widths. |
+| **Direct, clear action** | The relevant next action is discoverable where the insight appears. A straightforward action starts in one activation where the current state permits it. A consequential action opens the exact request and its context in one activation, with its existing confirmation separate. Keyboard users can find and activate the same controls. | Generic links with indistinguishable destinations, extra navigation to reach routine actions, controls that overstate what they do, and lost focus or place on return. |
+| **Triage across sessions** | A reader can find the session that needs them, distinguish pending verification from work in progress, and reach the relevant output among several sessions. Opening detail or acknowledging a result leaves the next item easy to find. | One long session dominating the feed, competing action emphasis, accidental selection, and scroll or focus jumps while switching items. |
+| **Faithful to Grove** | The design uses the existing type, spacing, status marks, catalog icons, and control behavior. Visible emphasis follows what needs attention. Session identity and action ownership stay clear at normal and narrow widths. | Decorative panels or badges that add reading work, provider status inferred from appearance, and controls changing meaning or position without clear feedback. |
+
+Compare the candidate with current Grove using the same session examples.
+Include an active request, a review with an unverified item, a working and a
+quiet session, and a long conversation whose checklist predates its latest
+result. Ask the reviewer to find what needs a decision, say what remains
+unverified, and open the relevant output. Record the first choice, activations
+to the intended action, and any hesitation or wrong turns. Walk the relevant
+paths at normal and narrow widths with pointer and keyboard.
+
+Mark each check **Pass**, **Needs revision**, or **Unverified** and cite the
+observation, build or mock, and input method. An expert walkthrough records the
+reviewer's observations. Claims about reduced cognitive load require evidence
+from people doing the task. For changes touching shared provider behavior,
+report Codex and Claude separately under the evidence rules above.
+
 ## Verify and maintain
 
 Run relevant code checks and the conformance suite as required by [AGENTS.md](../AGENTS.md). A passing source check or worker claim cannot establish native UI correctness. Record the exact build/worktree observed, screenshot/interaction evidence, and passed, failed, or unobserved checks. Correct observed drift; if native inspection is blocked, state the blocker and unobserved checks without claiming verification. An isolated QA app may be used before the final installation; documentation/skill-only changes require neither build nor installation.
