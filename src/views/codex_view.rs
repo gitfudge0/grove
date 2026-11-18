@@ -7085,6 +7085,17 @@ impl Render for CodexView {
         }
         messages =
             messages.children(self.question_blocks_at(state.saved.items.len(), &state, window, cx));
+        // Question edits and composer reflow can change the scroll range without
+        // changing the transcript items. Pin against the new layout so the
+        // footer or receipt stays reachable when the reader was at the bottom.
+        if (!state.questions.is_empty() || self.has_question_anchor(state.saved.items.len()))
+            && !self.composer_collapsed
+            && self.edit_confirmation.is_none()
+            && (self.composer_pin_bottom
+                || self.scroll.max_offset().y + self.scroll.offset().y <= gpui::px(0.5))
+        {
+            self.scroll.scroll_to_bottom();
+        }
         // Hidden, replaced and removed message owners must be dropped so the
         // native selection controller cannot copy their last painted text.
         self.selection_views
@@ -26843,6 +26854,110 @@ mod tests {
             }
         }
         cx.update(|_, cx| gpui_component::Theme::global_mut(cx).font_size = previous_rem);
+    }
+
+    #[gpui::test]
+    fn long_question_actions_and_receipts_stay_above_the_composer(cx: &mut gpui::TestAppContext) {
+        for provider in [codex::Provider::Codex, codex::Provider::Claude] {
+            let (view, cx, actions, _) = fixture(cx);
+            let answer = "A long answer that needs to wrap across several lines.\n".repeat(28);
+            let mut request = codex::QuestionRequest::from_codex(
+                json!("long-question"),
+                &json!({"questions": [
+                    {"id":"scope", "question":"What should this change cover?", "isOther": true,
+                     "options":[{"label":"Suggested scope", "description":"Include one optional check.\n".repeat(36)}]}
+                ]}),
+            ).unwrap();
+            for i in 1..8 {
+                let mut question = request.questions[0].clone();
+                question.id = format!("scope-{i}");
+                request.questions.push(question);
+            }
+            cx.simulate_resize(gpui::size(gpui::px(700.), gpui::px(800.)));
+            draw(cx);
+            cx.update(|_, cx| {
+                cx.set_reduce_motion(true);
+                view.update(cx, |view, cx| {
+                    view.session.update(cx, |session, cx| {
+                        session.state.saved.provider = provider;
+                        session.state.status = Status::Waiting;
+                        session.state.questions.push(request.clone());
+                        cx.notify();
+                    });
+                });
+            });
+            draw(cx);
+            let key = view.read_with(cx, |view, cx| {
+                question_key(&view.session.read(cx).state, &request)
+            });
+            cx.update(|window, cx| {
+                view.update(cx, |view, cx| {
+                    for i in 0..request.questions.len() {
+                        view.select_question_choice(&key, i, None, false, window, cx);
+                        view.question_drafts[&key].questions[i]
+                            .input
+                            .update(cx, |input, cx| {
+                                input.set_value(answer.trim(), window, cx);
+                            });
+                    }
+                    cx.notify();
+                });
+            });
+            draw(cx);
+            let assert_above_composer = |selector, cx: &mut gpui::VisualTestContext| {
+                let content = cx.debug_bounds(selector).unwrap();
+                let transcript = cx.debug_bounds("codex-messages").unwrap();
+                let composer = cx.debug_bounds("codex-composer-input").unwrap();
+                assert!(
+                    content.bottom() <= transcript.bottom() && transcript.bottom() <= composer.top(),
+                    "{provider:?}: {selector} {content:?} must end inside {transcript:?} above {composer:?}"
+                );
+                content
+            };
+            let position = cx.debug_bounds("codex-messages").unwrap().center();
+            cx.simulate_event(gpui::ScrollWheelEvent {
+                position,
+                delta: gpui::ScrollDelta::Pixels(gpui::point(gpui::px(0.), gpui::px(-10000.))),
+                modifiers: gpui::Modifiers::default(),
+                touch_phase: gpui::TouchPhase::Moved,
+            });
+            draw(cx);
+            cx.simulate_resize(gpui::size(gpui::px(520.), gpui::px(480.)));
+            draw(cx);
+            let review = assert_above_composer("questions-submit-0", cx);
+            cx.simulate_click(review.center(), gpui::Modifiers::default());
+            draw(cx);
+            assert!(view.read_with(cx, |view, _| view.question_drafts[&key].reviewing));
+            let send = assert_above_composer("questions-submit-0", cx);
+            cx.simulate_click(send.center(), gpui::Modifiers::default());
+            draw(cx);
+            let epoch =
+                view.read_with(cx, |view, cx| view.session.read(cx).state.interaction_epoch);
+            assert!(actions_at_epoch(&actions, epoch).iter().any(|action| {
+                matches!(action, Action::AnswerQuestions(_, Some(answers)) if answers["scope"] == [answer.trim()])
+            }));
+            cx.update(|_, cx| {
+                view.update(cx, |view, cx| {
+                    view.session.update(cx, |session, cx| {
+                        let thread_id = session.state.saved.thread_id.clone();
+                        let turn_id = session.state.turn_id.clone();
+                        session
+                            .state
+                            .question_answer_acks
+                            .push(codex::QuestionAnswerAck {
+                                sequence: 1,
+                                id: request.id.clone(),
+                                thread_id,
+                                turn_id,
+                            });
+                        session.state.questions.clear();
+                        cx.notify();
+                    });
+                });
+            });
+            draw(cx);
+            assert_above_composer("question-receipt-0-answer-7", cx);
+        }
     }
 
     #[gpui::test]
