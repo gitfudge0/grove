@@ -18422,7 +18422,7 @@ mod tests {
                                 retained.as_ref().unwrap().update(cx, |view, cx| {
                                     view.copy_code_block(
                                         format!("{thread}:snippet:code:17"),
-                                        "  cargo test --workspace\n".into(),
+                                        "  cargo test --workspace\n",
                                         cx,
                                     );
                                 });
