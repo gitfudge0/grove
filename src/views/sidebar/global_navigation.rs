@@ -330,9 +330,31 @@ impl Sidebar {
         };
         self.sync_session_motion(&groups, !showing_history, window, cx);
         self.session_motion_groups(&mut groups);
+        let mut references = if showing_history || grouping != SessionGrouping::Worktrees {
+            Vec::new()
+        } else {
+            self.worktree_reference_groups(cx)
+        };
+        // Reference-only worktree groups follow the last group of their project.
+        for (label, _) in &references {
+            if groups.iter().any(|(existing, _)| existing == label) {
+                continue;
+            }
+            let project = label.split(" / ").next().unwrap_or_default();
+            let position = groups
+                .iter()
+                .rposition(|(existing, _)| existing.split(" / ").next() == Some(project))
+                .map_or(groups.len(), |index| index + 1);
+            groups.insert(position, (label.clone(), Vec::new()));
+        }
         let mut count = 0;
         for (label, ids) in groups {
-            if ids.is_empty() {
+            let refs = references
+                .iter()
+                .position(|(existing, _)| *existing == label)
+                .map(|index| references.remove(index).1)
+                .unwrap_or_default();
+            if ids.is_empty() && refs.is_empty() {
                 continue;
             }
             {
@@ -364,6 +386,11 @@ impl Sidebar {
                 } else if let Some(row) = self.exiting_session_row(id, cx) {
                     count += 1;
                     sessions = sessions.child(self.session_motion_row(id, row));
+                }
+            }
+            for id in refs {
+                if let Some(meta) = self.runtime.read(cx).registry.read(cx).meta(id).cloned() {
+                    sessions = sessions.child(self.session_reference_row(&meta, &label, cx));
                 }
             }
         }
@@ -533,33 +560,9 @@ impl Sidebar {
                         ids.push(*id);
                         continue;
                     }
-                    let name = self
-                        .snapshot
-                        .projects
-                        .iter()
-                        .find(|owner| owner.name == meta.project)
-                        .and_then(|owner| owner.worktrees.iter().find(|wt| wt.path == meta.wt_path))
-                        .map_or_else(
-                            || {
-                                std::path::Path::new(&meta.wt_path)
-                                    .file_name()
-                                    .unwrap_or_default()
-                                    .to_string_lossy()
-                                    .into_owned()
-                            },
-                            |wt| wt.name.clone(),
-                        );
                     groups.push((
                         key,
-                        format!(
-                            "{} / {}",
-                            if meta.project.is_empty() {
-                                "No project"
-                            } else {
-                                &meta.project
-                            },
-                            name
-                        ),
+                        self.worktree_group_label(&meta.project, &meta.wt_path),
                         vec![*id],
                     ));
                 }
@@ -571,6 +574,134 @@ impl Sidebar {
             }
         }
     }
+    fn worktree_group_label(&self, project: &str, wt_path: &str) -> String {
+        let path = crate::paths::normalize_wt_path(wt_path);
+        let name = self
+            .snapshot
+            .projects
+            .iter()
+            .find(|owner| owner.name == project)
+            .and_then(|owner| {
+                owner
+                    .worktrees
+                    .iter()
+                    .find(|wt| crate::paths::normalize_wt_path(&wt.path) == path)
+            })
+            .map_or_else(
+                || crate::paths::path_basename(wt_path),
+                |wt| wt.name.clone(),
+            );
+        format!(
+            "{} / {name}",
+            if project.is_empty() {
+                "No project"
+            } else {
+                project
+            }
+        )
+    }
+
+    /// Worktree groups that list a multi-checkout session as a reference because
+    /// the session's full card lives under its primary checkout. Ordered by
+    /// session order, then checkout order; groups with no own sessions included.
+    pub(super) fn worktree_reference_groups(&self, cx: &App) -> Vec<(String, Vec<SessionId>)> {
+        let registry = self.runtime.read(cx).registry.read(cx);
+        let mut seen = HashSet::new();
+        let mut groups = Vec::<(String, Vec<SessionId>)>::new();
+        for id in self
+            .snapshot
+            .projects
+            .iter()
+            .flat_map(|project| project.sessions.iter())
+        {
+            if !seen.insert(*id) {
+                continue;
+            }
+            let Some(meta) = registry.meta(*id) else {
+                continue;
+            };
+            let primary = crate::paths::normalize_wt_path(&meta.wt_path);
+            let mut roots_seen = HashSet::from([primary]);
+            for root in &meta.context_roots {
+                if !roots_seen.insert(crate::paths::normalize_wt_path(&root.wt_path)) {
+                    continue;
+                }
+                let label = self.worktree_group_label(&root.project, &root.wt_path);
+                match groups.iter_mut().find(|(existing, _)| *existing == label) {
+                    Some((_, ids)) => ids.push(*id),
+                    None => groups.push((label, vec![*id])),
+                }
+            }
+        }
+        groups
+    }
+
+    /// One-line reference to a multi-checkout session listed under a secondary
+    /// checkout's worktree group. Selecting it selects the same session.
+    fn session_reference_row(
+        &self,
+        meta: &SessionMeta,
+        group: &str,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let id = meta.id;
+        let (status, _) = self.status(meta, cx);
+        let registry = self.runtime.read(cx).registry.read(cx);
+        let title = session_display_title(
+            meta,
+            registry
+                .codex(id)
+                .and_then(|session| session.read(cx).state.saved.title.clone())
+                .or_else(|| {
+                    registry
+                        .session(id)
+                        .and_then(|session| session.read(cx).title())
+                }),
+        );
+        let selected = self.selection == Some(Selection::Session(id)) && !self.dashboard_open;
+        let primary = self.worktree_group_label(&meta.project, &meta.wt_path);
+        let key = group.bytes().fold(0u64, |hash, byte| {
+            hash.wrapping_mul(31).wrapping_add(u64::from(byte))
+        });
+        self.row(
+            format!("session-ref-{}-{key}", id.raw()),
+            format!("{title} · {status} · listed under {primary}"),
+            selected,
+            Action::Select(Selection::Session(id)),
+            cx,
+        )
+        .debug_selector(move || format!("session-ref-{}-{key}", id.raw()))
+        .h(rpx(SESSION_REFERENCE_ROW_H))
+        .px(rpx(SPACE_LG))
+        .gap(rpx(SPACE_MD))
+        .rounded(rpx(RADIUS_GROUP))
+        .bg(if selected {
+            c::alpha(c::FG(), 0.14)
+        } else {
+            c::alpha(c::BG(), 0.0)
+        })
+        .text_size(rpx(TEXT_SMALL))
+        .text_color(if selected { c::FG() } else { c::FG_DIM() })
+        .child(
+            div()
+                .flex_shrink_0()
+                .child(icon("session-link", ICON_SM, c::FG_DIM())),
+        )
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .truncate()
+                .child(single_line_session_title(&title)),
+        )
+        .child(
+            div()
+                .flex_shrink_0()
+                .child(session_status_icon_sized(id, status, ICON_MD, cx)),
+        )
+        .into_any_element()
+    }
+
     pub(crate) fn header_workspace_control(&self, cx: &mut Context<Self>) -> AnyElement {
         let ws = &cx.global::<SettingsState>().store.workspaces;
         let name = ws.name(ws.active).to_string();
@@ -1058,6 +1189,43 @@ mod tests {
                 assert_eq!(
                     sidebar.visible_session_order(cx),
                     vec![ids[0], ids[2], ids[1], ids[3]]
+                );
+                // A multi-checkout session keeps one card under its primary checkout
+                // and is referenced under every other checkout, including groups
+                // with no sessions of their own. Keyboard order is unchanged.
+                let multi = registry.update(cx, |registry, _| {
+                    registry.insert_meta_with_context(
+                        "Alpha".into(),
+                        "/alpha/review".into(),
+                        Agent::Claude,
+                        [
+                            ("Alpha", "/alpha/review/"),
+                            ("Beta", "/beta/main"),
+                            ("Beta", "/beta/topic"),
+                        ]
+                        .map(|(project, path)| grove_core::session_meta::ContextRoot {
+                            project: project.into(),
+                            wt_path: path.into(),
+                        })
+                        .to_vec(),
+                        None,
+                    )
+                });
+                sidebar.snapshot.projects[0].sessions.push(multi);
+                assert_eq!(
+                    sidebar.worktree_reference_groups(cx),
+                    vec![
+                        ("Beta / main".into(), vec![multi]),
+                        ("Beta / topic".into(), vec![multi]),
+                    ]
+                );
+                assert_eq!(
+                    sidebar.sidebar_session_groups(cx)[1],
+                    ("Alpha / review".into(), vec![ids[1], multi])
+                );
+                assert_eq!(
+                    sidebar.visible_session_order(cx),
+                    vec![ids[0], ids[2], ids[1], multi, ids[3]]
                 );
                 // Worktree grouping persists; retired project-only grouping falls back to Activity.
                 let saved = serde_json::to_string(&cx.global::<SettingsState>().store).unwrap();

@@ -298,6 +298,7 @@ fn svg_for(name: &str) -> String {
         }
         "arrow-left" => r#"<path d="M13 8H3M7 4 3 8l4 4"/>"#,
         "external-link" => r#"<path d="M9 2h5v5M14 2 7 9M6 3H3v10h10v-3"/>"#,
+        "session-link" => r#"<path d="M3 3v5.5a2 2 0 0 0 2 2h8M10 7.5l3 3-3 3"/>"#,
         "arrow-right" => r#"<path d="M3 8h10M9 4l4 4-4 4"/>"#,
         "panel-right" => {
             r#"<rect x="2" y="2.5" width="12" height="11" rx="1"/><path d="M10 2.5v11"/>"#

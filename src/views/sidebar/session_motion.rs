@@ -12,7 +12,7 @@ struct CardSnapshot {
     worktree: String,
     status: &'static str,
     tasks: Option<task_glance::TaskGlance>,
-    roots: Vec<String>,
+    scope: Option<session_scope::SessionScope>,
     selected: bool,
     group: String,
     group_position: usize,
@@ -206,7 +206,7 @@ impl Sidebar {
                         CardSnapshot {
                             status: self.status(&meta, cx).0,
                             tasks: self.task_glance(*id).cloned(),
-                            roots: session_root_inventory(&meta, &self.snapshot),
+                            scope: session_scope::session_scope(&meta, &self.snapshot),
                             selected: self.selection == Some(Selection::Session(*id))
                                 && !self.dashboard_open,
                             meta,
@@ -350,7 +350,10 @@ impl Sidebar {
                             .line_height(rpx(SESSION_LIST_FOOTER_H))
                             .font_weight(gpui::FontWeight::MEDIUM)
                             .text_color(if card.selected { c::FG() } else { c::FG_DIM() })
-                            .child(meta.project.clone()),
+                            .child(card.scope.as_ref().map_or_else(
+                                || meta.project.clone(),
+                                |scope| scope.projects.clone(),
+                            )),
                     )
                     .child(div().flex_shrink_0().ml(rpx(SPACE_SM)).child(icon(
                         "git-branch",
@@ -365,7 +368,10 @@ impl Sidebar {
                             .text_size(rpx(TEXT_MICRO))
                             .line_height(rpx(SESSION_LIST_FOOTER_H))
                             .text_color(c::FG_DIM())
-                            .child(card.worktree.clone()),
+                            .child(card.scope.as_ref().map_or_else(
+                                || card.worktree.clone(),
+                                |scope| scope.shared.clone(),
+                            )),
                     )
                     .child(
                         div()
@@ -419,14 +425,11 @@ impl Sidebar {
                         line.child(task_glance::row_progress(id, tasks))
                     }),
             )
-            .children(card.roots.iter().cloned().map(|root| {
-                div()
-                    .truncate()
-                    .text_size(rpx(TEXT_MICRO))
-                    .line_height(rpx(SESSION_META_LINE_H))
-                    .font_family(crate::fonts::UI_FAMILY)
-                    .text_color(c::FG_DIM())
-                    .child(root)
+            .children(card.scope.iter().flat_map(|scope| {
+                scope
+                    .exceptions
+                    .iter()
+                    .map(session_scope::scope_exception_line)
             }));
         div()
             .id(("sidebar-session-exit", id.raw()))

@@ -2666,3 +2666,16 @@ verification line. Native request focus was exercised in GPUI fixtures.
 Live Claude remains unverified because its CLI is signed out. The shared
 request and review fixtures include Claude snapshot coverage. Participant
 testing and native macOS and Windows validation remain unverified.
+
+## Cross-worktree session scope line (November 2026)
+
+Multi-checkout sidebar cards show a scope line (repository set, then the shared
+worktree, shared branch, worktree pair or count) and exception lines for
+unavailable checkouts and branch outliers. Worktree grouping lists reference rows
+under secondary checkouts. Unit tests cover the scope derivation rules, and the
+worktree grouping fixture covers reference groups, reference-only groups and
+unchanged keyboard order. The HTML design mock was reviewed in headless Chrome.
+Native appearance remains unverified: no isolated QA app with multi-checkout
+sessions was launched, because seeding them requires live provider or tmux
+sessions. Narrow-width truncation, reference-row hover and focus, and live Codex
+and Claude multi-root sessions remain untested.

@@ -27,6 +27,7 @@ mod session_diff;
 mod session_history;
 mod session_motion;
 mod session_placement;
+mod session_scope;
 mod side_chat;
 mod task_glance;
 mod title_edit;
@@ -108,6 +109,8 @@ const SESSION_TREE_ROW_H: f32 = 32.0;
 const SESSION_LAUNCHER_SIZE: f32 = ICON_SM;
 const SESSION_TITLE_LINE_H: f32 = 17.0;
 const SESSION_META_LINE_H: f32 = 14.0;
+/// Single-line reference to a multi-checkout session under a secondary worktree group.
+const SESSION_REFERENCE_ROW_H: f32 = 32.0;
 const SESSION_ROW_RADIUS: f32 = 7.0;
 const SESSION_LIST_CARD_H: f32 = 78.0;
 const SESSION_LIST_HEADER_H: f32 = 20.0;
@@ -4472,7 +4475,7 @@ impl Sidebar {
                 .since_of(id)
                 .unwrap_or(meta.spawned_at);
             let age = session_age_label(since, Instant::now());
-            let roots = session_root_inventory(meta, &self.snapshot);
+            let scope = session_scope::session_scope(meta, &self.snapshot);
             let diff = self
                 .runtime
                 .read(cx)
@@ -4483,8 +4486,19 @@ impl Sidebar {
                     || ("Git status unavailable".into(), false),
                     session_diff_status,
                 );
-            let full_context =
-                branch.map_or_else(|| context.clone(), |branch| format!("{context} · {branch}"));
+            let full_context = scope.as_ref().map_or_else(
+                || branch.map_or_else(|| context.clone(), |branch| format!("{context} · {branch}")),
+                |scope| {
+                    session_scope::scope_accessible_details(
+                        scope,
+                        &session_root_inventory(meta, &self.snapshot),
+                    )
+                },
+            );
+            let (header_project, header_worktree) = scope.as_ref().map_or_else(
+                || (meta.project.clone(), name.clone()),
+                |scope| (scope.projects.clone(), scope.shared.clone()),
+            );
             self.row(
                 format!("session-{}", id.raw()),
                 format!(
@@ -4549,7 +4563,7 @@ impl Sidebar {
                                     .debug_selector(move || {
                                         format!("session-list-context-{}", id.raw())
                                     })
-                                    .child(meta.project.clone()),
+                                    .child(header_project),
                             )
                             .child(div().flex_shrink_0().ml(rpx(SPACE_SM)).child(icon(
                                 "git-branch",
@@ -4568,7 +4582,7 @@ impl Sidebar {
                                     .debug_selector(move || {
                                         format!("session-list-worktree-{}", id.raw())
                                     })
-                                    .child(name.clone()),
+                                    .child(header_worktree),
                             )
                             .child(
                                 div()
@@ -4681,14 +4695,11 @@ impl Sidebar {
                                 .child("Done"),
                             ),
                     )
-                    .children(roots.into_iter().map(|root| {
-                        div()
-                            .truncate()
-                            .text_size(rpx(TEXT_MICRO))
-                            .line_height(rpx(SESSION_META_LINE_H))
-                            .font_family(crate::fonts::UI_FAMILY)
-                            .text_color(c::FG_DIM())
-                            .child(root)
+                    .children(scope.iter().flat_map(|scope| {
+                        scope
+                            .exceptions
+                            .iter()
+                            .map(session_scope::scope_exception_line)
                     })),
             )
         } else {
