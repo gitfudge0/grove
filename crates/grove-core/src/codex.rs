@@ -4069,7 +4069,28 @@ mod tests {
             let first = original.fork_at(0, true).unwrap();
             assert!(first.items.is_empty());
             assert_eq!(first.draft, "first");
-            let response = original.fork_at(2, false).unwrap();
+            let mut active = Snapshot::new(original);
+            active.saved.work_periods.push(WorkPeriod {
+                start_item: 0,
+                end_item: Some(2),
+                duration_ms: None,
+                subagents: Vec::new(),
+            });
+            active.saved.work_periods.push(WorkPeriod {
+                start_item: 2,
+                end_item: None,
+                duration_ms: None,
+                subagents: Vec::new(),
+            });
+            active.status = Status::Starting;
+            assert!(!active.can_fork_at(2, false));
+            for status in [Status::Working, Status::Waiting] {
+                active.status = status;
+                assert!(active.can_fork_at(2, false));
+                assert!(!active.can_fork_at(2, true));
+                assert!(!active.can_fork_at(4, false));
+            }
+            let response = active.saved.fork_at(2, false).unwrap();
             assert!(response.draft.is_empty());
             assert!(response.draft_images.is_empty());
             if provider == Provider::Codex {

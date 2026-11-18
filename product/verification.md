@@ -2628,3 +2628,18 @@ Across worktrees in the project dropdown opens a grouped native selection modal.
 Codex and Claude are verified with deferred/channel fixtures for draft, attachment and provider-option retention, explicit cwd independent of selection order, per-worktree saved roots (including two worktrees in one project), additional-directory arguments, missing-root rejection and fresh-draft adoption. No live provider send or resume was performed for this change. Light appearance, native narrow-window captures and other platforms remain unverified; normal/narrow native geometry checks cover right-hand control visibility.
 
 The final scoped Dashboard run passed 28 tests with one GPU capture fixture ignored. The two excluded layout assertions were reproduced from exact unchanged revision aa4d236: dashboard_position_uses_its_own_inset_viewport reports 148px versus 100px; dashboard_adoption_keeps_composer_anchored_on_first_frame reports 752px versus 800px. All 33 UI conformance checks and six core multi-root checks passed. The application build, all-target check, formatting, diff and repository-artifact checks passed; the final presentation refinement was rebuilt and covered by the scoped tests.
+
+## Forking from an active session
+
+The shared history fixture checks Codex and Claude fork boundaries, including
+earlier responses during Working and Needs you, and rejects in-progress
+responses and user-message forks during provider work. The GPUI transcript
+fixture exercises the emitted fork event for the eligible response and confirms
+that ineligible anchors emit nothing. Manual native pointer and keyboard checks
+remain untested.
+
+Codex was verified at the live app-server boundary. A separate app server forked
+through the first completed turn and returned only that turn, while a read from
+the source server confirmed the second turn was still in progress. A live
+end-to-end Grove walkthrough remains untested. Live Claude remains untested
+because its CLI reported that it was signed out.

@@ -8862,18 +8862,17 @@ impl CodexView {
     ) -> gpui::AnyElement {
         let focus =
             self.ensure_control_focus(&format!("fork:{boundary}:{restore_user}"), window, cx);
-        let enabled = !self.transcript_only()
-            && !self.session.read(cx).state.status.busy()
-            && item_id
-                .as_ref()
-                .is_some_and(|id| self.source_item_index(id, cx).is_some());
+        let enabled = item_id
+            .as_deref()
+            .and_then(|id| self.fork_boundary(id, restore_user, cx))
+            .is_some();
         let keyboard_id = item_id.clone();
         let control = if enabled {
             header_control_with_label_tooltip("fork-message", "Fork session from here")
         } else {
             super::components::header_control_with_hover_tooltip(
                 "fork-message",
-                "Fork unavailable while session is busy",
+                "Fork unavailable at this point",
                 gpui::transparent_black(),
             )
         };
@@ -9119,15 +9118,21 @@ impl CodexView {
         }
     }
 
-    fn fork_from_item(&self, id: &str, restore_user: bool, cx: &mut Context<Self>) {
-        if self.transcript_only() || self.session.read(cx).state.status.busy() {
-            return;
+    fn fork_boundary(&self, id: &str, restore_user: bool, cx: &App) -> Option<usize> {
+        if self.transcript_only() {
+            return None;
         }
-        if let Some(index) = self.source_item_index(id, cx) {
-            cx.emit(CodexViewEvent::ForkRequested(
-                index + usize::from(!restore_user),
-                restore_user,
-            ));
+        let boundary = self.source_item_index(id, cx)? + usize::from(!restore_user);
+        self.session
+            .read(cx)
+            .state
+            .can_fork_at(boundary, restore_user)
+            .then_some(boundary)
+    }
+
+    fn fork_from_item(&self, id: &str, restore_user: bool, cx: &mut Context<Self>) {
+        if let Some(boundary) = self.fork_boundary(id, restore_user, cx) {
+            cx.emit(CodexViewEvent::ForkRequested(boundary, restore_user));
         }
     }
 
@@ -20558,9 +20563,26 @@ mod tests {
             view.fork_from_item("local-pending", true, cx);
             view.fork_from_item("real-input", true, cx);
             view.fork_from_item("real-answer", false, cx);
+            view.session.update(cx, |session, _| {
+                session.state.status = Status::Working;
+                session.state.saved.items.push(json!({
+                    "id":"streaming-answer","type":"agentMessage","text":"Streaming"
+                }));
+                session.state.saved.work_periods = vec![
+                    codex::WorkPeriod {
+                        start_item: 0, end_item: Some(3), duration_ms: None, subagents: Vec::new(),
+                    },
+                    codex::WorkPeriod {
+                        start_item: 3, end_item: None, duration_ms: None, subagents: Vec::new(),
+                    },
+                ];
+            });
+            view.fork_from_item("real-input", true, cx);
+            view.fork_from_item("real-answer", false, cx);
+            view.fork_from_item("streaming-answer", false, cx);
         }));
         cx.run_until_parked();
-        assert_eq!(*events.borrow(), [(1, true), (3, false)]);
+        assert_eq!(*events.borrow(), [(1, true), (3, false), (3, false)]);
     }
 
     #[gpui::test]

@@ -1357,6 +1357,25 @@ impl Snapshot {
         self.status.busy() || self.turn_id.is_some() || self.compacting || self.compact_requested
     }
 
+    /// During provider work only response anchors in a closed work period can fork.
+    pub fn can_fork_at(&self, boundary: usize, restore_user: bool) -> bool {
+        if boundary > self.saved.items.len() || self.saved.pending_edit.is_some() {
+            return false;
+        }
+        if !self.provider_work_active() {
+            return true;
+        }
+        if restore_user || boundary == 0 || self.status == Status::Starting || self.reconnecting {
+            return false;
+        }
+        self.saved
+            .work_periods
+            .iter()
+            .rev()
+            .find(|period| period.start_item < boundary)
+            .is_some_and(|period| period.end_item.is_some_and(|end| boundary <= end))
+    }
+
     /// Revision of the inputs to a context measurement. UI consumers can coalesce
     /// one optional query per observed revision instead of counting on redraw.
     pub fn context_measurement_revision(&self) -> u64 {

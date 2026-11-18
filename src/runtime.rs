@@ -666,14 +666,11 @@ impl Runtime {
             .read(cx)
             .codex(source)
             .ok_or("Session is no longer available.")?;
-        if session.read(cx).state.status.busy() {
-            return Err("Wait for the session to finish before forking.".into());
+        let state = &session.read(cx).state;
+        if !state.can_fork_at(boundary, restore_user) {
+            return Err("This conversation boundary is unavailable for forking.".into());
         }
-        let saved = session
-            .read(cx)
-            .state
-            .saved
-            .fork_at(boundary, restore_user)?;
+        let saved = state.saved.fork_at(boundary, restore_user)?;
         self.reopen_session_history(saved, cx)
     }
 
