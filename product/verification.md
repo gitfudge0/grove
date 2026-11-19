@@ -1,3 +1,16 @@
+## Dashboard transcript launch shortcut
+
+Linux GPUI fixtures verified keyboard routing and the per-launch transcript
+override for Codex and Claude using simulated keystrokes and mocked provider
+connections. The fixtures check ordinary Enter, modified Enter, transcript focus,
+and exactly one first submission per adopted session. Live Codex and Claude
+delivery, a desktop keyboard walkthrough, macOS and Windows remain untested.
+
+The scoped Dashboard, Zen routing and UI conformance rerun passed 111 tests
+with five ignored. It excluded two previously documented Dashboard layout
+assertions and two fork-event assertions whose expected error text differs
+from the runtime error text on the starting revision.
+
 ## Missing provider in the Dashboard composer
 
 Linux picker and draft fixtures exercise both providers, including omitted

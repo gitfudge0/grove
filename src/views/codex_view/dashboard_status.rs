@@ -463,7 +463,7 @@ mod tests {
         let count = launches.clone();
         let _events = cx.update(|_, cx| {
             cx.subscribe(&view, move |_, event, _| {
-                if matches!(event, CodexViewEvent::DashboardSubmit) {
+                if matches!(event, CodexViewEvent::DashboardSubmit { .. }) {
                     count.set(count.get() + 1);
                 }
             })

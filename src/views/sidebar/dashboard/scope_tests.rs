@@ -228,7 +228,7 @@ fn dashboard_scope_changed_preserves_codex_and_claude_drafts_and_blocks_missing_
                 assert_eq!(saved.composer.model.as_deref(), Some("fixture-model"));
                 assert_eq!(saved.composer.effort.as_deref(), Some("high"));
                 assert_eq!(saved.config_args, ["fixture-config"]);
-                sidebar.launch_dashboard(window, cx);
+                sidebar.launch_dashboard(false, window, cx);
                 assert!(sidebar
                     .content_error
                     .as_deref()
@@ -318,7 +318,7 @@ fn dashboard_scope_replacement_preserves_same_project_worktrees_and_chosen_cwd(
                     )
                 });
                 let view = cx.new(|cx| CodexView::new(session.clone(), window, cx));
-                sidebar.adopt_dashboard_launch(0, session.clone(), view, window, cx);
+                sidebar.adopt_dashboard_launch(0, session.clone(), view, false, window, cx);
                 let next = sidebar.dashboard.as_ref().unwrap();
                 assert_ne!(next.session, session);
                 assert_eq!(next.tray.read(cx).scope, scope);

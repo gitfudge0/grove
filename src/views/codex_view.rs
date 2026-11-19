@@ -1588,7 +1588,7 @@ fn snippet_shell_supported(language: &str) -> bool {
 }
 
 pub(crate) enum CodexViewEvent {
-    DashboardSubmit,
+    DashboardSubmit { open_transcript: bool },
     OpenConnections(codex::Provider, String, Vec<String>, Option<FocusHandle>),
     DescribeChanges(grove_core::describe_skill::ScopePreference, FocusHandle),
     ReviewChanges(grove_core::review_skill::ScopePreference, FocusHandle),
@@ -2172,13 +2172,7 @@ impl CodexView {
                     InputEvent::PressEnter {
                         secondary: true,
                         shift: false,
-                    } => {
-                        if this.session.read(cx).state.status.busy() {
-                            this.submit_mode(SubmissionMode::Steer, window, cx);
-                        } else {
-                            this.submit(window, cx);
-                        }
-                    }
+                    } => this.submit_modified_enter(true, window, cx),
                     InputEvent::PressEnter {
                         secondary: false,
                         shift: false,
@@ -5661,7 +5655,31 @@ impl CodexView {
         });
     }
 
+    fn submit_modified_enter(
+        &mut self,
+        open_dashboard_transcript: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if open_dashboard_transcript && self.dashboard_tray.is_some() {
+            self.submit_with_destination(true, window, cx);
+        } else if self.session.read(cx).state.status.busy() {
+            self.submit_mode(SubmissionMode::Steer, window, cx);
+        } else {
+            self.submit(window, cx);
+        }
+    }
+
     fn submit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.submit_with_destination(false, window, cx);
+    }
+
+    fn submit_with_destination(
+        &mut self,
+        open_transcript: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if self.dashboard_pending {
             return;
         }
@@ -5685,7 +5703,7 @@ impl CodexView {
                 return;
             }
             if !self.input.read(cx).value().trim().is_empty() || !self.images.is_empty() {
-                cx.emit(CodexViewEvent::DashboardSubmit);
+                cx.emit(CodexViewEvent::DashboardSubmit { open_transcript });
             }
             return;
         }
@@ -7298,11 +7316,7 @@ impl Render for CodexView {
             .on_action(
                 cx.listener(|this, _: &crate::keymap::ToggleZen, window, cx| {
                     if this.input.focus_handle(cx).is_focused(window) {
-                        if this.session.read(cx).state.status.busy() {
-                            this.submit_mode(SubmissionMode::Steer, window, cx);
-                        } else {
-                            this.submit(window, cx);
-                        }
+                        this.submit_modified_enter(cfg!(target_os = "macos"), window, cx);
                     } else {
                         cx.propagate();
                     }
@@ -17084,7 +17098,7 @@ mod tests {
             cx.subscribe(&view, move |_, event, _| {
                 observed.borrow_mut().push(match event {
                     CodexViewEvent::DescribeChanges(..) => "description",
-                    CodexViewEvent::DashboardSubmit => "provider startup",
+                    CodexViewEvent::DashboardSubmit { .. } => "provider startup",
                     _ => "other",
                 });
             })
@@ -17169,7 +17183,7 @@ mod tests {
             cx.subscribe(&view, move |_, event, _| {
                 observed.borrow_mut().push(match event {
                     CodexViewEvent::ReviewChanges(..) => "review",
-                    CodexViewEvent::DashboardSubmit => "provider startup",
+                    CodexViewEvent::DashboardSubmit { .. } => "provider startup",
                     _ => "other",
                 });
             })
@@ -24563,6 +24577,58 @@ mod tests {
             action,
             Action::SubmitWithMode { .. } | Action::Submit { .. }
         )));
+    }
+
+    #[gpui::test]
+    fn dashboard_enter_routes_launch_intent_for_both_providers(cx: &mut gpui::TestAppContext) {
+        let (view, cx, _, _) = fixture(cx);
+        let requests = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let observed = requests.clone();
+        let _subscription = cx.update(|_, cx| {
+            cx.bind_keys(crate::keymap::shell_bindings());
+            cx.subscribe(&view, move |_, event, _| {
+                if let CodexViewEvent::DashboardSubmit { open_transcript } = event {
+                    observed.borrow_mut().push(*open_transcript);
+                }
+            })
+        });
+        let shell_enter = format!("{}enter", crate::keymap::platform_mod_prefix());
+        let composer_enter = if cfg!(target_os = "macos") {
+            "cmd-enter"
+        } else {
+            "ctrl-enter"
+        };
+        for provider in [codex::Provider::Codex, codex::Provider::Claude] {
+            cx.update(|window, cx| {
+                view.update(cx, |view, cx| {
+                    view.session.update(cx, |session, _| {
+                        session.state.saved.provider = provider;
+                        session.catalog_loading = false;
+                    });
+                    view.dashboard_tray = Some(cx.new(|_| {
+                        super::super::sidebar::dashboard::DestinationTray::picker_test_tray(
+                            "/dashboard-shortcut-fixture".into(),
+                        )
+                    }));
+                    view.input.update(cx, |input, cx| {
+                        input.set_value("Start a session", window, cx);
+                    });
+                    view.input.focus_handle(cx).focus(window, cx);
+                });
+            });
+            draw(cx);
+            cx.simulate_keystrokes("shift-enter");
+            assert!(requests.borrow().is_empty());
+            cx.simulate_keystrokes("enter");
+            cx.simulate_keystrokes(composer_enter);
+            cx.simulate_keystrokes(&shell_enter);
+            assert_eq!(
+                *requests.borrow(),
+                [false, true, cfg!(target_os = "macos")],
+                "{provider:?}"
+            );
+            requests.borrow_mut().clear();
+        }
     }
 
     #[gpui::test]
