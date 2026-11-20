@@ -439,6 +439,20 @@ macOS/Windows runtime remain untested. Screenshots/logs are retained under
 `.grove-artifacts/provider-usage-qa/`. No installed app replacement or release
 occurred; delivery is a local commit on the current branch.
 
+### Claude account allowance read (2026-11-20)
+
+The isolated macOS app showed fixture allowances without a conversation,
+refreshed Claude's five-hour meter, and displayed a separate Fable meter and
+reset time. The signed-out fixture showed no allowance. Focused usage and
+connection tests and the UI conformance suite passed. Core Clippy passed.
+Strict app Clippy reported three diagnostics in unchanged view code.
+
+Codex returned a live weekly allowance through the production usage service.
+Claude Code 2.1.322 accepted the structured request, but the local CLI reported
+signed out during final verification. Live Claude and Fable allowance readings
+remain unverified. A signed-in CLI that reports plan allowance is needed to
+check them. Linux and Windows UI were untested for this change.
+
 ## Question decision review (November 2026)
 
 Native questions now show every question in numbered plan-style sections, with

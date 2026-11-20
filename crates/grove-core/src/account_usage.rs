@@ -120,11 +120,69 @@ fn claude_label(kind: &str) -> String {
     match kind {
         "five_hour" => "5 hours".into(),
         "seven_day" => "Weekly".into(),
+        "seven_day_oauth_apps" => "Weekly · OAuth apps".into(),
         "seven_day_opus" => "Weekly · Opus".into(),
         "seven_day_sonnet" => "Weekly · Sonnet".into(),
         "overage" => "Extra usage".into(),
         _ => kind.replace('_', " "),
     }
+}
+
+/// Claude's /usage control response reports percentages on a 0–100 scale and
+/// RFC 3339 reset times. The conversation rate-limit events use different units.
+pub(crate) fn claude_read(value: &Value, observed_at: u64) -> Option<AccountUsage> {
+    if value["rate_limits_available"].as_bool() != Some(true) {
+        return None;
+    }
+    let limits = &value["rate_limits"];
+    let make_window = |name, value: &Value| {
+        let remaining_percent = remaining(value["utilization"].as_f64(), 100.0);
+        let resets_at = value["resets_at"]
+            .as_str()
+            .and_then(|time| chrono::DateTime::parse_from_rfc3339(time).ok())
+            .map(|time| time.timestamp())
+            .filter(|time| *time > 0);
+        (remaining_percent.is_some() || resets_at.is_some()).then_some(UsageWindow {
+            name,
+            remaining_percent,
+            resets_at,
+        })
+    };
+    let mut windows: Vec<_> = [
+        "five_hour",
+        "seven_day",
+        "seven_day_oauth_apps",
+        "seven_day_opus",
+        "seven_day_sonnet",
+    ]
+    .into_iter()
+    .filter_map(|kind| make_window(claude_label(kind), &limits[kind]))
+    .collect();
+    if let Some(models) = limits["model_scoped"].as_array() {
+        for model in models {
+            let Some(label) = model["display_name"].as_str() else {
+                continue;
+            };
+            let label: String = label
+                .chars()
+                .filter(|ch| !ch.is_control())
+                .take(80)
+                .collect();
+            let label = label.trim();
+            if label.is_empty() {
+                continue;
+            }
+            let name = format!("Weekly · {label}");
+            if !windows.iter().any(|window| window.name == name) {
+                windows.extend(make_window(name, model));
+            }
+        }
+    }
+    (!windows.is_empty()).then_some(AccountUsage {
+        observed_at,
+        windows,
+        status: UsageStatus::Unknown,
+    })
 }
 
 /// A Claude event is one authoritative observation. Do not merge old percentages
@@ -238,5 +296,41 @@ mod tests {
         assert_eq!(usage.windows[1].name, "Weekly · Opus");
         assert_eq!(usage.windows[1].remaining_percent, None);
         assert_eq!(usage.windows[2].remaining_percent, Some(100.0));
+    }
+
+    #[test]
+    fn claude_read_uses_percentages_and_absolute_reset_times() {
+        let usage = claude_read(
+            &json!({"rate_limits_available":true,"rate_limits":{
+                "five_hour":{"utilization":38,"resets_at":"2026-11-20T10:00:00Z"},
+                "seven_day":{"utilization":100,"resets_at":null},
+                "seven_day_oauth_apps":{"utilization":null,"resets_at":"2026-11-20T15:30:00+05:30"},
+                "seven_day_opus":{"utilization":101,"resets_at":"invalid"},
+                "model_scoped":[{"display_name":"Fable","utilization":25,"resets_at":null}]
+            }}),
+            8,
+        )
+        .unwrap();
+        assert_eq!(usage.observed_at, 8);
+        assert_eq!(usage.status, UsageStatus::Unknown);
+        assert_eq!(usage.windows.len(), 4);
+        assert_eq!(usage.windows[0].remaining_percent, Some(62.0));
+        assert_eq!(usage.windows[0].resets_at, Some(1795168800));
+        assert_eq!(usage.windows[1].remaining_percent, Some(0.0));
+        assert_eq!(usage.windows[2].remaining_percent, None);
+        assert_eq!(usage.windows[2].resets_at, usage.windows[0].resets_at);
+        assert_eq!(usage.windows[3].name, "Weekly · Fable");
+        assert_eq!(usage.windows[3].remaining_percent, Some(75.0));
+    }
+
+    #[test]
+    fn claude_read_without_plan_allowance_returns_no_measurement() {
+        for response in [
+            json!({"rate_limits_available":false,"rate_limits":{"five_hour":{"utilization":0}}}),
+            json!({"rate_limits_available":true,"rate_limits":null}),
+            json!({"rate_limits_available":true,"rate_limits":{"five_hour":{"utilization":-1}}}),
+        ] {
+            assert!(claude_read(&response, 8).is_none());
+        }
     }
 }

@@ -205,10 +205,13 @@ impl ConnectionContext {
         )
     }
     fn command(&self, args: &[&str]) -> Command {
+        let mut command = self.base_command();
+        command.args(&self.args).args(args);
+        command
+    }
+    fn base_command(&self) -> Command {
         let mut command = Command::new(&self.program);
         command
-            .args(&self.args)
-            .args(args)
             .current_dir(&self.cwd)
             .env_clear()
             .envs(self.environment.iter().cloned());
@@ -303,10 +306,15 @@ impl ConnectionContext {
             });
         }
         if self.provider == Provider::Claude {
+            let account = self.account()?;
+            let usage = match &account {
+                AccountStatus::Connected { identity, .. } => self.claude_usage(identity.as_deref()),
+                _ => None,
+            };
             return Ok(UsageReading {
                 context_key,
-                account: self.account()?,
-                usage: None,
+                account,
+                usage,
             });
         }
         self.codex_query(|request| {
@@ -332,6 +340,57 @@ impl ConnectionContext {
                 usage,
             })
         })
+    }
+
+    fn claude_usage(
+        &self,
+        expected_identity: Option<&str>,
+    ) -> Option<crate::account_usage::AccountUsage> {
+        // Validate saved CLI options again before handing them to print mode.
+        // A legacy positional prompt must never run during account discovery.
+        let (options, _) = crate::claude::launch_options(&self.args).ok()?;
+        let mut command = self.base_command();
+        command.args(options).args([
+            "--print",
+            "--verbose",
+            "--input-format",
+            "stream-json",
+            "--output-format",
+            "stream-json",
+            "--no-session-persistence",
+            "--safe-mode",
+        ]);
+        // get_usage is optional. skip_behaviors prevents a local transcript scan.
+        let input = concat!(
+            r#"{"type":"control_request","request_id":"initialize","request":{"subtype":"initialize","hooks":null}}"#,
+            "\n",
+            r#"{"type":"control_request","request_id":"usage","request":{"subtype":"get_usage","skip_behaviors":true}}"#,
+            "\n",
+        );
+        let result = query_with_input(command, Some(input.as_bytes())).ok()?;
+        if !result.success {
+            return None;
+        }
+        let mut responses = result
+            .output
+            .split(|byte| *byte == b'\n')
+            .filter_map(|line| {
+                let value: Value = serde_json::from_slice(line).ok()?;
+                (value["type"] == "control_response").then(|| value["response"].clone())
+            });
+        let initialized = responses.find(|reply| reply["request_id"] == "initialize")?;
+        if initialized["subtype"] != "success"
+            || expected_identity
+                .zip(initialized["response"]["account"]["email"].as_str())
+                .is_some_and(|(expected, reported)| expected != safe_label(reported))
+        {
+            return None;
+        }
+        let usage = responses.find(|reply| reply["request_id"] == "usage")?;
+        if usage["subtype"] != "success" {
+            return None;
+        }
+        crate::account_usage::claude_read(&usage["response"], crate::account_usage::now())
     }
 
     /// Explicit inventory request. Claude's CLI enforces its project-server approval
@@ -965,13 +1024,30 @@ struct QueryOutput {
     output: Vec<u8>,
     error: Vec<u8>,
 }
-fn query(mut command: Command) -> Result<QueryOutput, String> {
+fn query(command: Command) -> Result<QueryOutput, String> {
+    query_with_input(command, None)
+}
+fn query_with_input(mut command: Command, input: Option<&[u8]>) -> Result<QueryOutput, String> {
     let mut child = command
-        .stdin(Stdio::null())
+        .stdin(if input.is_some() {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|_| "The provider command is unavailable. Check Provider versions.".to_owned())?;
+    if let Some(input) = input {
+        let wrote = child
+            .stdin
+            .take()
+            .is_some_and(|mut stdin| stdin.write_all(input).is_ok());
+        if !wrote {
+            kill_query(&mut child);
+            return Err("Could not write provider discovery request".into());
+        }
+    }
     let stdout = child
         .stdout
         .take()
@@ -1218,6 +1294,70 @@ done
         let reading = external.usage().unwrap();
         assert_eq!(reading.account, AccountStatus::External);
         assert!(reading.usage.is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn claude_usage_reads_plan_allowance_without_a_prompt_or_session() {
+        let (dir, mut context) = fake_context(
+            r#"
+case "$*" in
+ *'auth status --json')
+  if [ "$MODE" = signed_out ]; then
+   echo '{"loggedIn":false}'
+  else
+   echo '{"loggedIn":true,"authMethod":"claude.ai","email":"reader@example.test"}'
+  fi
+  exit 0;;
+ *'--model fixture --print --verbose --input-format stream-json --output-format stream-json --no-session-persistence --safe-mode') ;;
+ *) exit 7;;
+esac
+if [ "$MODE" = signed_out ]; then touch unexpected-query; exit 8; fi
+IFS= read -r first && IFS= read -r second || exit 9
+if IFS= read -r extra; then exit 10; fi
+case "$first $second" in
+ *'"request_id":"initialize","request":{"subtype":"initialize","hooks":null}'*'"request_id":"usage","request":{"subtype":"get_usage","skip_behaviors":true}'*) ;;
+ *) exit 11;;
+esac
+if [ "$MODE" = different_account ]; then email=other@example.test; else email=reader@example.test; fi
+printf '{"type":"control_response","response":{"request_id":"initialize","subtype":"success","response":{"account":{"email":"%s"}}}}\n' "$email"
+if [ "$MODE" = unsupported ]; then
+ echo '{"type":"control_response","response":{"request_id":"usage","subtype":"error","error":"Unsupported request"}}'
+else
+ echo '{"type":"control_response","response":{"request_id":"usage","subtype":"success","response":{"rate_limits_available":true,"rate_limits":{"five_hour":{"utilization":38,"resets_at":"2026-11-20T10:00:00Z"}}}}}'
+fi
+"#,
+        );
+        context.provider = Provider::Claude;
+        context.args = vec!["--model=fixture".into(), "legacy startup prompt".into()];
+        context
+            .environment
+            .push(("MODE".into(), "supported".into()));
+        let mut context = context.refreshed();
+        let reading = context.usage().unwrap();
+        let signed_in = AccountStatus::Connected {
+            identity: Some("reader@example.test".into()),
+            method: "Provider sign-in".into(),
+        };
+        assert_eq!(reading.account, signed_in);
+        let usage = reading.usage.unwrap();
+        assert_eq!(usage.windows[0].remaining_percent, Some(62.0));
+        assert_eq!(usage.windows[0].resets_at, Some(1795168800));
+
+        for mode in ["unsupported", "different_account", "signed_out"] {
+            context.environment.last_mut().unwrap().1 = mode.into();
+            let reading = context.usage().unwrap();
+            assert_eq!(
+                reading.account,
+                if mode == "signed_out" {
+                    AccountStatus::SignedOut
+                } else {
+                    signed_in.clone()
+                }
+            );
+            assert!(reading.usage.is_none(), "{mode}");
+        }
+        assert!(!dir.path().join("unexpected-query").exists());
     }
 
     #[cfg(unix)]

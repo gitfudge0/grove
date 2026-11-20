@@ -254,9 +254,12 @@ no approval requests. Run native capture/UI checks separately.
 `account_usage` normalizes provider-reported quota windows separately from context
 occupancy. Codex reads `account/read` and `account/rateLimits/read` through the
 bounded connection-discovery transport without creating a thread. Per-limit maps
-supersede the compatibility snapshot. Claude account discovery uses `auth status`
-only; its optional percentages and reset windows come from `rate_limit_event`
-notifications on an existing live conversation. Missing utilization remains unknown.
+supersede the compatibility snapshot. Claude checks sign-in with `auth status` and
+requests structured plan limits from the CLI using `get_usage` with
+`skip_behaviors`. The check sends no model prompt and does not scan local
+transcripts for usage statistics. When the CLI supplies no measurement, eligible
+`rate_limit_event` notifications from a matching live conversation can supply
+allowance. Missing utilization remains unknown.
 
 Reads hold the credential-use lease and reject configuration changes during the
 query. Native usage state is transient and per-source: no quota disk cache,

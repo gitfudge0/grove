@@ -749,12 +749,13 @@ unavailable and last-known/refresh-failed states stay explicit. Occupancy alone
 never establishes rejection or disables sending. Provider-confirmed warnings and
 limits keep their existing session notice ownership.
 
-Codex uses a bounded read-only account and rate-limit request with per-provider
-refresh feedback. Claude account discovery does not send a prompt or promise a
-quota refresh; matching live conversation events arriving after the surface opens
-may show conversation-reported allowance. Earlier session measurements are not
-reused during a new account check. Closing the surface releases its subscriptions;
-no usage values or account identities are persisted by this surface.
+Both providers use bounded read-only account and allowance checks with per-provider
+refresh feedback. Claude can report allowance without an open conversation. If the
+Claude check supplies no allowance, matching live conversation events arriving
+after the check may show conversation-reported allowance. Earlier session
+measurements are not reused during a new account check. Closing the surface
+releases its subscriptions, and no usage values or account identities are
+persisted by this surface.
 
 
 ## Project symbol identity

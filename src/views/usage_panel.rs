@@ -76,10 +76,13 @@ impl UsagePanel {
                         && row.error.is_none()
                         && state.saved.cwd == row.source.cwd
                         && state.saved.config_args == row.source.args
-                        && matches!(
-                            row.reading.as_ref().map(|r| &r.account),
-                            Some(AccountStatus::Connected { .. })
-                        )
+                        && row.reading.as_ref().is_some_and(|reading| {
+                            matches!(reading.account, AccountStatus::Connected { .. })
+                                // A session event may describe only one limit or status.
+                                // Prefer Claude's direct account snapshot when available.
+                                && (row.source.provider != Provider::Claude
+                                    || reading.usage.is_none())
+                        })
                         && session.read(cx).has_transport()
                     {
                         if let Some(usage) = state
@@ -150,6 +153,7 @@ impl UsagePanel {
         let provider = row.source.provider;
         let cwd = row.source.cwd.clone();
         let args = row.source.args.clone();
+        cx.notify();
         if cfg!(test) {
             return;
         }
@@ -159,48 +163,62 @@ impl UsagePanel {
                     async move { ConnectionContext::new(provider, cwd, args)?.usage() },
                 )
                 .await;
-            let _ = this.update(cx, |this, cx| {
-                let row = &mut this.rows[index];
-                row.checking = false;
-                // Events received during this read cannot supersede its newer result.
-                // Rebase even on failure so an unrelated redraw cannot resurrect them.
-                row.baseline = row.source.session.as_ref().and_then(|s| s.read(cx).state.account_usage.clone());
-                match result {
-                    Ok(reading) => {
-                        // Configuration/account changes cannot inherit another balance.
-                        let same = row.reading.as_ref().is_some_and(|old| {
-                            old.context_key.is_some()
-                                && old.context_key == reading.context_key
-                                && matches!((&old.account, &reading.account),
-                                    (AccountStatus::Connected { identity: Some(a), .. }, AccountStatus::Connected { identity: Some(b), .. }) if a == b)
-                        });
-                        if reading.usage.is_some() || !same {
-                            row.usage.clone_from(&reading.usage);
-                            row.conversation_reported = false;
-                        }
-                        row.reading = Some(reading);
-                        let started = std::time::Instant::now();
-                        row.confirmed = Some(started);
-                        cx.spawn(async move |this, cx| {
-                            cx.background_executor().timer(super::status::CHECK_CONFIRMATION_LIFETIME).await;
-                            let _ = this.update(cx, |this, cx| {
-                                if this.rows[index].confirmed == Some(started) {
-                                    this.rows[index].confirmed = None;
-                                    cx.notify();
-                                }
-                            });
-                        }).detach();
-                    }
-                    Err(error) => {
-                        row.error = Some(error);
-                    }
-                }
-                cx.notify();
-            });
+            let _ = this.update(cx, |this, cx| this.finish_refresh(index, result, cx));
         })
         .detach();
+    }
+
+    fn finish_refresh(
+        &mut self,
+        index: usize,
+        result: Result<UsageReading, String>,
+        cx: &mut Context<Self>,
+    ) {
+        let row = &mut self.rows[index];
+        row.checking = false;
+        // Events received during this read cannot supersede its newer result.
+        // Rebase even on failure so an unrelated redraw cannot resurrect them.
+        row.baseline = row
+            .source
+            .session
+            .as_ref()
+            .and_then(|s| s.read(cx).state.account_usage.clone());
+        match result {
+            Ok(reading) => {
+                // Configuration/account changes cannot inherit another balance.
+                let same = row.reading.as_ref().is_some_and(|old| {
+                    old.context_key.is_some()
+                        && old.context_key == reading.context_key
+                        && matches!((&old.account, &reading.account),
+                            (AccountStatus::Connected { identity: Some(a), .. }, AccountStatus::Connected { identity: Some(b), .. }) if a == b)
+                });
+                if reading.usage.is_some() || !same {
+                    row.usage.clone_from(&reading.usage);
+                    row.conversation_reported = false;
+                }
+                row.reading = Some(reading);
+                let started = std::time::Instant::now();
+                row.confirmed = Some(started);
+                cx.spawn(async move |this, cx| {
+                    cx.background_executor()
+                        .timer(super::status::CHECK_CONFIRMATION_LIFETIME)
+                        .await;
+                    let _ = this.update(cx, |this, cx| {
+                        if this.rows[index].confirmed == Some(started) {
+                            this.rows[index].confirmed = None;
+                            cx.notify();
+                        }
+                    });
+                })
+                .detach();
+            }
+            Err(error) => {
+                row.error = Some(error);
+            }
+        }
         cx.notify();
     }
+
     fn render_row(
         &self,
         index: usize,
@@ -325,10 +343,15 @@ impl UsagePanel {
             }
         } else {
             let message = match row.reading.as_ref().map(|r| &r.account) {
-                Some(AccountStatus::External) => "Remaining allowance isn’t reported for this connection.",
-                Some(AccountStatus::SignedOut) => "Sign in through Settings to check this provider’s usage.",
-                Some(AccountStatus::Connected { .. }) if provider == Provider::Claude => "No usage reported yet. Claude’s usage events appear here as this conversation runs.",
-                Some(AccountStatus::Connected { .. }) => "Usage unavailable. The provider did not report an allowance.",
+                Some(AccountStatus::External) => {
+                    "Remaining allowance isn’t reported for this connection."
+                }
+                Some(AccountStatus::SignedOut) => {
+                    "Sign in through Settings to check this provider’s usage."
+                }
+                Some(AccountStatus::Connected { .. }) => {
+                    "Usage unavailable. The provider did not report an allowance."
+                }
                 None if row.checking => "Checking usage…",
                 None => "Usage unavailable.",
             };
@@ -380,7 +403,24 @@ impl UsagePanel {
                 )
             },
         );
-        let can_refresh = provider == Provider::Codex || row.error.is_some();
+        let refresh_label = if row.checking {
+            "Checking…"
+        } else if row.confirmed.is_some() {
+            if provider == Provider::Claude
+                && row
+                    .reading
+                    .as_ref()
+                    .is_none_or(|reading| reading.usage.is_none())
+            {
+                "Checked"
+            } else {
+                "Updated"
+            }
+        } else if row.error.is_some() {
+            "Retry"
+        } else {
+            "Refresh"
+        };
         body = body.child(
             div()
                 .flex()
@@ -393,63 +433,46 @@ impl UsagePanel {
                         .text_color(c::FG_DIM())
                         .child(freshness),
                 )
-                .when(can_refresh, |line| {
-                    line.child(
-                        components::transcript_action(
-                            format!("usage-refresh-{index}"),
-                            if row.checking {
-                                "Checking…"
-                            } else if row.confirmed.is_some() {
-                                "Updated"
-                            } else if row.error.is_some() {
-                                "Retry"
-                            } else {
-                                "Refresh"
-                            },
-                            false,
-                            window,
-                            cx,
-                        )
-                        .icon_only()
-                        .child(
-                            div()
-                                .flex()
-                                .items_center()
-                                .gap(rpx(SPACE_SM))
-                                .child(if row.checking {
-                                    super::status::mark(
-                                        format!("usage-refresh-{index}"),
-                                        super::status::StatusKind::Working,
-                                        ICON_SM,
-                                        cx,
-                                    )
-                                } else if let Some(started) = row.confirmed {
-                                    super::status::drawn_check(
-                                        format!("usage-refresh-{index}"),
-                                        0,
-                                        started,
-                                        ICON_SM,
-                                        cx,
-                                    )
-                                } else {
-                                    icon("restart", ICON_SM, c::FG_DIM()).into_any_element()
-                                })
-                                .child(if row.checking {
-                                    "Checking…"
-                                } else if row.confirmed.is_some() {
-                                    "Updated"
-                                } else if row.error.is_some() {
-                                    "Retry"
-                                } else {
-                                    "Refresh"
-                                }),
-                        )
-                        .w(rpx(REFRESH_W))
-                        .with_focus_handle(row.refresh_focus.clone())
-                        .disabled(row.checking)
-                        .on_click(cx.listener(move |this, _, _, cx| this.refresh(index, cx))),
+                .child(
+                    components::transcript_action(
+                        format!("usage-refresh-{index}"),
+                        refresh_label,
+                        false,
+                        window,
+                        cx,
                     )
-                }),
+                    .icon_only()
+                    .child(
+                        div()
+                            .debug_selector(move || format!("usage-refresh-action-{index}"))
+                            .flex()
+                            .items_center()
+                            .gap(rpx(SPACE_SM))
+                            .child(if row.checking {
+                                super::status::mark(
+                                    format!("usage-refresh-{index}"),
+                                    super::status::StatusKind::Working,
+                                    ICON_SM,
+                                    cx,
+                                )
+                            } else if let Some(started) = row.confirmed {
+                                super::status::drawn_check(
+                                    format!("usage-refresh-{index}"),
+                                    0,
+                                    started,
+                                    ICON_SM,
+                                    cx,
+                                )
+                            } else {
+                                icon("restart", ICON_SM, c::FG_DIM()).into_any_element()
+                            })
+                            .child(refresh_label),
+                    )
+                    .w(rpx(REFRESH_W))
+                    .with_focus_handle(row.refresh_focus.clone())
+                    .disabled(row.checking)
+                    .on_click(cx.listener(move |this, _, _, cx| this.refresh(index, cx))),
+                ),
         );
         body.into_any_element()
     }
@@ -609,6 +632,79 @@ mod tests {
         cx.set_global(crate::zoom::CurrentPtyDims::default());
         c::sync_component_theme(cx);
     }
+    #[gpui::test]
+    fn claude_usage_panel_shows_account_allowance_without_a_session(cx: &mut gpui::TestAppContext) {
+        use grove_core::account_usage::UsageWindow;
+
+        cx.update(setup);
+        let panel = cx.update(|cx| {
+            cx.new(|cx| {
+                UsagePanel::new(
+                    vec![UsageSource {
+                        provider: Provider::Claude,
+                        cwd: "/fixture".into(),
+                        args: vec![],
+                        session: None,
+                    }],
+                    cx,
+                )
+            })
+        });
+        let (_, cx) =
+            cx.add_window_view(|window, cx| gpui_component::Root::new(panel.clone(), window, cx));
+        let reading = |identity: &str, usage| UsageReading {
+            context_key: Some("fixture".into()),
+            account: AccountStatus::Connected {
+                identity: Some(identity.into()),
+                method: "Fixture".into(),
+            },
+            usage,
+        };
+        cx.update(|_, cx| {
+            panel.update(cx, |panel, cx| {
+                panel.finish_refresh(
+                    0,
+                    Ok(reading(
+                        "first@example.test",
+                        Some(AccountUsage {
+                            observed_at: now(),
+                            status: UsageStatus::Unknown,
+                            windows: vec![UsageWindow {
+                                name: "5 hours".into(),
+                                remaining_percent: Some(62.),
+                                resets_at: Some(now() as i64 + 8100),
+                            }],
+                        }),
+                    )),
+                    cx,
+                );
+            });
+        });
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            let _ = window.draw(cx);
+        });
+        assert!(cx.debug_bounds("usage-meter-0-0").is_some());
+        assert!(cx.debug_bounds("usage-empty-0").is_none());
+
+        let refresh = cx.debug_bounds("usage-refresh-action-0").unwrap();
+        cx.simulate_click(refresh.center(), gpui::Modifiers::default());
+        cx.run_until_parked();
+        cx.update(|_, cx| {
+            assert!(panel.read(cx).rows[0].checking);
+            panel.update(cx, |panel, cx| {
+                panel.finish_refresh(0, Ok(reading("second@example.test", None)), cx);
+            });
+        });
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            let _ = window.draw(cx);
+        });
+        assert!(cx.debug_bounds("usage-meter-0-0").is_none());
+        assert!(cx.debug_bounds("usage-empty-0").is_some());
+        assert!(cx.debug_bounds("usage-refresh-action-0").is_some());
+    }
+
     #[gpui::test]
     fn usage_unknown_percentage_has_no_fabricated_meter(cx: &mut gpui::TestAppContext) {
         cx.update(setup);
