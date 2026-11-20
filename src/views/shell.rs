@@ -21,6 +21,7 @@ use grove_core::agent::Agent;
 
 const TRAFFIC_CONTROL_W: f32 = 22.0;
 const TRAFFIC_LIGHT_D: f32 = 12.0;
+const MAC_FIXED_HEADER_W: f32 = TRAFFIC_CONTROL_W * 3.0 + CHROME_CONTROL_H + SPACE_LG * 4.0;
 
 const SWITCHER_TOP: f32 = APPBAR_TOTAL_H + SPACE_3XL * 2.0;
 const SWITCHER_MIN_H: f32 = APPBAR_H * 3.0 + SPACE_2XL;
@@ -528,6 +529,19 @@ impl Shell {
         }
         group
     }
+    fn window_drag_area(id: &'static str) -> gpui::Stateful<gpui::Div> {
+        div()
+            .id(id)
+            .debug_selector(move || id.into())
+            .on_mouse_down(MouseButton::Left, |event, window, _| {
+                if event.click_count == 2 {
+                    window.titlebar_double_click();
+                } else {
+                    window.start_window_move();
+                }
+            })
+    }
+
     fn header(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
         let collapsed = self.sidebar.read(cx).navigation_collapsed(window, cx);
         let compact = f32::from(window.viewport_size().width)
@@ -584,28 +598,35 @@ impl Shell {
                     c::FG_DIM(),
                 )),
             )
-            .child(
-                div()
-                    .id("header-main-drag-region")
-                    .absolute()
-                    .top_0()
-                    .right_0()
-                    .w(rpx(SPACE_LG))
-                    .min_w_0()
-                    .h_full()
-                    .on_mouse_down(MouseButton::Left, |event, window, _| {
-                        if event.click_count == 2 {
-                            window.titlebar_double_click();
-                        } else {
-                            window.start_window_move();
-                        }
-                    }),
-            )
+            .when(!mac, |header| {
+                header.child(
+                    Self::window_drag_area("header-main-drag-region")
+                        .absolute()
+                        .top_0()
+                        .right_0()
+                        .w(rpx(SPACE_LG))
+                        .min_w_0()
+                        .h_full(),
+                )
+            })
     }
 
     fn window_header(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
         let mac = ControlPlatform::current() == ControlPlatform::Mac;
-        let sidebar_width = self.sidebar.read(cx).animated_sidebar_width(window, cx);
+        let sidebar = self.sidebar.read(cx);
+        let sidebar_width = sidebar.animated_sidebar_width(window, cx);
+        let drag_width = if mac
+            && sidebar_width == 0.0
+            && sidebar.navigation_collapsed(window, cx)
+            && !sidebar.is_grid()
+            && !sidebar.is_zen()
+        {
+            // The fixed controls still have a top inset when the rail is
+            // closed. Leave the full canvas interactive in Grid and Zen.
+            MAC_FIXED_HEADER_W
+        } else {
+            sidebar_width
+        };
         let leading_width = if mac {
             sidebar_width
         } else {
@@ -629,20 +650,23 @@ impl Shell {
                     .flex_shrink_0()
                     .child(self.header(window, cx)),
             )
+            .when(mac && drag_width > SPACE_LG * 2.0, |row| {
+                row.child(
+                    Self::window_drag_area("mac-titlebar-drag-region")
+                        .absolute()
+                        .top_0()
+                        .left(rpx(SPACE_LG))
+                        .w(rpx(drag_width - SPACE_LG * 2.0))
+                        .h(rpx(APPBAR_TOP_INSET))
+                        .block_mouse_except_scroll(),
+                )
+            })
             .when(!mac, |row| {
                 row.child(
-                    div()
-                        .id("window-header-drag-region")
+                    Self::window_drag_area("window-header-drag-region")
                         .flex_1()
                         .min_w_0()
-                        .h_full()
-                        .on_mouse_down(MouseButton::Left, |event, window, _| {
-                            if event.click_count == 2 {
-                                window.titlebar_double_click();
-                            } else {
-                                window.start_window_move();
-                            }
-                        }),
+                        .h_full(),
                 )
                 .child(
                     div()
@@ -2735,6 +2759,75 @@ mod tests {
         }
         assert!(cx.debug_bounds("context-workspace").is_none());
         assert!(cx.debug_bounds("global-nav-workspace").is_none());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[gpui::test]
+    fn mac_titlebar_drag_area_spans_empty_top_space(cx: &mut gpui::TestAppContext) {
+        cx.update(init);
+        let (shell, cx) = cx.add_window_view(Shell::new);
+        for (width, zoom, collapsed) in [
+            (1280., 1.0, false),
+            (1280., 1.5, false),
+            (1280., 1.0, true),
+            (500., 1.5, true),
+        ] {
+            cx.update(|_, cx| {
+                cx.set_global(crate::zoom::ZoomState::new(zoom));
+                cx.global_mut::<crate::settings::SettingsState>()
+                    .store
+                    .sidebar_collapsed = collapsed;
+            });
+            cx.simulate_resize(gpui::size(gpui::px(width), gpui::px(600.)));
+            draw(cx);
+
+            let drag = cx
+                .debug_bounds("mac-titlebar-drag-region")
+                .expect("macOS window drag area");
+            let header = cx.debug_bounds("app-header").expect("app header");
+            assert_eq!(drag.top(), header.top());
+            assert!(drag.left() > header.left());
+            assert!(drag.size.width >= gpui::px(CHROME_CONTROL_H * 3.0 * zoom));
+            assert!(drag.size.height >= gpui::px(SPACE_SM * zoom));
+            for selector in [
+                "window-close",
+                "window-minimize",
+                window_toggle_id(),
+                "header-workspace",
+                "sidebar-toggle",
+                "sidebar-divider",
+            ] {
+                if let Some(control) = cx.debug_bounds(selector) {
+                    assert!(!drag.intersects(&control), "{selector} overlaps {drag:?}");
+                }
+            }
+            if let Some(rail) = cx.debug_bounds("global-navigation") {
+                assert!(!collapsed);
+                assert!(drag.right() < rail.right());
+                assert!(drag.contains(&gpui::point(rail.center().x, drag.center().y)));
+            } else {
+                assert!(collapsed);
+                let toggle = cx.debug_bounds("sidebar-toggle").expect("sidebar toggle");
+                assert!(drag.right() <= toggle.right());
+            }
+        }
+
+        let sidebar = cx.update(|_, cx| shell.read(cx).sidebar.clone());
+        cx.update(|window, cx| {
+            sidebar.update(cx, |sidebar, cx| sidebar.toggle_zen(window, cx));
+        });
+        draw(cx);
+        assert!(cx.update(|_, cx| sidebar.read(cx).is_zen()));
+        assert!(cx.debug_bounds("mac-titlebar-drag-region").is_none());
+        cx.update(|window, cx| {
+            sidebar.update(cx, |sidebar, cx| {
+                sidebar.toggle_zen(window, cx);
+                sidebar.toggle_grid(window, cx);
+            });
+        });
+        draw(cx);
+        assert!(cx.update(|_, cx| sidebar.read(cx).is_grid()));
+        assert!(cx.debug_bounds("mac-titlebar-drag-region").is_none());
     }
 
     fn reopen_sidebar_if_fitted(cx: &mut gpui::VisualTestContext) {
