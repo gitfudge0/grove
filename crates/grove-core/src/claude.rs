@@ -391,6 +391,8 @@ impl Drop for Process {
         let _ = self.child.wait();
     }
 }
+/// Distinguishes the CLI's claude.ai Artifact tools from Grove-rendered HTML.
+const CLAUDE_AI_ARTIFACT_GUIDANCE: &str = "The Artifact, ArtifactComments, ArtifactData and ArtifactCheck tools publish and read pages on claude.ai, outside Grove. Use them when the user asks for a claude.ai artifact or shares a claude.ai artifact link; visuals shown in Grove still use grove_visuals.render_html. Grove cannot display claude.ai pages, so give the user the returned link to open in a browser.";
 #[cfg(test)]
 fn launch_command(args: &[String], saved: &SavedSession) -> Result<Command, String> {
     launch_command_profile(args, saved, false)
@@ -465,6 +467,8 @@ fn launch_command_profile(
         guidance.push_str("\n\n");
         guidance.push_str(crate::reports::guidance(saved.html_policy));
         guidance.push_str("\n\n");
+        guidance.push_str(CLAUDE_AI_ARTIFACT_GUIDANCE);
+        guidance.push_str("\n\n");
         guidance.push_str(crate::activity::GUIDANCE);
         guidance.push_str("\n\n");
         guidance.push_str(crate::describe_skill::GUIDANCE);
@@ -509,6 +513,10 @@ fn launch_command_profile(
         command.env("CLAUDE_CODE_ENABLE_TODO_TOOLS", "1");
         // The native question panel renders the extended text and number schema.
         command.env("CLAUDE_CODE_QUESTION_EXTENDED", "1");
+        // Headless sessions default the claude.ai Artifact tools off; VERIFY
+        // adds ArtifactCheck beside Artifact, ArtifactComments and ArtifactData.
+        command.env("CLAUDE_CODE_ARTIFACT", "1");
+        command.env("CLAUDE_CODE_ARTIFACT_VERIFY", "1");
     }
     command.env(
         "GROVE_CONFIG_DIR",
@@ -7441,6 +7449,25 @@ mod tests {
                 .and_then(|(_, value)| value),
             Some(std::ffi::OsStr::new("1"))
         );
+    }
+    #[test]
+    fn launch_enables_claude_ai_artifact_tools_outside_side_chats() {
+        let actor = actor();
+        for side_chat in [false, true] {
+            let command = launch_command_profile(&[], &actor.state.saved, side_chat).unwrap();
+            for name in ["CLAUDE_CODE_ARTIFACT", "CLAUDE_CODE_ARTIFACT_VERIFY"] {
+                let value = command
+                    .get_envs()
+                    .find(|(key, _)| *key == name)
+                    .and_then(|(_, value)| value);
+                let expected = (!side_chat).then(|| std::ffi::OsStr::new("1"));
+                assert_eq!(value, expected, "{name} side_chat={side_chat}");
+            }
+            let guided = command
+                .get_args()
+                .any(|arg| arg.to_string_lossy().contains(CLAUDE_AI_ARTIFACT_GUIDANCE));
+            assert_eq!(guided, !side_chat);
+        }
     }
     #[test]
     fn accepted_prompt_recovery_preserves_newer_text_and_attachments() {
