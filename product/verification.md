@@ -2706,3 +2706,12 @@ Native appearance remains unverified: no isolated QA app with multi-checkout
 sessions was launched, because seeding them requires live provider or tmux
 sessions. Narrow-width truncation, reference-row hover and focus, and live Codex
 and Claude multi-root sessions remain untested.
+
+## Settings navigation and project removal (November 2026)
+
+Isolated macOS Metal captures exercised the Settings category rail at 992 × 820
+in Grove Dark and the compact picker at 450 × 820 in Grove Light at 125% app zoom.
+The fixture populated the Projects list and covered the worktree removal
+confirmation using temporary Git repositories. The separate GPUI fixtures cover
+keyboard navigation and source focus. Windows and Linux native rendering and live
+Codex and Claude authentication and update operations were not exercised.

@@ -1,4 +1,6 @@
 //! App-wide settings and shortcut reference, mounted in the main canvas.
+mod projects;
+
 use super::components;
 use super::status::{self, StatusKind};
 use super::{motion, rpx, tokens::*};
@@ -15,18 +17,22 @@ use crate::{
 };
 use gpui::{
     div, prelude::*, App, Context, Entity, EventEmitter, FocusHandle, Focusable, FontWeight,
-    ScrollHandle, Subscription, Window,
+    Pixels, ScrollHandle, Subscription, Window,
 };
 use gpui_component::input::{Input, InputEvent, InputState};
+use gpui_component::menu::{PopupMenu, PopupMenuItem};
 use gpui_component::Disableable;
 use grove_core::{
     agent::Agent,
     storage::{AfterSessionStart, Store},
 };
 use grove_core::{app_theme, theme::ThemeKind};
-use std::collections::HashSet;
+use std::{cell::Cell, collections::HashSet, rc::Rc};
 
 const ENVIRONMENT_ACTION_W: f32 = 176.0;
+const CATEGORY_RAIL_W: f32 = 152.0;
+const SETTINGS_W: f32 = CATEGORY_RAIL_W + MODAL_W_XL + 2.0 * SPACE_20;
+const SETTINGS_COMPACT_W: f32 = 620.0;
 const FOCUS_SCAN_LIMIT: usize = 128;
 const THEME_ROW_H: f32 = 42.0;
 const THEME_KIND_W: f32 = 36.0;
@@ -73,6 +79,16 @@ impl Category {
             Self::Terminal => "Terminal",
             Self::Privacy => "Privacy",
             Self::About => "About",
+        }
+    }
+    fn description(self) -> Option<&'static str> {
+        match self {
+            Self::General => Some("Appearance and keyboard shortcuts"),
+            Self::Agents => Some("Provider accounts, new sessions, and access"),
+            Self::Projects => None,
+            Self::Terminal => Some("Terminal backend and shell environment"),
+            Self::Privacy => Some("Usage data and diagnostics"),
+            Self::About => Some("Grove version, updates, and release notes"),
         }
     }
 }
@@ -145,14 +161,25 @@ pub struct SettingsPanel {
     open: bool,
     page: Page,
     category: Category,
+    canvas_width: Rc<Cell<Option<Pixels>>>,
+    category_rail_focus: [FocusHandle; Category::ALL.len()],
+    category_rail_scroll: ScrollHandle,
+    category_trigger_focus: FocusHandle,
+    category_trigger_bounds: Rc<Cell<gpui::Bounds<Pixels>>>,
+    category_menu: Option<Entity<PopupMenu>>,
+    category_menu_subscription: Option<Subscription>,
     nested_return_focus: Option<FocusHandle>,
     standalone_shortcuts: bool,
     error: Option<String>,
     scroll: ScrollHandle,
     archived_panel: Option<Entity<super::sidebar::projects::ProjectPanel>>,
     archived_subscription: Option<Subscription>,
+    archived_observer: Option<Subscription>,
     expanded_projects: HashSet<String>,
     project_disclosure_focus: std::collections::HashMap<String, FocusHandle>,
+    project_menu: Option<projects::ProjectRowMenu>,
+    project_menu_focus: std::collections::HashMap<projects::ProjectMenuTarget, FocusHandle>,
+    project_action_return: Option<projects::ProjectActionReturn>,
     _project_tree_observer: Subscription,
     projects_archived: bool,
     theme_search: Option<Entity<InputState>>,
@@ -245,6 +272,13 @@ impl SettingsPanel {
             open: false,
             page: Page::Settings,
             category: Category::General,
+            canvas_width: Rc::new(Cell::new(None)),
+            category_rail_focus: Category::ALL.map(|_| cx.focus_handle().tab_stop(true)),
+            category_rail_scroll: ScrollHandle::new(),
+            category_trigger_focus: cx.focus_handle().tab_stop(true),
+            category_trigger_bounds: Rc::new(Cell::new(gpui::Bounds::default())),
+            category_menu: None,
+            category_menu_subscription: None,
             nested_return_focus: None,
             standalone_shortcuts: false,
             error: None,
@@ -256,6 +290,9 @@ impl SettingsPanel {
             show_theme_notices: false,
             expanded_projects: HashSet::new(),
             project_disclosure_focus: std::collections::HashMap::new(),
+            project_menu: None,
+            project_menu_focus: std::collections::HashMap::new(),
+            project_action_return: None,
             _project_tree_observer: {
                 let tree = runtime.read(cx).tree.clone();
                 cx.observe(&tree, |_, _, cx| cx.notify())
@@ -263,6 +300,7 @@ impl SettingsPanel {
             projects_archived: false,
             archived_panel: None,
             archived_subscription: None,
+            archived_observer: None,
             theme_search: None,
             theme_search_subscription: None,
             theme_filter: None,
@@ -305,6 +343,9 @@ impl SettingsPanel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.project_operation_pending(cx) {
+            return;
+        }
         self.open(window, cx);
         self.select_category(Category::Projects, cx);
         if let Some(path) = path {
@@ -338,375 +379,9 @@ impl SettingsPanel {
                     }
                 }),
             );
+        self.archived_observer = Some(cx.observe(&panel, |_, _, cx| cx.notify()));
         self.archived_panel = Some(panel);
         self.show(Page::Project, cx);
-    }
-
-    fn projects_body(&self, window: &Window, cx: &mut Context<Self>) -> gpui::Div {
-        let store = &cx.global::<SettingsState>().store;
-        let rows: Vec<_> = store
-            .projects
-            .iter()
-            .filter(|project| {
-                project.archived == self.projects_archived
-                    && store.project_workspace_id(&project.path) == store.workspaces.active
-            })
-            .cloned()
-            .collect();
-        let mut choices = Self::choices();
-        for (id, label, archived) in [("active", "Active", false), ("archived", "Archived", true)] {
-            choices = choices.child(
-                self.choice(
-                    format!("projects-{id}"),
-                    label,
-                    self.projects_archived == archived,
-                    true,
-                )
-                .child(label)
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    this.projects_archived = archived;
-                    this.scroll.set_offset(gpui::Point::default());
-                    cx.notify();
-                })),
-            );
-        }
-        let mut body = div()
-            .flex()
-            .flex_col()
-            .gap(rpx(SPACE_2XL))
-            .pt(rpx(SPACE_20))
-            .child(
-                div()
-                    .text_size(rpx(TEXT_SMALL))
-                    .text_color(c::FG_DIM())
-                    .child("Start work from New session. Manage project details here."),
-            )
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .gap(rpx(SPACE_LG))
-                    .child(choices)
-                    .child(
-                        self.button("settings-add-project", "Add project", false, true)
-                            .child(crate::icons::icon("plus", ICON_SM, c::FG_DIM()))
-                            .child("Add project")
-                            .on_click(
-                                cx.listener(|_, _, _, cx| cx.emit(SettingsPanelEvent::AddProject)),
-                            ),
-                    ),
-            );
-        if rows.is_empty() {
-            body = body.child(div().py(rpx(SPACE_3XL)).text_color(c::FG_DIM()).child(
-                if self.projects_archived {
-                    "No archived projects. Archived folders remain on disk."
-                } else {
-                    "No projects yet. Add a folder to get started."
-                },
-            ));
-        }
-        for (index, project) in rows.into_iter().enumerate() {
-            let path = project.path.clone();
-            let edit = path.clone();
-            let move_path = path.clone();
-            let checkouts = path.clone();
-            let keyboard_checkouts = path.clone();
-            let expanded = self.expanded_projects.contains(&path);
-            let archived = project.archived;
-            let mut actions = div().flex().flex_wrap().items_center().gap(rpx(SPACE_SM));
-            if archived {
-                actions = actions
-                    .child(
-                        self.button(
-                            format!("settings-project-restore-{index}"),
-                            "Restore project",
-                            false,
-                            true,
-                        )
-                        .child(crate::icons::icon("restore", ICON_SM, c::FG_DIM()))
-                        .child("Restore")
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            let service = this.runtime.read(cx).projects.clone();
-                            this.error = service
-                                .update(cx, |service, cx| {
-                                    service.restore_archived_by_path(&path, cx)
-                                })
-                                .err();
-                            cx.notify();
-                        })),
-                    )
-                    .child(
-                        self.button(
-                            format!("settings-project-remove-{index}"),
-                            "Remove project registration",
-                            false,
-                            true,
-                        )
-                        .child(crate::icons::icon("trash", ICON_SM, c::FG_DIM()))
-                        .child("Remove")
-                        .on_click(cx.listener(
-                            move |this, _, window, cx| {
-                                this.open_project_page(
-                                    super::sidebar::projects::Page::Remove(edit.clone()),
-                                    window,
-                                    cx,
-                                );
-                            },
-                        )),
-                    );
-            } else {
-                actions = actions.child(
-                    Self::disclosure(
-                        format!("settings-project-worktrees-{index}"),
-                        "Show worktrees",
-                        expanded,
-                    )
-                    .debug_selector(move || format!("settings-project-worktrees-{index}"))
-                    .when_some(
-                        self.project_disclosure_focus.get(&project.path),
-                        gpui::InteractiveElement::track_focus,
-                    )
-                    .aria_expanded(expanded)
-                    .child(crate::icons::icon(
-                        if expanded { "chev-down" } else { "chev-right" },
-                        ICON_SM,
-                        c::FG_DIM(),
-                    ))
-                    .child("Worktrees")
-                    .on_key_down(cx.listener(
-                        move |this, event: &gpui::KeyDownEvent, window, cx| {
-                            if matches!(event.keystroke.key.as_str(), "enter" | "space")
-                                && !event.is_held
-                            {
-                                if !this.expanded_projects.remove(&keyboard_checkouts) {
-                                    this.expanded_projects.insert(keyboard_checkouts.clone());
-                                }
-                                window.prevent_default();
-                                cx.stop_propagation();
-                                cx.notify();
-                            }
-                        },
-                    ))
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        if !this.expanded_projects.remove(&checkouts) {
-                            this.expanded_projects.insert(checkouts.clone());
-                        }
-                        cx.notify();
-                    })),
-                );
-                actions = actions
-                    .child(
-                        self.button(
-                            format!("settings-project-edit-{index}"),
-                            "Project settings",
-                            false,
-                            true,
-                        )
-                        .child(crate::icons::icon("edit", ICON_SM, c::FG_DIM()))
-                        .child("Edit")
-                        .on_click(cx.listener(
-                            move |this, _, window, cx| {
-                                this.open_project_page(
-                                    super::sidebar::projects::Page::Edit(edit.clone()),
-                                    window,
-                                    cx,
-                                );
-                            },
-                        )),
-                    )
-                    .child(
-                        self.button(
-                            format!("settings-project-move-{index}"),
-                            "Move project to workspace",
-                            false,
-                            true,
-                        )
-                        .child(crate::icons::icon("folder", ICON_SM, c::FG_DIM()))
-                        .child("Move")
-                        .on_click(cx.listener(
-                            move |this, _, window, cx| {
-                                this.open_project_page(
-                                    super::sidebar::projects::Page::Move(move_path.clone()),
-                                    window,
-                                    cx,
-                                );
-                            },
-                        )),
-                    );
-            }
-            body = body.child(
-                div()
-                    .id(format!("settings-project-row-{index}"))
-                    .debug_selector(move || format!("settings-project-row-{index}"))
-                    .w_full()
-                    .min_w_0()
-                    .py(rpx(SPACE_LG))
-                    .border_b_1()
-                    .border_color(c::BORDER_SOFT())
-                    .flex()
-                    .flex_wrap()
-                    .items_center()
-                    .gap(rpx(SPACE_LG))
-                    .child(super::components::project_symbol_for_path(
-                        &project.path,
-                        ICON_MD,
-                        cx,
-                    ))
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .flex()
-                            .flex_col()
-                            .gap(rpx(SPACE_SM))
-                            .child(
-                                div()
-                                    .truncate()
-                                    .font_weight(FontWeight::MEDIUM)
-                                    .child(project.name),
-                            )
-                            .child(
-                                div()
-                                    .truncate()
-                                    .text_size(rpx(TEXT_SMALL))
-                                    .text_color(c::FG_DIM())
-                                    .child(project.path.clone()),
-                            ),
-                    )
-                    .child(actions),
-            );
-            if expanded && !archived {
-                let runtime = self.runtime.read(cx);
-                let active = runtime.state.read(cx).proj_idx();
-                let project_index = cx
-                    .global::<SettingsState>()
-                    .store
-                    .projects
-                    .iter()
-                    .position(|p| p.path == project.path);
-                let worktrees = project_index
-                    .map(|index| {
-                        runtime
-                            .tree
-                            .read(cx)
-                            .worktrees_for_project(index, active)
-                            .to_vec()
-                    })
-                    .unwrap_or_default();
-                let new_root = project.path.clone();
-                let mut children = div()
-                    .id(format!("settings-project-worktree-list-{index}"))
-                    .debug_selector(move || format!("settings-project-worktree-list-{index}"))
-                    .w_full()
-                    .min_w_0()
-                    .pl(rpx(SPACE_2XL))
-                    .flex()
-                    .flex_col()
-                    .gap(rpx(SPACE_LG))
-                    .child(
-                        div().flex().justify_end().child(
-                            super::components::form_action(
-                                format!("settings-project-new-worktree-{index}"),
-                                "New worktree",
-                                false,
-                                window,
-                                cx,
-                            )
-                            .icon(gpui_component::Icon::default().path("icons/plus.svg"))
-                            .on_click(cx.listener(
-                                move |_, _, _, cx| {
-                                    cx.emit(SettingsPanelEvent::NewWorktree(new_root.clone()));
-                                },
-                            )),
-                        ),
-                    );
-                if worktrees.is_empty() {
-                    children = children.child(
-                        div()
-                            .text_size(rpx(TEXT_SMALL))
-                            .text_color(c::FG_DIM())
-                            .child("No worktrees available. Check the project folder."),
-                    );
-                }
-                for (row, tree) in worktrees.into_iter().enumerate() {
-                    let root = project.path.clone();
-                    let path = tree.path.clone();
-                    let name = if tree.is_main {
-                        "Main checkout".to_string()
-                    } else {
-                        std::path::Path::new(&tree.path)
-                            .file_name()
-                            .and_then(|p| p.to_str())
-                            .unwrap_or(&tree.path)
-                            .to_string()
-                    };
-                    children = children.child(
-                        div()
-                            .w_full()
-                            .min_w_0()
-                            .py(rpx(SPACE_LG))
-                            .border_b_1()
-                            .border_color(c::BORDER_SOFT())
-                            .flex()
-                            .items_center()
-                            .gap(rpx(SPACE_LG))
-                            .child(crate::icons::icon("git-branch", ICON_SM, c::FG_DIM()))
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .min_w_0()
-                                    .flex()
-                                    .flex_col()
-                                    .gap(rpx(SPACE_SM))
-                                    .child(div().truncate().child(name))
-                                    .child(
-                                        div()
-                                            .truncate()
-                                            .text_size(rpx(TEXT_SMALL))
-                                            .text_color(c::FG_DIM())
-                                            .child(tree.branch),
-                                    )
-                                    .child(
-                                        super::components::readonly_value(
-                                            format!("settings-worktree-path-{index}-{row}"),
-                                            tree.path,
-                                        )
-                                        .text_size(rpx(TEXT_SMALL))
-                                        .text_color(c::FG_DIM()),
-                                    ),
-                            )
-                            .child(
-                                super::components::form_action(
-                                    format!("settings-worktree-use-{index}-{row}"),
-                                    "Use",
-                                    false,
-                                    window,
-                                    cx,
-                                )
-                                .debug_selector(move || {
-                                    format!("settings-worktree-use-{index}-{row}")
-                                })
-                                .icon(gpui_component::Icon::default().path("icons/check.svg"))
-                                .on_click(cx.listener(
-                                    move |_, _, _, cx| {
-                                        cx.emit(SettingsPanelEvent::UseCheckout {
-                                            root: root.clone(),
-                                            path: path.clone(),
-                                        });
-                                    },
-                                )),
-                            ),
-                    );
-                }
-                body = body.child(super::motion::base(
-                    children,
-                    format!("settings-worktrees-{index}"),
-                    cx,
-                ));
-            }
-        }
-        body
     }
 
     pub(crate) fn open_updates(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -715,6 +390,9 @@ impl SettingsPanel {
     }
 
     pub(crate) fn open_provider_updates(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.project_operation_pending(cx) {
+            return;
+        }
         self.open(window, cx);
         self.select_category(Category::Agents, cx);
         self.open_nested(Page::Providers, window, cx);
@@ -728,11 +406,14 @@ impl SettingsPanel {
         source_focus: Option<FocusHandle>,
         cx: &mut Context<Self>,
     ) {
+        if self.project_operation_pending(cx) {
+            return;
+        }
         if !self.open {
             self.return_focus = source_focus;
         }
         self.open = true;
-        self.category = Category::Agents;
+        self.select_category(Category::Agents, cx);
         self.page = Page::Connections;
         self.connections_pending_focus = true;
         self.scroll.set_offset(gpui::Point::default());
@@ -743,18 +424,27 @@ impl SettingsPanel {
     }
 
     pub fn open_shortcuts(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.project_operation_pending(cx) {
+            return;
+        }
         self.open(window, cx);
+        self.select_category(self.category, cx);
         self.standalone_shortcuts = true;
         self.show(Page::Shortcuts, cx);
     }
 
     pub fn close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.open {
+        if !self.open || self.project_operation_pending(cx) {
             return;
         }
+        self.dismiss_projects_menu(window, cx);
+        self.category_menu = None;
+        self.category_menu_subscription = None;
+        self.project_action_return = None;
         self.open = false;
         self.archived_panel = None;
         self.archived_subscription = None;
+        self.archived_observer = None;
         self.page = Page::Settings;
         self.standalone_shortcuts = false;
         self.nested_return_focus = None;
@@ -1071,6 +761,16 @@ impl SettingsPanel {
     }
 
     fn select_category(&mut self, category: Category, cx: &mut Context<Self>) {
+        if self.project_operation_pending(cx) {
+            return;
+        }
+        self.archived_panel = None;
+        self.archived_subscription = None;
+        self.archived_observer = None;
+        self.project_menu = None;
+        self.project_action_return = None;
+        self.category_menu = None;
+        self.category_menu_subscription = None;
         self.category = category;
         self.nested_return_focus = None;
         self.standalone_shortcuts = false;
@@ -1102,6 +802,7 @@ impl SettingsPanel {
                         }
                     }),
                 );
+            self.archived_observer = Some(cx.observe(&panel, |_, _, cx| cx.notify()));
             self.archived_panel = Some(panel);
         }
         if page == Page::Providers {
@@ -1144,13 +845,18 @@ impl SettingsPanel {
     }
 
     fn back(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.project_operation_pending(cx) {
+            return;
+        }
         self.archived_panel = None;
         self.archived_subscription = None;
+        self.archived_observer = None;
         self.standalone_shortcuts = false;
         self.show(Page::Settings, cx);
         if let Some(focus) = self.nested_return_focus.take() {
             focus.focus(window, cx);
         }
+        self.restore_project_action_focus(window, cx);
     }
 
     fn show(&mut self, page: Page, cx: &mut Context<Self>) {
@@ -1165,6 +871,47 @@ impl SettingsPanel {
     }
 
     fn key(&mut self, event: &gpui::KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        if self.category_menu.is_some() {
+            if matches!(event.keystroke.key.as_str(), "escape" | "tab") {
+                self.dismiss_category_menu(window, cx);
+                window.prevent_default();
+                cx.stop_propagation();
+            }
+            return;
+        }
+        if self.handle_projects_menu_key(event, window, cx) {
+            return;
+        }
+        if let Some(current) = self
+            .category_rail_focus
+            .iter()
+            .position(|focus| focus.is_focused(window))
+        {
+            let count = Category::ALL.len();
+            let next = match event.keystroke.key.as_str() {
+                "up" => Some((current + count - 1) % count),
+                "down" => Some((current + 1) % count),
+                "home" => Some(0),
+                "end" => Some(count - 1),
+                _ => None,
+            };
+            if let Some(next) = next {
+                self.category_rail_focus[next].focus(window, cx);
+                self.category_rail_scroll.scroll_to_item(next);
+                window.prevent_default();
+                cx.stop_propagation();
+                return;
+            }
+        }
+        if event.keystroke.key == "escape"
+            && self
+                .archived_panel
+                .as_ref()
+                .is_some_and(|panel| panel.focus_handle(cx).contains_focused(window, cx))
+        {
+            // Project editing owns its nested decisions and their cancellation.
+            return;
+        }
         match event.keystroke.key.as_str() {
             "escape" if self.page == Page::Shortcuts && self.standalone_shortcuts => {
                 self.close(window, cx);
@@ -1210,6 +957,13 @@ impl SettingsPanel {
                 }
                 if !self.focus.contains_focused(window, cx) {
                     self.focus.focus(window, cx);
+                }
+                if let Some(index) = self
+                    .category_rail_focus
+                    .iter()
+                    .position(|focus| focus.is_focused(window))
+                {
+                    self.category_rail_scroll.scroll_to_item(index);
                 }
                 if self.page == Page::Themes {
                     if let Some(index) = self
@@ -1846,9 +1600,11 @@ impl SettingsPanel {
         div()
             .pt(rpx(SPACE_20))
             .pb(rpx(SPACE_SM))
+            .border_b_1()
+            .border_color(c::BORDER_SOFT())
             .text_size(rpx(TEXT_SMALL))
-            .font_weight(FontWeight::MEDIUM)
-            .text_color(c::FG_DIM())
+            .font_weight(FontWeight::SEMIBOLD)
+            .text_color(c::FG())
             .child(label)
     }
 
@@ -1866,12 +1622,12 @@ impl SettingsPanel {
             .justify_between()
             .gap(rpx(SPACE_3XL))
             .py(rpx(SPACE_XL))
-            .px(rpx(SPACE_2XL))
             .border_b_1()
             .border_color(c::BORDER_SOFT())
             .child(
                 div()
                     .min_w(rpx(FIELD_LABEL_COL_W))
+                    .max_w_full()
                     .flex_1()
                     .flex()
                     .flex_col()
@@ -2032,20 +1788,6 @@ impl SettingsPanel {
                     )),
             )
         });
-        body = body.when(self.category == Category::Agents, |body| {
-            body.child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .child(Self::section("Sessions"))
-                    .child(Self::setting_row(
-                        "After starting a session",
-                        "Choose where you go after sending your first message",
-                        after_session_start_control,
-                    )),
-            )
-        });
-
         let backend = Self::choices()
             .child(
                 self.choice(
@@ -2180,15 +1922,21 @@ impl SettingsPanel {
 
         body = body.when(self.category == Category::Agents, |body| body.child(
             div().flex().flex_col()
+                .child(Self::section("Provider tools"))
+                .child(Self::setting_row("Providers", "Sign in to Codex or Claude Code and manage provider updates.",
+                    self.button("settings-providers", "Manage providers", false, true)
+                        .child(crate::icons::icon("arrow-right", ICON_SM, c::FG_DIM()))
+                        .child("Manage providers")
+                        .on_click(cx.listener(|this, _, window, cx| this.open_nested(Page::Providers, window, cx)))))
+                .child(Self::section("Sessions"))
+                .child(Self::setting_row(
+                    "After starting a session",
+                    "Choose where you go after sending your first message",
+                    after_session_start_control,
+                ))
                 .child(Self::section("New sessions"))
                 .child(Self::setting_row("Run agents in terminal", "Use the Codex and Claude Code command-line interfaces instead of Grove’s conversation view. Applies to new sessions.", terminal_agents_control))
                 .when(cfg!(windows), |body| body.child(div().text_size(rpx(TEXT_SMALL)).text_color(c::FG_DIM()).child("Windows supports terminal agents only.")))
-                .child(Self::section("Provider tools"))
-                .child(Self::setting_row("Providers", "Manage accounts and provider updates.",
-                    self.button("settings-providers", "Providers", false, true)
-                        .child(crate::icons::icon("arrow-right", ICON_SM, c::FG_DIM()))
-                        .child("Providers")
-                        .on_click(cx.listener(|this, _, window, cx| this.open_nested(Page::Providers, window, cx)))))
                 .child(Self::section("Agent access"))
                 .child(Self::setting_row("Yolo mode", "Launch new CLI and native sessions with bypass permissions. When off, agents use their defaults. OpenCode uses its own permissions.", permissions))
                 .child(Self::section("Browser access"))
@@ -2587,6 +2335,196 @@ impl SettingsPanel {
     }
 }
 
+impl SettingsPanel {
+    pub(super) fn project_operation_pending(&self, cx: &App) -> bool {
+        self.archived_panel
+            .as_ref()
+            .is_some_and(|panel| panel.read(cx).is_pending(cx))
+    }
+
+    fn dismiss_category_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.category_menu.take().is_some() {
+            self.category_menu_subscription = None;
+            self.category_trigger_focus.focus(window, cx);
+            cx.notify();
+        }
+    }
+
+    fn toggle_category_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.project_operation_pending(cx) {
+            return;
+        }
+        self.dismiss_projects_menu(window, cx);
+        if self.category_menu.is_some() {
+            self.dismiss_category_menu(window, cx);
+            return;
+        }
+
+        let owner = cx.entity().downgrade();
+        let selected = self.category;
+        let popup = PopupMenu::build(window, cx, move |mut menu, window, _| {
+            let margin = rpx(SPACE_LG).to_pixels(window.rem_size());
+            menu = components::dropdown_menu(menu, window)
+                .min_w(rpx(CATEGORY_RAIL_W).to_pixels(window.rem_size()))
+                .max_h(window.viewport_size().height - margin * 2.)
+                .scrollable(true);
+            for category in Category::ALL {
+                let owner = owner.clone();
+                menu = menu.item(
+                    PopupMenuItem::new(category.label())
+                        .icon(
+                            gpui_component::Icon::default()
+                                .path(format!("icons/{}.svg", category.icon())),
+                        )
+                        .checked(selected == category)
+                        .on_click(move |_, window, cx| {
+                            let _ = owner.update(cx, |this, cx| {
+                                this.dismiss_category_menu(window, cx);
+                                this.select_category(category, cx);
+                            });
+                        }),
+                );
+            }
+            menu
+        });
+        self.category_menu_subscription = Some(cx.subscribe_in(
+            &popup,
+            window,
+            |this, _, _: &gpui::DismissEvent, window, cx| {
+                this.dismiss_category_menu(window, cx);
+            },
+        ));
+        popup.focus_handle(cx).focus(window, cx);
+        self.category_menu = Some(popup);
+        cx.notify();
+    }
+
+    fn category_navigation(
+        &self,
+        compact: bool,
+        cx: &mut Context<Self>,
+    ) -> gpui::Stateful<gpui::Div> {
+        let enabled = !self.project_operation_pending(cx);
+        let main = div()
+            .id("settings-category-navigation")
+            .debug_selector(|| "settings-category-navigation".into())
+            .flex_shrink_0()
+            .flex()
+            .flex_col()
+            .border_color(c::BORDER_SOFT());
+        if compact {
+            let bounds = self.category_trigger_bounds.clone();
+            return main.w_full().border_b_1().py(rpx(SPACE_LG)).child(
+                self.button(
+                    "settings-category-picker",
+                    format!("Settings category: {}", self.category.label()),
+                    self.category_menu.is_some(),
+                    enabled,
+                )
+                .debug_selector(|| "settings-category-picker".into())
+                .track_focus(&self.category_trigger_focus)
+                .aria_expanded(self.category_menu.is_some())
+                .w_full()
+                .h(rpx(CONTROL_H + SPACE_SM))
+                .justify_start()
+                .child(
+                    gpui::canvas(move |rect, _, _| bounds.set(rect), |_, (), _, _| {})
+                        .absolute()
+                        .inset_0(),
+                )
+                .child(crate::icons::icon(
+                    self.category.icon(),
+                    ICON_MD,
+                    c::FG_DIM(),
+                ))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .truncate()
+                        .child(self.category.label()),
+                )
+                .child(crate::icons::icon("chev-down", ICON_SM, c::FG_DIM()))
+                .when(enabled, |trigger| {
+                    trigger.on_click(cx.listener(|this, _, window, cx| {
+                        this.toggle_category_menu(window, cx);
+                    }))
+                }),
+            );
+        }
+
+        main.w(rpx(CATEGORY_RAIL_W))
+            .min_h_0()
+            .border_r_1()
+            .overflow_y_scroll()
+            .track_scroll(&self.category_rail_scroll)
+            .pt(rpx(SPACE_3XL))
+            .pr(rpx(SPACE_2XL))
+            .gap(rpx(SPACE_XS))
+            .children(
+                Category::ALL
+                    .into_iter()
+                    .enumerate()
+                    .map(|(index, category)| {
+                        let selected = self.category == category;
+                        div()
+                            .id(format!("settings-category-{}", category.label()))
+                            .debug_selector(move || {
+                                format!("settings-category-{}", category.label())
+                            })
+                            .role(gpui::Role::Button)
+                            .aria_label(category.label())
+                            .aria_selected(selected)
+                            .w_full()
+                            .h(rpx(CONTROL_H + SPACE_LG))
+                            .flex_shrink_0()
+                            .flex()
+                            .items_center()
+                            .rounded(rpx(RADIUS_GROUP))
+                            .border_1()
+                            .border_color(gpui::transparent_black())
+                            .px(rpx(SPACE_LG))
+                            .gap(rpx(SPACE_LG))
+                            .text_size(rpx(TEXT_BODY))
+                            .font_weight(if selected {
+                                FontWeight::SEMIBOLD
+                            } else {
+                                FontWeight::NORMAL
+                            })
+                            .text_color(if selected { c::FG() } else { c::FG_DIM() })
+                            .when(selected, |row| row.bg(c::BG_HOVER()))
+                            .child(crate::icons::icon(category.icon(), ICON_MD, c::FG_DIM()))
+                            .child(category.label())
+                            .when(enabled, |row| {
+                                row.track_focus(&self.category_rail_focus[index])
+                                    .cursor_pointer()
+                                    .hover(|style| style.bg(c::BG_HOVER()).text_color(c::FG()))
+                                    .focus_visible(|style| {
+                                        style
+                                            .bg(c::FIELD_FILL())
+                                            .border_1()
+                                            .border_color(c::BORDER_STRONG())
+                                    })
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        this.dismiss_projects_menu(window, cx);
+                                        this.select_category(category, cx);
+                                    }))
+                            })
+                    }),
+            )
+    }
+
+    fn page_description(&self) -> Option<&'static str> {
+        match self.page {
+            Page::Settings => self.category.description(),
+            Page::Themes => Some("Theme changes apply to the entire app."),
+            Page::Shortcuts => Some("Commands for the current view"),
+            Page::Providers => Some("Accounts and version maintenance for your agents"),
+            Page::Changelog | Page::Connections | Page::Archived | Page::Project => None,
+        }
+    }
+}
+
 impl Focusable for SettingsPanel {
     fn focus_handle(&self, _: &App) -> FocusHandle {
         self.focus.clone()
@@ -2611,223 +2549,270 @@ impl Render for SettingsPanel {
                     .or_insert_with(|| cx.focus_handle().tab_stop(true));
             }
         }
+        self.sync_project_action_focus(window, cx);
         if self.connections_pending_focus {
             self.connections_pending_focus = false;
             self.focus.focus(window, cx);
         }
-        if matches!(self.page, Page::Archived | Page::Project) {
-            return div()
-                .id("settings-archived-page")
-                .size_full()
-                .min_h_0()
-                .flex()
-                .flex_col()
-                .track_focus(&self.focus)
-                .when_some(self.archived_panel.clone(), gpui::ParentElement::child)
-                .into_any_element();
-        }
-        let title = match self.page {
-            Page::Settings => "Settings",
-            Page::Shortcuts => "Shortcuts",
-            Page::Changelog => "Changelog",
-            Page::Themes => "Themes",
-            Page::Providers => "Providers",
-            Page::Connections => "Connections",
-            Page::Archived => "Archived projects",
-            Page::Project => "Project settings",
+
+        let width = self
+            .canvas_width
+            .get()
+            .unwrap_or_else(|| window.viewport_size().width);
+        let compact = width < rpx(SETTINGS_COMPACT_W).to_pixels(window.rem_size());
+        let observed_width = self.canvas_width.clone();
+        let owner = cx.entity().downgrade();
+        let measure = gpui::canvas(
+            move |bounds, window, cx| {
+                observed_width.set(Some(bounds.size.width));
+                let next_compact =
+                    bounds.size.width < rpx(SETTINGS_COMPACT_W).to_pixels(window.rem_size());
+                if compact != next_compact {
+                    window.defer(cx, move |window, cx| {
+                        let _ = owner.update(cx, |this, cx| {
+                            this.dismiss_category_menu(window, cx);
+                            if next_compact
+                                && this
+                                    .category_rail_focus
+                                    .iter()
+                                    .any(|focus| focus.is_focused(window))
+                            {
+                                this.category_trigger_focus.focus(window, cx);
+                            } else if !next_compact
+                                && this.category_trigger_focus.is_focused(window)
+                            {
+                                this.category_rail_focus[this.category as usize].focus(window, cx);
+                            }
+                            cx.notify();
+                        });
+                    });
+                }
+            },
+            |_, (), _, _| {},
+        )
+        .absolute()
+        .inset_0();
+
+        let enabled = !self.project_operation_pending(cx);
+        let header = components::content_header()
+            .id("settings-heading")
+            .debug_selector(|| "settings-heading".into())
+            .pb(rpx(SPACE_LG))
+            .border_b_1()
+            .border_color(c::BORDER_SOFT())
+            .child(crate::icons::icon("cog", ICON_MD, c::FG_DIM()))
+            .child(
+                components::content_header_title("Settings")
+                    .debug_selector(|| "settings-heading-title".into()),
+            )
+            .child(
+                components::header_control_with_label_tooltip("settings-close", "Close settings")
+                    .debug_selector(|| "settings-close".into())
+                    .child(crate::icons::icon("close", ICON_MD, c::FG_DIM()))
+                    .when(!enabled, |control| {
+                        control.opacity(OPACITY_DISABLED).cursor_default()
+                    })
+                    .when(enabled, |control| {
+                        control
+                            .tab_index(0)
+                            .focus_visible(|style| style.bg(c::BG_HOVER()))
+                            .on_click(cx.listener(|this, _, window, cx| this.close(window, cx)))
+                    }),
+            );
+        let page = div()
+            .flex()
+            .flex_col()
+            .flex_1()
+            .min_w_0()
+            .min_h_0()
+            .when(!compact, |column| column.pl(rpx(SPACE_20)));
+        let page = if matches!(self.page, Page::Archived | Page::Project) {
+            page.child(
+                div()
+                    .id("settings-archived-page")
+                    .relative()
+                    .min_h_0()
+                    .flex_1()
+                    .child(
+                        div()
+                            .absolute()
+                            .inset_0()
+                            .when_some(self.archived_panel.clone(), gpui::ParentElement::child),
+                    ),
+            )
+        } else {
+            let (title, body) = match self.page {
+                Page::Settings => (self.category.label(), self.settings_body(window, cx)),
+                Page::Shortcuts => ("Shortcuts", self.shortcuts_body(cx)),
+                Page::Changelog => ("Changelog", self.changelog_body(window, cx)),
+                Page::Themes => ("Themes", self.themes_body(cx)),
+                Page::Providers => ("Providers", self.providers_body(window, cx)),
+                Page::Connections => ("Connections", div().child(self.connections.clone())),
+                Page::Archived | Page::Project => unreachable!(),
+            };
+            page.when(self.page != Page::Settings, |column| {
+                column.child(
+                    div().flex_shrink_0().pt(rpx(SPACE_LG)).child(
+                        components::back_action(
+                            "settings-back",
+                            format!("Back to {}", self.category.label()),
+                            window,
+                            cx,
+                        )
+                        .debug_selector(|| "settings-back".into())
+                        .on_click(cx.listener(|this, _, window, cx| this.back(window, cx))),
+                    ),
+                )
+            })
+            .when_some(self.error.clone(), |column, error| {
+                column.child(motion::fast(
+                    div()
+                        .id("settings-error")
+                        .debug_selector(|| "settings-error".into())
+                        .role(gpui::Role::Alert)
+                        .flex_shrink_0()
+                        .w_full()
+                        .py(rpx(SPACE_LG))
+                        .text_size(rpx(TEXT_SMALL))
+                        .text_color(StatusKind::Failed.color())
+                        .child(status::label(
+                            "settings-error-status",
+                            StatusKind::Failed,
+                            error.clone(),
+                            ICON_SM,
+                            cx,
+                        )),
+                    format!("settings-error-{error}"),
+                    cx,
+                ))
+            })
+            .child(
+                div()
+                    .id("settings-scroll")
+                    .debug_selector(|| "settings-scroll".into())
+                    .w_full()
+                    .min_w_0()
+                    .flex_1()
+                    .min_h_0()
+                    .overflow_y_scroll()
+                    .track_scroll(&self.scroll)
+                    .child(
+                        div()
+                            .id("settings-body")
+                            .debug_selector(|| "settings-body".into())
+                            .w_full()
+                            .min_w_0()
+                            .flex()
+                            .flex_col()
+                            .pt(rpx(if self.page == Page::Settings {
+                                SPACE_20
+                            } else {
+                                SPACE_LG
+                            }))
+                            .child(
+                                div()
+                                    .id("settings-page-title")
+                                    .debug_selector(|| "settings-page-title".into())
+                                    .text_size(rpx(TEXT_DISPLAY))
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .text_color(c::FG())
+                                    .child(title),
+                            )
+                            .when_some(self.page_description(), |body, description| {
+                                body.child(
+                                    div()
+                                        .pt(rpx(SPACE_SM))
+                                        .pb(rpx(SPACE_LG))
+                                        .text_size(rpx(TEXT_BODY))
+                                        .text_color(c::FG_DIM())
+                                        .child(description),
+                                )
+                            })
+                            .when(self.page != Page::Settings, |body| body.pb(rpx(SPACE_LG)))
+                            .child(body)
+                            .when(
+                                self.page == Page::Themes
+                                    || self.page == Page::Settings
+                                        && !matches!(
+                                            self.category,
+                                            Category::About | Category::Projects
+                                        ),
+                                |body| {
+                                    body.child(
+                                        div()
+                                            .id("settings-save-note")
+                                            .debug_selector(|| "settings-save-note".into())
+                                            .pt(rpx(SPACE_3XL))
+                                            .pb(rpx(SPACE_LG))
+                                            .flex()
+                                            .items_center()
+                                            .gap(rpx(SPACE_SM))
+                                            .text_size(rpx(TEXT_MICRO))
+                                            .text_color(c::FG_DIM())
+                                            .child(crate::icons::icon(
+                                                "check",
+                                                ICON_SM,
+                                                c::FG_DIM(),
+                                            ))
+                                            .child("Changes save automatically"),
+                                    )
+                                },
+                            ),
+                    ),
+            )
         };
-        let body = match self.page {
-            Page::Settings => self.settings_body(window, cx),
-            Page::Shortcuts => self.shortcuts_body(cx),
-            Page::Changelog => self.changelog_body(window, cx),
-            Page::Themes => self.themes_body(cx),
-            Page::Providers => self.providers_body(window, cx),
-            Page::Connections => div().child(self.connections.clone()),
-            Page::Archived | Page::Project => {
-                div().when_some(self.archived_panel.clone(), gpui::ParentElement::child)
-            }
-        };
+
         div()
             .id("settings-panel")
             .debug_selector(|| "settings-panel".into())
             .size_full()
             .min_w_0()
             .min_h_0()
+            .relative()
             .flex()
             .flex_col()
             .items_center()
             .px(rpx(SPACE_20))
             .pt(rpx(SPACE_20))
-            .pb(rpx(SPACE_20))
+            .pb(rpx(SPACE_LG))
             .track_focus(&self.focus)
             .capture_key_down(cx.listener(Self::key))
+            .child(measure)
             .child(
                 div()
                     .id("settings-content")
                     .debug_selector(|| "settings-content".into())
                     .w_full()
-                    .max_w(rpx(MODAL_W_XL))
+                    .max_w(rpx(SETTINGS_W))
                     .h_full()
                     .min_h_0()
                     .min_w_0()
                     .flex()
                     .flex_col()
-                    .child(
-                        super::components::content_header()
-                            .id("settings-heading")
-                            .debug_selector(|| "settings-heading".into())
-                            .when(self.page != Page::Settings, |header| {
-                                header.child(
-                                    super::components::back_action(
-                                        "settings-back",
-                                        "Back to settings",
-                                        window,
-                                        cx,
-                                    )
-                                    .debug_selector(|| "settings-back".into())
-                                    .on_click(
-                                        cx.listener(|this, _, window, cx| this.back(window, cx)),
-                                    ),
-                                )
-                            })
-                            .child(
-                                super::components::content_header_title(title)
-                                    .debug_selector(|| "settings-heading-title".into()),
-                            )
-                            .child(
-                                super::components::header_control_with_label_tooltip(
-                                    "settings-close",
-                                    "Close settings",
-                                )
-                                .tab_index(0)
-                                .focus_visible(|style| style.bg(c::BG_HOVER()))
-                                .debug_selector(|| "settings-close".into())
-                                .child(crate::icons::icon("close", ICON_MD, c::FG_DIM()))
-                                .on_click(
-                                    cx.listener(|this, _, window, cx| this.close(window, cx)),
-                                ),
-                            ),
-                    )
-                    .when(self.page == Page::Settings, |region| {
-                        region.child(
-                            div()
-                                .id("settings-category-navigation")
-                                .debug_selector(|| "settings-category-navigation".into())
-                                .w_full()
-                                .flex_shrink_0()
-                                .flex()
-                                .mt(rpx(SPACE_3XL))
-                                .overflow_x_scroll()
-                                .border_b_1()
-                                .border_color(c::BORDER_SOFT())
-                                .children(Category::ALL.into_iter().map(|category| {
-                                    let selected = self.category == category;
-                                    div()
-                                        .id(format!("settings-category-{}", category.label()))
-                                        .role(gpui::Role::Button)
-                                        .aria_label(category.label())
-                                        .aria_selected(selected)
-                                        .tab_index(0)
-                                        .flex_shrink_0()
-                                        .px(rpx(SPACE_2XL))
-                                        .py(rpx(SPACE_LG))
-                                        .border_b_2()
-                                        .border_color(if selected { c::FG_DIM() } else { c::BG() })
-                                        .text_size(rpx(TEXT_SMALL))
-                                        .font_weight(if selected {
-                                            FontWeight::MEDIUM
-                                        } else {
-                                            FontWeight::NORMAL
-                                        })
-                                        .text_color(if selected { c::FG() } else { c::FG_DIM() })
-                                        .cursor_pointer()
-                                        .hover(|style| style.bg(c::BG_HOVER()).text_color(c::FG()))
-                                        .focus_visible(|style| style.bg(c::BG_HOVER()))
-                                        .debug_selector(move || {
-                                            format!("settings-category-{}", category.label())
-                                        })
-                                        .flex()
-                                        .items_center()
-                                        .gap(rpx(SPACE_SM))
-                                        .child(crate::icons::icon(
-                                            category.icon(),
-                                            ICON_SM,
-                                            c::FG_DIM(),
-                                        ))
-                                        .child(category.label())
-                                        .on_click(cx.listener(move |this, _, _, cx| {
-                                            this.select_category(category, cx);
-                                        }))
-                                })),
-                        )
-                    })
-                    .when_some(self.error.clone(), |region, error| {
-                        region.child(motion::fast(
-                            div()
-                                .id("settings-error")
-                                .debug_selector(|| "settings-error".into())
-                                .role(gpui::Role::Alert)
-                                .flex_shrink_0()
-                                .w_full()
-                                .py(rpx(SPACE_LG))
-                                .text_size(rpx(TEXT_SMALL))
-                                .text_color(StatusKind::Failed.color())
-                                .child(status::label(
-                                    "settings-error-status",
-                                    StatusKind::Failed,
-                                    error.clone(),
-                                    ICON_SM,
-                                    cx,
-                                )),
-                            format!("settings-error-{error}"),
-                            cx,
-                        ))
-                    })
+                    .child(header)
                     .child(
                         div()
-                            .id("settings-scroll")
-                            .debug_selector(|| "settings-scroll".into())
-                            .w_full()
-                            .min_w_0()
+                            .flex()
+                            .when(compact, gpui::Styled::flex_col)
                             .flex_1()
                             .min_h_0()
-                            .overflow_y_scroll()
-                            .track_scroll(&self.scroll)
-                            .child(
-                                div()
-                                    .id("settings-body")
-                                    .debug_selector(|| "settings-body".into())
-                                    .w_full()
-                                    .min_w_0()
-                                    .flex()
-                                    .flex_col()
-                                    .when(self.page != Page::Settings, |body| {
-                                        body.pt(rpx(SPACE_20))
-                                    })
-                                    .child(body)
-                                    .when(
-                                        self.page == Page::Themes
-                                            || self.page == Page::Settings
-                                                && !matches!(
-                                                    self.category,
-                                                    Category::About | Category::Projects
-                                                ),
-                                        |body| {
-                                            body.child(
-                                                div()
-                                                    .id("settings-save-note")
-                                                    .debug_selector(|| "settings-save-note".into())
-                                                    .pt(rpx(SPACE_3XL))
-                                                    .pb(rpx(SPACE_LG))
-                                                    .text_size(rpx(TEXT_MICRO))
-                                                    .text_color(c::FG_DIM())
-                                                    .child("Changes save automatically"),
-                                            )
-                                        },
-                                    ),
-                            ),
+                            .min_w_0()
+                            .when(!self.standalone_shortcuts, |columns| {
+                                columns.child(self.category_navigation(compact, cx))
+                            })
+                            .child(page),
                     ),
             )
+            .when_some(self.category_menu.clone(), |panel, popup| {
+                let bounds = self.category_trigger_bounds.get();
+                panel.child(gpui::deferred(
+                    gpui::anchored()
+                        .position_mode(gpui::AnchoredPositionMode::Window)
+                        .position(gpui::point(bounds.left(), bounds.bottom()))
+                        .snap_to_window_with_margin(rpx(SPACE_LG).to_pixels(window.rem_size()))
+                        .child(popup),
+                ))
+            })
             .into_any_element()
     }
 }
@@ -2927,6 +2912,9 @@ mod tests {
                 .focus(window, cx);
         });
         cx.simulate_keystrokes("space");
+        cx.simulate_event(gpui::KeyUpEvent {
+            keystroke: gpui::Keystroke::parse("space").unwrap(),
+        });
         draw(cx);
         assert!(cx
             .debug_bounds("settings-project-worktree-list-0")
@@ -2940,8 +2928,49 @@ mod tests {
                 );
             });
         });
+        cx.simulate_resize(gpui::size(gpui::px(450.), gpui::px(305.)));
+        cx.update(|window, _| window.set_rem_size(gpui::px(20.)));
         draw(cx);
-        assert!(cx.debug_bounds("project-panel").is_some());
+        let heading = cx
+            .debug_bounds("settings-heading")
+            .expect("Settings heading");
+        let picker = cx
+            .debug_bounds("settings-category-picker")
+            .expect("compact project category picker");
+        let editor = cx
+            .debug_bounds("project-panel")
+            .expect("embedded project page");
+        let back = cx
+            .debug_bounds("project-panel-back")
+            .expect("embedded project Back");
+        let scroll = cx
+            .debug_bounds("project-panel-scroll")
+            .expect("embedded project scroll region");
+        let footer = cx
+            .debug_bounds("project-panel-footer")
+            .expect("embedded project footer");
+        assert!(heading.bottom() <= picker.top() && picker.bottom() <= editor.top());
+        assert!(editor.top() <= back.top() && back.bottom() <= scroll.top());
+        assert!(scroll.bottom() <= footer.top());
+        let viewport = cx
+            .debug_bounds("settings-panel")
+            .expect("Settings viewport");
+        assert!(
+            footer.bottom() <= viewport.bottom() && viewport.bottom() <= gpui::px(305.),
+            "footer {footer:?}, editor {editor:?}, scroll {scroll:?}, viewport {viewport:?}",
+        );
+        cx.simulate_event(gpui::ScrollWheelEvent {
+            position: scroll.center(),
+            delta: gpui::ScrollDelta::Pixels(gpui::point(gpui::px(0.), gpui::px(-120.))),
+            modifiers: gpui::Modifiers::default(),
+            touch_phase: gpui::TouchPhase::Moved,
+        });
+        draw(cx);
+        assert_eq!(cx.debug_bounds("settings-heading"), Some(heading));
+        assert_eq!(cx.debug_bounds("settings-category-picker"), Some(picker));
+        assert_eq!(cx.debug_bounds("project-panel-back"), Some(back));
+        assert_eq!(cx.debug_bounds("project-panel-scroll"), Some(scroll));
+        assert_eq!(cx.debug_bounds("project-panel-footer"), Some(footer));
         cx.simulate_keystrokes("escape");
         draw(cx);
         assert!(cx.debug_bounds("settings-project-row-0").is_some());
@@ -2964,10 +2993,13 @@ mod tests {
     }
 
     fn draw(cx: &mut gpui::VisualTestContext) {
-        cx.run_until_parked();
-        cx.update(|window, cx| {
-            let _ = window.draw(cx);
-        });
+        // Settle the second pass if the actual Settings canvas changes breakpoint.
+        for _ in 0..2 {
+            cx.run_until_parked();
+            cx.update(|window, cx| {
+                let _ = window.draw(cx);
+            });
+        }
     }
 
     impl SettingsPanel {
@@ -4271,8 +4303,8 @@ mod tests {
         });
         cx.update(|window, cx| panel.update(cx, |panel, cx| panel.open(window, cx)));
         draw(cx);
-        // The category choices are the first keyboard stops, in displayed order.
-        for chord in ["tab", "tab", "tab", "enter"] {
+        // The Close control precedes the category rail, where arrows move between categories.
+        for chord in ["tab", "tab", "down", "enter"] {
             cx.simulate_keystrokes(chord);
             draw(cx);
         }
@@ -4319,7 +4351,10 @@ mod tests {
                 let heading = cx
                     .debug_bounds("settings-heading")
                     .expect("settings heading");
-                assert!(heading.top() >= chrome_bottom, "{page:?} at {zoom}x: heading {heading:?} precedes content inset ending at {chrome_bottom:?}");
+                assert!(
+                    heading.top() >= chrome_bottom,
+                    "{page:?} at {zoom}x: heading {heading:?} precedes content inset ending at {chrome_bottom:?}"
+                );
                 for selector in ["settings-close", "settings-back"] {
                     if selector == "settings-back" && page == Page::Settings {
                         continue;
@@ -4341,7 +4376,11 @@ mod tests {
                 assert!(title.right() <= close.left(), "title must yield to Close");
                 if page != Page::Settings {
                     let back = cx.debug_bounds("settings-back").unwrap();
-                    assert!(back.right() <= title.left(), "Back must precede the title");
+                    assert!(
+                        back.top() >= heading.bottom(),
+                        "Back stays under the Settings header"
+                    );
+                    assert!(back.right() <= gpui::px(width));
                 }
                 let scroll = cx
                     .debug_bounds("settings-scroll")
@@ -4364,7 +4403,9 @@ mod tests {
     }
 
     #[gpui::test]
-    fn settings_body_scrolls_while_heading_and_tabs_stay_reachable(cx: &mut gpui::TestAppContext) {
+    fn settings_body_scrolls_while_heading_and_category_picker_stay_reachable(
+        cx: &mut gpui::TestAppContext,
+    ) {
         cx.update(setup);
         let (panel, cx) = cx.add_window_view(|_, cx| {
             let runtime = cx.new(Runtime::new);
@@ -4376,11 +4417,12 @@ mod tests {
 
         let scroll = cx.debug_bounds("settings-scroll").expect("scroll viewport");
         let heading = cx.debug_bounds("settings-heading").expect("local heading");
-        let tabs = cx
+        let picker = cx
             .debug_bounds("settings-category-navigation")
-            .expect("tabs");
+            .expect("compact category navigation");
+        assert!(cx.debug_bounds("settings-category-picker").is_some());
         let close = cx.debug_bounds("settings-close").expect("close");
-        assert_eq!(tabs.bottom(), scroll.top());
+        assert_eq!(picker.bottom(), scroll.top());
         assert!(scroll.bottom() <= gpui::px(200.));
         assert!(close.top() >= heading.top() && close.bottom() <= heading.bottom());
         assert!(cx.debug_bounds("settings-footer").is_none());
@@ -4395,7 +4437,10 @@ mod tests {
         draw(cx);
         assert!(panel.read_with(cx, |panel, _| panel.scroll.offset().y) < gpui::px(0.));
         assert_eq!(cx.debug_bounds("settings-heading"), Some(heading));
-        assert_eq!(cx.debug_bounds("settings-category-navigation"), Some(tabs));
+        assert_eq!(
+            cx.debug_bounds("settings-category-navigation"),
+            Some(picker)
+        );
         assert_eq!(cx.debug_bounds("settings-close"), Some(close));
         cx.update(|_, cx| {
             panel.update(cx, |panel, cx| {
@@ -4408,14 +4453,14 @@ mod tests {
             .debug_bounds("settings-error")
             .expect("visible save error");
         let scroll = cx.debug_bounds("settings-scroll").expect("bounded scroll");
-        assert!(error.top() >= tabs.bottom());
+        assert!(error.top() >= picker.bottom());
         assert_eq!(error.bottom(), scroll.top());
         assert!(error.bottom() < gpui::px(200.));
         assert_eq!(cx.debug_bounds("settings-close"), Some(close));
     }
 
     #[gpui::test]
-    fn desktop_tabs_and_body_share_one_centered_content_column(cx: &mut gpui::TestAppContext) {
+    fn desktop_settings_centers_the_category_rail_and_body(cx: &mut gpui::TestAppContext) {
         cx.update(setup);
         let (panel, cx) = cx.add_window_view(|_, cx| {
             let runtime = cx.new(Runtime::new);
@@ -4426,24 +4471,63 @@ mod tests {
         draw(cx);
         let content = cx.debug_bounds("settings-content").expect("content column");
         let heading = cx.debug_bounds("settings-heading").expect("heading");
-        let tabs = cx
+        let rail = cx
             .debug_bounds("settings-category-navigation")
-            .expect("tabs");
+            .expect("wide category navigation");
+        assert!(cx.debug_bounds("settings-category-picker").is_none());
         let body = cx.debug_bounds("settings-body").expect("body");
         let general = cx
             .debug_bounds("settings-category-General")
-            .expect("General tab");
+            .expect("General category");
         let agents = cx
             .debug_bounds("settings-category-Agents")
-            .expect("Agents tab");
-        assert_eq!(content.size.width, gpui::px(MODAL_W_XL));
+            .expect("Agents category");
+        assert_eq!(content.size.width, gpui::px(SETTINGS_W));
         assert_eq!(content.center().x, gpui::px(640.));
-        assert_eq!(heading.left(), body.left());
-        assert_eq!(tabs.left(), body.left());
-        assert_eq!(tabs.size.width, body.size.width);
-        assert_eq!(general.top(), agents.top());
-        assert_eq!(agents.left(), general.right());
-        assert!(tabs.bottom() <= body.top());
+        assert_eq!(heading.left(), rail.left());
+        assert_eq!(rail.size.width, gpui::px(CATEGORY_RAIL_W));
+        assert!(rail.right() < body.left());
+        assert_eq!(general.left(), agents.left());
+        assert!(general.bottom() < agents.top());
+        assert_eq!(body.right(), heading.right());
+    }
+
+    #[gpui::test]
+    fn compact_settings_menu_dismisses_to_its_trigger_and_switches_categories(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        cx.update(setup);
+        let (panel, cx) = cx.add_window_view(|_, cx| {
+            let runtime = cx.new(Runtime::new);
+            SettingsPanel::new(runtime, cx)
+        });
+        cx.simulate_resize(gpui::size(gpui::px(500.), gpui::px(400.)));
+        cx.update(|window, cx| panel.update(cx, |panel, cx| panel.open(window, cx)));
+        draw(cx);
+        let picker = cx
+            .debug_bounds("settings-category-picker")
+            .expect("compact picker");
+        cx.simulate_click(picker.center(), gpui::Modifiers::default());
+        draw(cx);
+        cx.update(|_, cx| assert!(panel.read(cx).category_menu.is_some()));
+        cx.simulate_keystrokes("escape");
+        draw(cx);
+        cx.update(|window, cx| {
+            assert!(panel.read(cx).is_open());
+            assert!(panel.read(cx).category_menu.is_none());
+            assert!(panel.read(cx).category_trigger_focus.is_focused(window));
+        });
+
+        cx.simulate_click(picker.center(), gpui::Modifiers::default());
+        draw(cx);
+        cx.simulate_keystrokes("down down enter");
+        draw(cx);
+        cx.update(|window, cx| {
+            assert_eq!(panel.read(cx).category, Category::Agents);
+            assert!(panel.read(cx).category_menu.is_none());
+            assert!(panel.read(cx).category_trigger_focus.is_focused(window));
+            assert_eq!(panel.read(cx).scroll.offset(), gpui::Point::default());
+        });
     }
 
     #[gpui::test]

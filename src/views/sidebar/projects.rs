@@ -2,7 +2,9 @@
 use crate::{
     entities::session_registry::SessionRegistry,
     icons::icon,
-    project_service::{ProjectEvent, ProjectService},
+    project_service::{
+        ProjectEvent, ProjectService, ProjectWorktreeReview, ReviewedWorktree, WorktreeRemovalStage,
+    },
     settings::SettingsState,
     theme as c,
     views::{
@@ -60,6 +62,12 @@ pub(in crate::views) enum ProjectPanelEvent {
 pub(in crate::views) enum Page {
     Edit(String),
     Remove(String),
+    RemoveWorktree {
+        project_path: String,
+        path: String,
+        name: String,
+        branch: String,
+    },
     Move(String),
     Archived,
 }
@@ -89,7 +97,8 @@ pub(in crate::views) struct ProjectPanel {
     open_destination: bool,
     decision: Option<Decision>,
     delete_worktrees: bool,
-    worktree_count: Option<usize>,
+    reviewed_worktrees: Option<ProjectWorktreeReview>,
+    reviewed_worktree: Option<ReviewedWorktree>,
     discovery_done: bool,
     started: bool,
     focus: FocusHandle,
@@ -117,7 +126,7 @@ impl ProjectPanel {
                 .store
                 .script_project(path)
                 .into(),
-            Page::Archived => None,
+            Page::RemoveWorktree { .. } | Page::Archived => None,
         };
         let draft_appearance = match &page {
             Page::Edit(path)
@@ -158,7 +167,9 @@ impl ProjectPanel {
             cx.subscribe(&service, |_, _, event, cx| {
                 if matches!(
                     event,
-                    ProjectEvent::ProjectRemovalChanged { .. } | ProjectEvent::TreeInvalidated
+                    ProjectEvent::ProjectRemovalChanged { .. }
+                        | ProjectEvent::WorktreeRemovalChanged { .. }
+                        | ProjectEvent::TreeInvalidated
                 ) {
                     cx.notify();
                 }
@@ -227,7 +238,8 @@ impl ProjectPanel {
             open_destination: false,
             decision: None,
             delete_worktrees: false,
-            worktree_count: None,
+            reviewed_worktrees: None,
+            reviewed_worktree: None,
             discovery_done: false,
             started: false,
             focus: cx.focus_handle(),
@@ -239,42 +251,75 @@ impl ProjectPanel {
         if let Page::Remove(path) = &panel.page {
             let path = path.clone();
             cx.spawn(async move |this, cx| {
-                let count = cx
+                let reviewed = cx
                     .background_executor()
-                    .spawn(async move {
-                        if !grove_core::git::is_repo(&path) {return Ok(0)}
-                        grove_core::git::list_worktrees_checked(&path).map(|worktrees|worktrees.iter().filter(|w| !w.is_main && w.path!=path).count()).map_err(|error|error.to_string())
-                    }).await;
-                let _ = this.update(cx, |this,cx| {
-                    this.discovery_done=true;
-                    match count {Ok(count)=>this.worktree_count=Some(count),Err(error)=>this.error=Some(format!("Could not discover worktrees: {error}. You can still remove the registration while keeping all files."))}
+                    .spawn(async move { ProjectService::review_project_worktrees(&path) })
+                    .await;
+                let _ = this.update(cx, |this, cx| {
+                    this.discovery_done = true;
+                    match reviewed {
+                        Ok(worktrees) => this.reviewed_worktrees = Some(worktrees),
+                        Err(error) => this.error = Some(format!(
+                            "Could not discover worktrees: {error}. You can still remove the registration while keeping all files."
+                        )),
+                    }
                     cx.notify();
                 });
             })
             .detach();
-            panel.focus.focus(window, cx);
-        } else {
-            panel.focus.focus(window, cx);
+        } else if let Page::RemoveWorktree {
+            project_path,
+            path,
+            branch,
+            ..
+        } = &panel.page
+        {
+            let (project_path, path, branch) = (project_path.clone(), path.clone(), branch.clone());
+            cx.spawn(async move |this, cx| {
+                let reviewed = cx
+                    .background_executor()
+                    .spawn(async move { ProjectService::review_worktree(&project_path, &path, &branch) })
+                    .await;
+                let _ = this.update(cx, |this, cx| {
+                    this.discovery_done = true;
+                    match reviewed {
+                        Ok(worktree) => this.reviewed_worktree = Some(worktree),
+                        Err(error) => {
+                            this.error = Some(format!(
+                                "Could not verify the selected worktree: {error} Return to Projects and reopen the worktree to review it again."
+                            ));
+                            this.service.update(cx, |_, cx| cx.emit(ProjectEvent::TreeInvalidated));
+                        }
+                    }
+                    cx.notify();
+                });
+            })
+            .detach();
         }
+        panel.focus.focus(window, cx);
         panel
     }
     pub(super) fn is_decision(&self) -> bool {
-        self.decision.is_some() || matches!(self.page, Page::Remove(_)) && !self.started
+        self.decision.is_some()
+            || matches!(self.page, Page::Remove(_) | Page::RemoveWorktree { .. }) && !self.started
     }
-    fn pending(&self, cx: &App) -> bool {
-        if let Page::Remove(path) = &self.page {
-            self.started
-                && self
-                    .service
-                    .read(cx)
-                    .removal_status(path)
-                    .is_some_and(|s| !s.finished)
-        } else {
-            false
+    pub(in crate::views) fn is_pending(&self, cx: &App) -> bool {
+        if !self.started {
+            return false;
+        }
+        let service = self.service.read(cx);
+        match &self.page {
+            Page::Remove(path) => service
+                .removal_status(path)
+                .is_none_or(|status| !status.finished),
+            Page::RemoveWorktree { path, .. } => service
+                .worktree_removal_status(path)
+                .is_none_or(|status| status.stage != WorktreeRemovalStage::Finished),
+            _ => false,
         }
     }
     fn close(&mut self, cx: &mut Context<Self>) {
-        if !self.pending(cx) {
+        if !self.is_pending(cx) {
             cx.emit(ProjectPanelEvent::Decision(false));
             cx.emit(ProjectPanelEvent::Closed);
         }
@@ -846,16 +891,74 @@ impl ProjectPanel {
             return;
         }
         let path = path.clone();
+        let reviewed = if self.delete_worktrees {
+            let Some(reviewed) = self
+                .reviewed_worktrees
+                .as_ref()
+                .map(|review| &review.verified)
+                .filter(|paths| !paths.is_empty())
+            else {
+                return;
+            };
+            Some(reviewed.clone())
+        } else {
+            None
+        };
         match self.service.update(cx, |service, cx| {
-            service.remove_project_by_path(&path, self.delete_worktrees, cx)
+            if let Some(reviewed) = reviewed {
+                service.remove_project_with_reviewed_worktrees(&path, reviewed, cx)
+            } else {
+                service.remove_project_by_path(&path, false, cx)
+            }
         }) {
             Ok(()) => {
                 self.started = true;
+                self.error = None;
                 cx.emit(ProjectPanelEvent::Decision(false));
             }
             Err(error) => self.error = Some(error),
         }
         cx.notify();
+    }
+
+    fn remove_worktree(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Page::RemoveWorktree { project_path, .. } = &self.page else {
+            return;
+        };
+        if self.started {
+            return;
+        }
+        let Some(reviewed) = self.reviewed_worktree.clone() else {
+            return;
+        };
+        match self.service.update(cx, |service, cx| {
+            service.remove_reviewed_worktree(project_path, reviewed, cx)
+        }) {
+            Ok(()) => {
+                self.started = true;
+                self.error = None;
+                self.focus.focus(window, cx);
+                cx.emit(ProjectPanelEvent::Decision(false));
+            }
+            Err(error) => self.error = Some(error),
+        }
+        cx.notify();
+    }
+
+    fn skip_worktree_teardown(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Page::RemoveWorktree { path, .. } = &self.page else {
+            return;
+        };
+        if self.started {
+            self.error = self
+                .service
+                .update(cx, |service, cx| {
+                    service.skip_worktree_teardown_for(path, cx)
+                })
+                .err();
+            self.focus.focus(window, cx);
+            cx.notify();
+        }
     }
 }
 impl Focusable for ProjectPanel {
@@ -926,6 +1029,9 @@ fn panel_section(label: &'static str) -> impl IntoElement {
 }
 fn readonly_path(label: &'static str, path: String) -> impl IntoElement {
     project_field_well(false, false)
+        .h_auto()
+        .min_h(rpx(FIELD_H))
+        .py(rpx(SPACE_LG))
         .id(label)
         .debug_selector(move || label.into())
         .role(gpui::Role::Group)
@@ -1018,10 +1124,13 @@ impl Render for ProjectPanel {
         let title = match page {
             Page::Edit(_) => "Edit project",
             Page::Remove(_) => "Remove project",
+            Page::RemoveWorktree { .. } => "Delete worktree",
             Page::Move(_) => "Move project",
             Page::Archived => "Archived projects",
         };
         let edit_page = matches!(page, Page::Edit(_));
+        let settings_removal =
+            self.settings_origin && matches!(page, Page::Remove(_) | Page::RemoveWorktree { .. });
         let mut content = div()
             .w_full()
             .min_w_0()
@@ -1038,6 +1147,7 @@ impl Render for ProjectPanel {
                 "Manage this project’s name, icon and scripts.".into()
             }
             Page::Remove(_) => "Review what Grove will remove before continuing.".into(),
+            Page::RemoveWorktree { .. } => String::new(),
             Page::Move(_) => {
                 "The project folder and worktrees stay in place. Open sessions keep running.".into()
             }
@@ -1471,92 +1581,162 @@ impl Render for ProjectPanel {
                         .find(|p| p.path == path)
                         .map_or(path.as_str(), |project| project.name.as_str())
                         .to_owned();
-                    heading = if self.started {
-                        format!("Removing {name}")
-                    } else {
-                        format!("Remove {name} from Grove?")
-                    };
-                    description = if self.started {
-                        "Grove is closing sessions and removing the project registration.".into()
-                    } else {
-                        "Open sessions in this project will close. Grove will forget the project registration.".into()
+                    let status = self
+                        .started
+                        .then(|| self.service.read(cx).removal_status(&path))
+                        .flatten();
+                    (heading, description) = match status {
+                        Some(status) if status.finished && status.unregistered => (
+                            "Project removed".into(),
+                            "The main project folder stays on disk.".into(),
+                        ),
+                        Some(status) if status.finished => (
+                            "Could not remove project".into(),
+                            "Review the errors before trying again.".into(),
+                        ),
+                        _ if self.started => (
+                            format!("Removing {name}"),
+                            "Grove is closing sessions and removing the project registration.".into(),
+                        ),
+                        _ => (
+                            format!("Remove {name} from Grove?"),
+                            "Open sessions in this project will close. Grove will remove the project registration.".into(),
+                        ),
                     };
                     if !self.started {
-                        let count = self.worktree_count.map_or_else(
-                            || {
-                                if self.discovery_done {
-                                    "Worktree count unavailable".into()
-                                } else {
-                                    "Discovering worktrees…".into()
-                                }
-                            },
-                            |n| format!("{n} additional worktree folders"),
-                        );
-                        let switch = div()
-                            .w_full()
-                            .min_h(rpx(PREFERENCE_ROW_MIN_H))
-                            .py(rpx(SPACE_2XL))
-                            .border_y_1()
-                            .border_color(c::BORDER_SOFT())
-                            .flex()
-                            .items_center()
-                            .gap(rpx(SPACE_2XL))
-                            .child(
+                        content = content
+                            .when(self.delete_worktrees, |content| {
+                                content.child(div().text_color(c::RED()).child(
+                                    "Deleting these folders can erase uncommitted changes and untracked files. The main project folder stays on disk.",
+                                ))
+                            })
+                            .child(readonly_path(
+                                "Main project folder · protected",
+                                path.clone(),
+                            ))
+                            .when(!self.discovery_done, |content| {
+                                content.child(crate::views::status::label(
+                                    "project-worktree-discovery",
+                                    crate::views::status::StatusKind::Working,
+                                    "Discovering worktrees…",
+                                    ICON_SM,
+                                    cx,
+                                ))
+                            });
+                        if let Some(worktrees) = self
+                            .reviewed_worktrees
+                            .as_ref()
+                            .map(|review| &review.verified)
+                            .filter(|paths| !paths.is_empty())
+                        {
+                            let count = worktrees.len();
+                            let count_label = format!(
+                                "{count} linked worktree{}",
+                                if count == 1 { "" } else { "s" }
+                            );
+                            content = content
+                                .child(
+                                    div()
+                                        .w_full()
+                                        .min_h(rpx(PREFERENCE_ROW_MIN_H))
+                                        .py(rpx(SPACE_2XL))
+                                        .border_y_1()
+                                        .border_color(c::BORDER_SOFT())
+                                        .flex()
+                                        .items_center()
+                                        .gap(rpx(SPACE_2XL))
+                                        .child(
+                                            div()
+                                                .flex_1()
+                                                .min_w_0()
+                                                .flex()
+                                                .flex_col()
+                                                .gap(rpx(SPACE_SM))
+                                                .child(
+                                                    div()
+                                                        .font_weight(FontWeight::MEDIUM)
+                                                        .child("Delete linked worktrees from disk"),
+                                                )
+                                                .child(
+                                                    div()
+                                                        .text_size(rpx(TEXT_SMALL))
+                                                        .text_color(c::FG_DIM())
+                                                        .child(count_label),
+                                                ),
+                                        )
+                                        .child(crate::views::components::boolean_choices(
+                                            "remove-worktrees",
+                                            "Delete linked worktrees from disk",
+                                            self.delete_worktrees,
+                                            true,
+                                            cx,
+                                            |this, enabled, _, cx| {
+                                                this.delete_worktrees = enabled;
+                                                cx.notify();
+                                            },
+                                        )),
+                                )
+                                .when(self.delete_worktrees, |content| {
+                                    content.child(
+                                        div()
+                                            .id("project-removal-reviewed-targets")
+                                            .role(gpui::Role::Group)
+                                            .aria_label("Worktree folders to delete")
+                                            .flex()
+                                            .flex_col()
+                                            .gap(rpx(SPACE_SM))
+                                            .child(
+                                                div()
+                                                    .text_color(c::FG_DIM())
+                                                    .child("Worktree folders to delete"),
+                                            )
+                                            .children(worktrees.iter().enumerate().map(
+                                                |(index, target)| {
+                                                    crate::views::components::readonly_value(
+                                                        ("project-removal-reviewed-target", index),
+                                                        target.path().to_owned(),
+                                                    )
+                                                },
+                                            )),
+                                    )
+                                });
+                        }
+                        if let Some(skipped) = self
+                            .reviewed_worktrees
+                            .as_ref()
+                            .map(|review| &review.skipped_paths)
+                            .filter(|paths| !paths.is_empty())
+                        {
+                            content = content.child(
                                 div()
-                                    .flex_1()
-                                    .min_w_0()
+                                    .id("project-removal-skipped-paths")
+                                    .role(gpui::Role::Group)
+                                    .aria_label("Skipped worktree paths")
                                     .flex()
                                     .flex_col()
                                     .gap(rpx(SPACE_SM))
-                                    .child(
-                                        div()
-                                            .font_weight(FontWeight::MEDIUM)
-                                            .child("Delete non-main worktrees from disk"),
-                                    )
-                                    .child(
-                                        div()
-                                            .text_size(rpx(TEXT_SMALL))
-                                            .text_color(c::FG_DIM())
-                                            .child(if self.worktree_count.is_some() {
-                                                div().child(count)
-                                            } else {
-                                                crate::views::status::label(
-                                                    "project-worktree-discovery",
-                                                    if self.discovery_done {
-                                                        crate::views::status::StatusKind::Unknown
-                                                    } else {
-                                                        crate::views::status::StatusKind::Working
-                                                    },
-                                                    count,
-                                                    ICON_SM,
-                                                    cx,
-                                                )
-                                            }),
-                                    ),
+                                    .child(crate::views::status::label(
+                                        "project-removal-skipped-notice",
+                                        crate::views::status::StatusKind::Warning,
+                                        "Unverified paths excluded from deletion",
+                                        ICON_SM,
+                                        cx,
+                                    ))
+                                    .children(skipped.iter().enumerate().map(|(index, path)| {
+                                        crate::views::components::readonly_value(
+                                            ("project-removal-skipped-path", index),
+                                            path.clone(),
+                                        )
+                                    })),
+                            );
+                        }
+                        content = content.when(!self.delete_worktrees, |content| {
+                            content.child(
+                                div()
+                                    .text_color(c::FG_DIM())
+                                    .child("All folders stay on disk."),
                             )
-                            .child(crate::views::components::boolean_choices(
-                                "remove-worktrees",
-                                "Delete non-main worktrees from disk",
-                                self.delete_worktrees,
-                                self.worktree_count.is_some(),
-                                cx,
-                                |this, enabled, _, cx| {
-                                    if this.worktree_count.is_some() {
-                                        this.delete_worktrees = enabled;
-                                        cx.notify();
-                                    }
-                                },
-                            ));
-                        content = content.child(switch)
-                            .child(readonly_path("Main project folder · protected", path.clone()))
-                            .child(div().p(rpx(SPACE_2XL)).rounded(rpx(RADIUS_CONTROL))
-                                .bg(if self.delete_worktrees { c::RED_WASH() } else { c::FIELD_FILL() })
-                                .text_color(if self.delete_worktrees { c::RED() } else { c::FG_DIM() })
-                                .child(if self.delete_worktrees {
-                                    "Additional worktree folders will be deleted. This cannot be undone from Grove. The main project folder stays on disk."
-                                } else {
-                                    "The main project folder and all worktree files stay on disk."
-                                }));
+                        });
                         footer = footer
                             .child(
                                 project_action(
@@ -1573,7 +1753,7 @@ impl Render for ProjectPanel {
                                 project_action(
                                     "project-remove-confirm".into(),
                                     if self.delete_worktrees {
-                                        "Delete worktrees and remove"
+                                        "Delete worktrees and remove project"
                                     } else {
                                         "Remove project"
                                     },
@@ -1585,7 +1765,7 @@ impl Render for ProjectPanel {
                                 .disabled(!self.discovery_done)
                                 .on_click(cx.listener(|this, _, _, cx| this.remove(cx))),
                             );
-                    } else if let Some(status) = self.service.read(cx).removal_status(&path) {
+                    } else if let Some(status) = status {
                         content = content
                             .child(
                                 div()
@@ -1653,9 +1833,15 @@ impl Render for ProjectPanel {
                             );
                         }
                         if status.finished {
-                            content = content.child(div().text_color(if status.errors.is_empty() { c::FG_DIM() } else { c::RED() })
-                                .child(crate::views::status::label("project-removal-result", if status.unregistered { crate::views::status::StatusKind::Success } else { crate::views::status::StatusKind::Failed }, if status.unregistered { "Project registration removed. The main project folder remains on disk." }
-                                    else { "Project could not be unregistered. Review the errors above." }, ICON_SM, cx)));
+                            if status.unregistered && !status.errors.is_empty() {
+                                content = content.child(crate::views::status::label(
+                                    "project-removal-result",
+                                    crate::views::status::StatusKind::Warning,
+                                    "Some reviewed worktree folders could not be deleted.",
+                                    ICON_SM,
+                                    cx,
+                                ));
+                            }
                             footer = footer.child(
                                 project_action(
                                     "project-panel-cancel".into(),
@@ -1680,6 +1866,156 @@ impl Render for ProjectPanel {
                                 .disabled(true),
                             );
                         }
+                    }
+                }
+                Page::RemoveWorktree {
+                    project_path,
+                    path,
+                    name,
+                    branch,
+                } => {
+                    use crate::views::status::{self, StatusKind};
+                    let operation = self
+                        .started
+                        .then(|| {
+                            self.service
+                                .read(cx)
+                                .worktree_removal_status(&path)
+                                .cloned()
+                        })
+                        .flatten();
+                    heading = format!("Delete {name}?");
+                    description = "Sessions using this worktree will stop.".into();
+                    content = content
+                        .when(!self.started, |content| {
+                            content.child(div().text_color(c::RED()).child(
+                                "Deleting this folder can erase uncommitted changes and untracked files. The main project folder stays on disk.",
+                            ))
+                        })
+                        .child(readonly_path("Worktree folder", path))
+                        .child(readonly_path("Branch", branch))
+                        .child(readonly_path(
+                            "Main project folder · protected",
+                            project_path,
+                        ));
+                    if self.started {
+                        let stage = operation.as_ref().map(|operation| operation.stage);
+                        let error = operation
+                            .as_ref()
+                            .and_then(|operation| operation.error.as_ref());
+                        let (kind, label) = match stage {
+                            None | Some(WorktreeRemovalStage::Checking) => {
+                                (StatusKind::Working, "Checking worktree")
+                            }
+                            Some(WorktreeRemovalStage::Stopping) => {
+                                (StatusKind::Working, "Stopping sessions")
+                            }
+                            Some(WorktreeRemovalStage::RunningScript) => {
+                                (StatusKind::Working, "Running teardown script")
+                            }
+                            Some(WorktreeRemovalStage::Removing) => {
+                                (StatusKind::Working, "Removing worktree folder")
+                            }
+                            Some(WorktreeRemovalStage::Finished) if error.is_some() => {
+                                (StatusKind::Failed, "Could not remove worktree")
+                            }
+                            Some(WorktreeRemovalStage::Finished) => {
+                                (StatusKind::Success, "Worktree removed")
+                            }
+                        };
+                        heading = if stage == Some(WorktreeRemovalStage::Finished) {
+                            label.into()
+                        } else {
+                            format!("Removing {name}")
+                        };
+                        description = match kind {
+                            StatusKind::Success => "The worktree folder was removed. The main project folder stays on disk.",
+                            StatusKind::Failed => "Grove could not confirm removal. Review the error below before trying again.",
+                            _ => "The main project folder stays on disk.",
+                        }.into();
+                        content = content.child(status::label(
+                            "settings-worktree-removal-progress",
+                            kind,
+                            label,
+                            ICON_SM,
+                            cx,
+                        ));
+                        if let Some(error) = error {
+                            content = content.child(status::label(
+                                "settings-worktree-removal-error",
+                                StatusKind::Failed,
+                                error.clone(),
+                                ICON_SM,
+                                cx,
+                            ));
+                        }
+                        if stage == Some(WorktreeRemovalStage::Finished) {
+                            footer = footer.child(
+                                project_action(
+                                    "settings-worktree-removal-done".into(),
+                                    if error.is_some() { "Dismiss" } else { "Done" },
+                                    Some(if error.is_some() {
+                                        "icons/close.svg"
+                                    } else {
+                                        "icons/check.svg"
+                                    }),
+                                    ProjectActionStyle::Primary,
+                                    window,
+                                    cx,
+                                )
+                                .on_click(cx.listener(|this, _, _, cx| this.close(cx))),
+                            );
+                        } else if stage == Some(WorktreeRemovalStage::RunningScript) {
+                            footer = footer.child(
+                                project_action(
+                                    "settings-worktree-removal-skip".into(),
+                                    "Skip script",
+                                    Some("icons/arrow-right.svg"),
+                                    ProjectActionStyle::Quiet,
+                                    window,
+                                    cx,
+                                )
+                                .on_click(cx.listener(
+                                    |this, _, window, cx| this.skip_worktree_teardown(window, cx),
+                                )),
+                            );
+                        }
+                    } else {
+                        content = content.when(!self.discovery_done, |content| {
+                            content.child(status::label(
+                                "settings-worktree-removal-discovery",
+                                StatusKind::Working,
+                                "Verifying worktree…",
+                                ICON_SM,
+                                cx,
+                            ))
+                        });
+                        footer = footer
+                            .child(
+                                project_action(
+                                    "project-panel-cancel".into(),
+                                    "Cancel",
+                                    None,
+                                    ProjectActionStyle::Quiet,
+                                    window,
+                                    cx,
+                                )
+                                .on_click(cx.listener(|this, _, _, cx| this.close(cx))),
+                            )
+                            .child(
+                                project_action(
+                                    "settings-worktree-removal-confirm".into(),
+                                    "Delete worktree",
+                                    Some("icons/trash.svg"),
+                                    ProjectActionStyle::Danger,
+                                    window,
+                                    cx,
+                                )
+                                .disabled(self.reviewed_worktree.is_none())
+                                .on_click(cx.listener(
+                                    |this, _, window, cx| this.remove_worktree(window, cx),
+                                )),
+                            );
                     }
                 }
                 Page::Archived => {
@@ -1868,7 +2204,7 @@ impl Render for ProjectPanel {
                         this.close(cx);
                     }
                     cx.stop_propagation();
-                } else if event.keystroke.key == "tab" {
+                } else if event.keystroke.key == "tab" && !this.settings_origin {
                     window.prevent_default();
                     for _ in 0..FOCUS_SCAN_LIMIT {
                         if event.keystroke.modifiers.shift {
@@ -1893,20 +2229,18 @@ impl Render for ProjectPanel {
                         header.child(
                             crate::views::components::back_action(
                                 "project-panel-back",
-                                if self.settings_origin && !archived_page {
-                                    "Back to Projects"
-                                } else if self.settings_origin {
-                                    "Back to General"
-                                } else {
-                                    "Back to Projects"
-                                },
+                                "Back to Projects",
                                 window,
                                 cx,
                             )
+                            .debug_selector(|| "project-panel-back".into())
+                            .disabled(self.is_pending(cx))
                             .on_click(cx.listener(|this, _, _, cx| this.close(cx))),
                         )
                     })
-                    .child(crate::views::components::content_header_title(title)),
+                    .when(!settings_removal, |header| {
+                        header.child(crate::views::components::content_header_title(title))
+                    }),
             )
             .child(
                 div()
@@ -1918,7 +2252,6 @@ impl Render for ProjectPanel {
                     .track_scroll(&self.scroll)
                     .vertical_scrollbar(&self.scroll)
                     .px(rpx(SPACE_3XL))
-                    .py(rpx(FORM_PAGE_PADDING_Y))
                     .flex()
                     .items_start()
                     .justify_center()
@@ -1930,6 +2263,7 @@ impl Render for ProjectPanel {
                             .w_full()
                             .max_w(rpx(FORM_CONTENT_MAX_W))
                             .min_w_0()
+                            .py(rpx(FORM_PAGE_PADDING_Y))
                             .child(
                                 div()
                                     .mb(rpx(if edit_page {
@@ -2778,7 +3112,7 @@ mod tests {
                     })
                     .unwrap();
                 panel.page = Page::Remove(path.clone());
-                panel.worktree_count = Some(0);
+                panel.reviewed_worktrees = Some(ProjectWorktreeReview::default());
                 panel.discovery_done = true;
                 panel.delete_worktrees = false;
                 panel.remove(cx);
@@ -2840,7 +3174,8 @@ mod tests {
                     })
                     .unwrap();
                 panel.started = false;
-                panel.delete_worktrees = true;
+                panel.reviewed_worktrees = None;
+                panel.error = Some("Could not discover worktrees.".into());
                 panel.remove(cx);
                 assert!(panel.started);
             });
@@ -2850,7 +3185,7 @@ mod tests {
         panel.read_with(cx, |panel, cx| {
             let status = panel.service.read(cx).removal_status(&path).unwrap();
             assert!(status.finished);
-            assert!(!status.errors.is_empty());
+            assert!(status.errors.is_empty());
             assert!(status.unregistered);
         });
         assert!(cx.debug_bounds("project-panel").is_some());

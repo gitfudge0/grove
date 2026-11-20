@@ -1877,7 +1877,7 @@ impl Sidebar {
         crate::app_menus::MenuState {
             window: true,
             fullscreen: window.is_fullscreen(),
-            navigation: self.navigation_available(),
+            navigation: self.navigation_available() && !self.settings_navigation_blocked(cx),
             worktree: self.selected_worktree().is_some(),
             close_session: matches!(
                 self.selection,
@@ -1907,7 +1907,7 @@ impl Sidebar {
     }
 
     pub(crate) fn toggle_zen(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.navigation_available() {
+        if !self.navigation_available() || self.settings_navigation_blocked(cx) {
             return;
         }
         self.sync(window, cx);
@@ -2547,6 +2547,9 @@ impl Sidebar {
         cx.notify();
     }
     pub(crate) fn select_active_session(&mut self, cx: &mut Context<Self>) -> Option<SessionId> {
+        if self.settings_navigation_blocked(cx) {
+            return None;
+        }
         let id = self.runtime.read(cx).state.read(cx).active_session()?;
         self.select(Selection::Session(id), cx);
         Some(id)
@@ -2656,7 +2659,7 @@ impl Sidebar {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if !self.navigation_available() {
+        if !self.navigation_available() || self.settings_navigation_blocked(cx) {
             return;
         }
         self.sync(window, cx);
@@ -2666,7 +2669,7 @@ impl Sidebar {
     }
 
     pub(crate) fn request_close_focused(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.navigation_available() {
+        if !self.navigation_available() || self.settings_navigation_blocked(cx) {
             return;
         }
         let canvas_visible = self.mode == ViewMode::Grid || self.is_zen();
@@ -2747,6 +2750,7 @@ impl Sidebar {
 
     fn canvas_focus_allowed_for_mode(&self, window: &Window, cx: &App, allow_grid: bool) -> bool {
         if !self.navigation_available()
+            || self.settings_navigation_blocked(cx)
             || (self.mode == ViewMode::Grid && !self.is_zen() && !allow_grid)
             || self
                 .workspace_selector
@@ -2767,19 +2771,31 @@ impl Sidebar {
                 .is_some_and(|selector| selector.focus_handle(cx).is_focused(window))
     }
 
+    fn settings_navigation_blocked(&self, cx: &App) -> bool {
+        self.settings_panel
+            .as_ref()
+            .is_some_and(|panel| panel.read(cx).project_operation_pending(cx))
+    }
+
     fn close_settings_for_session_navigation(
         &mut self,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) {
-        if let Some(panel) = self.settings_panel.clone() {
-            panel.update(cx, |panel, cx| panel.close(window, cx));
-        }
+    ) -> bool {
+        let Some(panel) = &self.settings_panel else {
+            return true;
+        };
+        panel.update(cx, |panel, cx| {
+            panel.close(window, cx);
+            !panel.is_open()
+        })
     }
 
     fn navigate_to_session(&mut self, id: SessionId, window: &mut Window, cx: &mut Context<Self>) {
         // Close first: settings restores its prior focus, then navigation focuses the target.
-        self.close_settings_for_session_navigation(window, cx);
+        if !self.close_settings_for_session_navigation(window, cx) {
+            return;
+        }
         self.select(Selection::Session(id), cx);
         if let Some(view) = self.codex_views.get(&id) {
             view.focus_handle(cx).focus(window, cx);
@@ -2801,7 +2817,7 @@ impl Sidebar {
     }
 
     fn select_relative_session(&mut self, delta: i32, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.navigation_available() {
+        if !self.navigation_available() || self.settings_navigation_blocked(cx) {
             return;
         }
         self.sync(window, cx);
@@ -2824,7 +2840,7 @@ impl Sidebar {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if !self.navigation_available() || number == 0 {
+        if !self.navigation_available() || self.settings_navigation_blocked(cx) || number == 0 {
             return;
         }
         self.sync(window, cx);
@@ -2865,7 +2881,7 @@ impl Sidebar {
     }
 
     pub(crate) fn select_waiting_session(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.navigation_available() {
+        if !self.navigation_available() || self.settings_navigation_blocked(cx) {
             return;
         }
         self.sync(window, cx);
@@ -2917,7 +2933,7 @@ impl Sidebar {
     }
 
     pub(crate) fn add_terminal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.navigation_available() {
+        if self.navigation_available() && !self.settings_navigation_blocked(cx) {
             self.act(Action::AddTerminal, window, cx);
             self.focus.focus(window, cx);
         }
@@ -2938,6 +2954,9 @@ impl Sidebar {
             .find(|(_, project)| project.path == root)
             .map(|(index, _)| index);
         if let Some(index) = index {
+            if self.settings_navigation_blocked(cx) {
+                return;
+            }
             if self.open_dashboard_for_checkout(index, root, path, window, cx) && create {
                 self.begin_worktree(index, window, cx);
             }
@@ -2957,7 +2976,9 @@ impl Sidebar {
             .find(|(_, project)| project.path == path)
             .map(|(index, _)| index);
         if let Some(index) = index {
-            self.close_settings_for_session_navigation(window, cx);
+            if !self.close_settings_for_session_navigation(window, cx) {
+                return;
+            }
             self.select(Selection::Project(index), cx);
             self.focus.focus(window, cx);
         }
@@ -3025,7 +3046,7 @@ impl Sidebar {
     }
 
     pub(crate) fn add_worktree_terminal_from_palette(&mut self, cx: &mut Context<Self>) {
-        if !self.navigation_available() {
+        if !self.navigation_available() || self.settings_navigation_blocked(cx) {
             return;
         }
         let targets = self.checkout_targets(cx);
@@ -3178,6 +3199,9 @@ impl Sidebar {
     }
 
     fn act(&mut self, action: Action, window: &mut Window, cx: &mut Context<Self>) {
+        if self.settings_navigation_blocked(cx) {
+            return;
+        }
         if let Some(removal) = &self.pending_worktree_removal {
             let finished = removal.started
                 && (removal.error.is_some()
@@ -3389,8 +3413,10 @@ impl Sidebar {
                     self.navigate_to_session(id, window, cx);
                     return;
                 }
-                if matches!(s, Selection::Home(_)) {
-                    self.close_settings_for_session_navigation(window, cx);
+                if matches!(s, Selection::Home(_))
+                    && !self.close_settings_for_session_navigation(window, cx)
+                {
+                    return;
                 }
                 self.select(s.clone(), cx);
                 let view = match s {
@@ -4057,7 +4083,9 @@ impl Sidebar {
                 };
                 if let Some(id) = new_id {
                     self.terminal_owners.insert(id, self.active_workspace);
-                    self.close_settings_for_session_navigation(window, cx);
+                    if !self.close_settings_for_session_navigation(window, cx) {
+                        return;
+                    }
                     self.select(Selection::Home(id), cx);
                     self.mode = ViewMode::Project;
                     SettingsState::update(cx, |store| store.sidebar_collapsed = false);

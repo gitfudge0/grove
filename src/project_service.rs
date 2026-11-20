@@ -47,6 +47,95 @@ impl ProjectRemoval {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ReviewedWorktree {
+    path: String,
+    canonical_path: PathBuf,
+    branch: String,
+    folder_identity: WorktreeFileIdentity,
+    git_entry_identity: WorktreeFileIdentity,
+    git_entry_modified: std::time::SystemTime,
+}
+
+#[derive(Default)]
+pub(crate) struct ProjectWorktreeReview {
+    pub(crate) verified: Vec<ReviewedWorktree>,
+    pub(crate) skipped_paths: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct WorktreeFileIdentity {
+    #[cfg(unix)]
+    device: u64,
+    #[cfg(unix)]
+    inode: u64,
+    created: Option<std::time::SystemTime>,
+}
+
+impl WorktreeFileIdentity {
+    fn from_metadata(metadata: &std::fs::Metadata) -> Result<Self, String> {
+        #[cfg(unix)]
+        use std::os::unix::fs::MetadataExt as _;
+        Ok(Self {
+            #[cfg(unix)]
+            device: metadata.dev(),
+            #[cfg(unix)]
+            inode: metadata.ino(),
+            #[cfg(unix)]
+            created: metadata.created().ok(),
+            #[cfg(not(unix))]
+            created: Some(metadata.created().map_err(|error| error.to_string())?),
+        })
+    }
+}
+
+impl ReviewedWorktree {
+    fn from_checkout(worktree: &git::Worktree) -> Result<Self, String> {
+        let canonical_path = Path::new(&worktree.path)
+            .canonicalize()
+            .map_err(|error| error.to_string())?;
+        let folder = fs::metadata(&canonical_path).map_err(|error| error.to_string())?;
+        let git_entry =
+            fs::metadata(canonical_path.join(".git")).map_err(|error| error.to_string())?;
+        Ok(Self {
+            path: worktree.path.clone(),
+            canonical_path,
+            branch: worktree.branch.clone(),
+            folder_identity: WorktreeFileIdentity::from_metadata(&folder)?,
+            git_entry_identity: WorktreeFileIdentity::from_metadata(&git_entry)?,
+            git_entry_modified: git_entry.modified().map_err(|error| error.to_string())?,
+        })
+    }
+
+    pub(crate) fn path(&self) -> &str {
+        &self.path
+    }
+
+    fn verify(&self, repository: &str) -> Result<(), String> {
+        let current = git::list_worktrees_checked(repository)
+            .map_err(|error| format!("Could not list worktrees: {error}"))?
+            .into_iter()
+            .find(|tree| {
+                tree.path == self.path && removable_worktree(repository, &tree.path, tree.is_main)
+            })
+            .ok_or("The reviewed checkout is no longer listed as a linked worktree.")?;
+        self.verify_checkout(&current)
+    }
+
+    fn verify_checkout(&self, checkout: &git::Worktree) -> Result<(), String> {
+        if Self::from_checkout(checkout)? != *self {
+            return Err("The worktree changed after review. Its folder was left on disk. Reopen the worktree to review it again.".into());
+        }
+        Ok(())
+    }
+}
+
+enum ProjectWorktreesToRemove {
+    None,
+    All,
+    Reviewed(Vec<ReviewedWorktree>),
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WorktreeRemovalStage {
     Checking,
@@ -62,6 +151,7 @@ pub struct WorktreeRemoval {
     pub error: Option<String>,
     project_path: String,
     canonical_path: PathBuf,
+    reviewed: Option<ReviewedWorktree>,
 }
 
 pub struct ProjectService {
@@ -402,6 +492,7 @@ impl ProjectService {
                     error: None,
                     project_path: project.into(),
                     canonical_path: std::path::PathBuf::from(path),
+                    reviewed: None,
                 },
             );
         } else {
@@ -673,6 +764,51 @@ impl ProjectService {
         also_remove_worktrees: bool,
         cx: &mut Context<Self>,
     ) -> Result<(), String> {
+        let worktrees = if also_remove_worktrees {
+            ProjectWorktreesToRemove::All
+        } else {
+            ProjectWorktreesToRemove::None
+        };
+        self.remove_project_with_worktree_selection(path, worktrees, cx)
+    }
+
+    pub(crate) fn review_project_worktrees(path: &str) -> Result<ProjectWorktreeReview, String> {
+        if !git::is_repo(path) {
+            return Ok(ProjectWorktreeReview::default());
+        }
+        let worktrees = git::list_worktrees_checked(path).map_err(|error| error.to_string())?;
+        let mut review = ProjectWorktreeReview::default();
+        for tree in worktrees
+            .into_iter()
+            .filter(|tree| removable_worktree(path, &tree.path, tree.is_main))
+        {
+            match ReviewedWorktree::from_checkout(&tree) {
+                Ok(worktree) => review.verified.push(worktree),
+                Err(_) => review.skipped_paths.push(tree.path),
+            }
+        }
+        Ok(review)
+    }
+
+    pub(crate) fn remove_project_with_reviewed_worktrees(
+        &mut self,
+        path: &str,
+        worktrees: Vec<ReviewedWorktree>,
+        cx: &mut Context<Self>,
+    ) -> Result<(), String> {
+        self.remove_project_with_worktree_selection(
+            path,
+            ProjectWorktreesToRemove::Reviewed(worktrees),
+            cx,
+        )
+    }
+
+    fn remove_project_with_worktree_selection(
+        &mut self,
+        path: &str,
+        worktrees: ProjectWorktreesToRemove,
+        cx: &mut Context<Self>,
+    ) -> Result<(), String> {
         self.ensure_not_removing(path)?;
         let store = &cx.global::<SettingsState>().store;
         let idx = project_index(&store.projects, path)
@@ -684,7 +820,7 @@ impl ProjectService {
             .insert(path.clone(), ProjectRemoval::default());
         self.kill_sessions_for_project_path(&project.path, cx)?;
         self.removal_changed(&path, cx);
-        if !also_remove_worktrees {
+        if matches!(worktrees, ProjectWorktreesToRemove::None) {
             self.finish_removal(&path, cx);
             return Ok(());
         }
@@ -695,20 +831,27 @@ impl ProjectService {
                 return;
             }
             let repository = project.path.clone();
-            let targets = cx
-                .background_executor()
-                .spawn(async move {
-                    git::list_worktrees_checked(&repository).map(|worktrees| {
-                        worktrees
-                            .into_iter()
-                            .filter(|worktree| {
-                                removable_worktree(&repository, &worktree.path, worktree.is_main)
-                            })
-                            .map(|worktree| worktree.path)
-                            .collect::<Vec<_>>()
+            let targets = match worktrees {
+                ProjectWorktreesToRemove::None => unreachable!(),
+                ProjectWorktreesToRemove::All => cx
+                    .background_executor()
+                    .spawn(async move {
+                        git::list_worktrees_checked(&repository).map(|worktrees| {
+                            worktrees
+                                .into_iter()
+                                .filter(|worktree| {
+                                    removable_worktree(&repository, &worktree.path, worktree.is_main)
+                                })
+                                .map(|worktree| (worktree.path, None))
+                                .collect::<Vec<_>>()
+                        })
                     })
-                })
-                .await;
+                    .await,
+                ProjectWorktreesToRemove::Reviewed(worktrees) => Ok(worktrees
+                    .into_iter()
+                    .map(|worktree| (worktree.path.clone(), Some(worktree)))
+                    .collect()),
+            };
             let targets = match targets {
                 Ok(targets) => targets,
                 Err(error) => {
@@ -729,7 +872,7 @@ impl ProjectService {
                 }
                 this.removal_changed(&path, cx);
             });
-            for target in targets {
+            for (target, reviewed) in targets {
                 let _ = this.update(cx, |this, cx| {
                     if let Some(operation) = this.removals.get_mut(&path) {
                         operation.current_target = Some(target.clone());
@@ -758,6 +901,10 @@ impl ProjectService {
                         let target_path = target.clone();
                         cx.background_executor()
                             .spawn(async move {
+                                if let Some(reviewed) = reviewed {
+                                    reviewed.verify(&repository)
+                                        .map_err(|error| format!("{target_path}: {error}"))?;
+                                }
                                 git::remove_worktree(&repository, &target_path)
                                     .map_err(|error| format!("{target_path}: {error}"))
                             })
@@ -869,6 +1016,44 @@ impl ProjectService {
         wt_path: &str,
         cx: &mut Context<Self>,
     ) -> Result<(), String> {
+        self.start_worktree_removal(project_path, wt_path, None, cx)
+    }
+
+    pub(crate) fn review_worktree(
+        project_path: &str,
+        path: &str,
+        branch: &str,
+    ) -> Result<ReviewedWorktree, String> {
+        let worktree = git::list_worktrees_checked(project_path)
+            .map_err(|error| format!("Could not list worktrees: {error}"))?
+            .into_iter()
+            .find(|tree| {
+                tree.path == path && removable_worktree(project_path, &tree.path, tree.is_main)
+            })
+            .ok_or("The selected path is no longer listed as a linked worktree.")?;
+        if worktree.branch != branch {
+            return Err("The worktree branch changed since the project list loaded.".into());
+        }
+        ReviewedWorktree::from_checkout(&worktree)
+    }
+
+    pub(crate) fn remove_reviewed_worktree(
+        &mut self,
+        project_path: &str,
+        reviewed: ReviewedWorktree,
+        cx: &mut Context<Self>,
+    ) -> Result<(), String> {
+        let path = reviewed.path.clone();
+        self.start_worktree_removal(project_path, &path, Some(reviewed), cx)
+    }
+
+    fn start_worktree_removal(
+        &mut self,
+        project_path: &str,
+        wt_path: &str,
+        reviewed: Option<ReviewedWorktree>,
+        cx: &mut Context<Self>,
+    ) -> Result<(), String> {
         self.ensure_not_removing(project_path)?;
         self.ensure_no_inline_scripts(wt_path, cx)?;
         if self.teardown_target.is_some()
@@ -913,6 +1098,7 @@ impl ProjectService {
                 error: None,
                 project_path: project_path.to_owned(),
                 canonical_path: canonical_path.clone(),
+                reviewed: reviewed.clone(),
             },
         );
         self.worktree_removal_changed(wt_path, cx);
@@ -927,6 +1113,9 @@ impl ProjectService {
                 .ok_or("Worktree is no longer listed by Git.")?;
             if !removable_worktree(&repository, &worktree.path, worktree.is_main) {
                 return Err("The main project checkout cannot be removed.".into());
+            }
+            if let Some(reviewed) = reviewed {
+                reviewed.verify_checkout(worktree)?;
             }
             let current = fs::canonicalize(&target)
                 .map_err(|error| format!("Could not resolve worktree path: {error}"))?;
@@ -976,12 +1165,20 @@ impl ProjectService {
         };
         operation.stage = WorktreeRemovalStage::Stopping;
         operation.canonical_path = canonical_path;
+        let reviewed = operation.reviewed.clone();
         self.kill_sessions_touching_worktree(wt_path, cx);
         self.worktree_removal_changed(wt_path, cx);
         let target = wt_path.to_owned();
         let registry = self.registry.clone();
         cx.spawn(async move |this, cx| {
-            let result = wait_for_session_cleanup(&registry, cx).await;
+            let mut result = wait_for_session_cleanup(&registry, cx).await;
+            if let (Ok(()), Some(reviewed)) = (&result, reviewed) {
+                let repository = project.path.clone();
+                result = cx
+                    .background_executor()
+                    .spawn(async move { reviewed.verify(&repository) })
+                    .await;
+            }
             let _ = this.update(cx, |this, cx| match result {
                 Ok(()) => this.start_worktree_teardown(project, &target, cx),
                 Err(error) => this.fail_worktree_removal(&target, error, cx),
@@ -1111,12 +1308,15 @@ impl ProjectService {
                 return;
             }
         }
-        if let Some(operation) = self.worktree_removals.get_mut(&wt_path) {
+        let reviewed = if let Some(operation) = self.worktree_removals.get_mut(&wt_path) {
             operation.stage = WorktreeRemovalStage::Stopping;
             // An explicit skip acknowledges a script start failure; only Git removal errors
             // determine whether the finished operation failed.
             operation.error = None;
-        }
+            operation.reviewed.clone()
+        } else {
+            None
+        };
         self.worktree_removal_changed(&wt_path, cx);
         self.kill_sessions_touching_worktree(&wt_path, cx);
         let registry = self.registry.clone();
@@ -1155,6 +1355,11 @@ impl ProjectService {
             let result = cx
                 .background_executor()
                 .spawn(async move {
+                    if let Some(reviewed) = reviewed {
+                        reviewed
+                            .verify(&project)
+                            .map_err(|error| format!("{target}: {error}"))?;
+                    }
                     git::remove_worktree(&project, &target)
                         .map_err(|error| format!("{target}: {error}"))
                 })
@@ -1598,6 +1803,7 @@ mod tests {
                         error: None,
                         project_path: path.into(),
                         canonical_path: repo.clone(),
+                        reviewed: None,
                     },
                 );
                 assert!(service
@@ -2320,6 +2526,215 @@ mod tests {
             let listed = git::list_worktrees_checked(&repo).unwrap();
             assert!(listed.iter().any(|entry| entry.path == protected));
             assert!(!listed.iter().any(|entry| entry.path == safe));
+        });
+    }
+
+    #[gpui::test]
+    fn reviewed_bulk_project_removal_keeps_new_and_replaced_worktrees(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        // Project removal persists settings. All filesystem effects belong to this fixture.
+        if std::env::var_os("GROVE_REVIEWED_BULK_REMOVAL_TEST_CHILD").is_none() {
+            let config = tempfile::tempdir().unwrap();
+            let result = Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "project_service::tests::reviewed_bulk_project_removal_keeps_new_and_replaced_worktrees",
+                    "--nocapture",
+                ])
+                .env("GROVE_REVIEWED_BULK_REMOVAL_TEST_CHILD", "1")
+                .env("GROVE_CONFIG_DIR", config.path())
+                .env("GROVE_TEST_CONFIG_DIR", config.path())
+                .output()
+                .unwrap();
+            assert!(
+                result.status.success(),
+                "{}\n{}",
+                String::from_utf8_lossy(&result.stdout),
+                String::from_utf8_lossy(&result.stderr)
+            );
+            return;
+        }
+
+        let Some((fixture, repo, replaced)) = git_fixture() else {
+            return;
+        };
+        let retained_path = |name: &str| fixture.0.join(name).to_str().unwrap().to_owned();
+        let unchanged = retained_path("reviewed-worktree");
+        let unavailable = retained_path("unavailable-worktree");
+        let unavailable_folder = retained_path("unavailable-worktree-folder");
+        let moved = retained_path("moved-worktree");
+        let added = retained_path("new-worktree");
+        let git = |args: &[&str]| {
+            let result = Command::new("git")
+                .args(["-C", &repo])
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(
+                result.status.success(),
+                "{}",
+                String::from_utf8_lossy(&result.stderr)
+            );
+        };
+        git(&["worktree", "add", "--detach", &unchanged]);
+        git(&["worktree", "add", "--detach", &unavailable]);
+        fs::rename(&unavailable, &unavailable_folder).unwrap();
+        let review = ProjectService::review_project_worktrees(&repo).unwrap();
+        assert_eq!(review.skipped_paths, [unavailable.clone()]);
+        assert_eq!(review.verified.len(), 2);
+        assert!(review.verified.iter().any(|tree| tree.path() == replaced));
+        assert!(review.verified.iter().any(|tree| tree.path() == unchanged));
+
+        git(&["worktree", "move", &replaced, &moved]);
+        git(&["worktree", "add", "--detach", &replaced]);
+        git(&["worktree", "add", "--detach", &added]);
+        let marker = Path::new(&replaced).join("keep.txt");
+        fs::write(&marker, "new checkout").unwrap();
+        let service = cx.update(|cx| {
+            cx.set_global(SettingsState::new(storage::Store {
+                projects: vec![project("source", &repo)],
+                ..Default::default()
+            }));
+            let registry = cx.new(|_| SessionRegistry::new());
+            let state = cx.new(|_| WorkspaceState::default());
+            let service = cx.new(|_| ProjectService::new(registry, state));
+            service.update(cx, |service, cx| {
+                service
+                    .remove_project_with_reviewed_worktrees(&repo, review.verified, cx)
+                    .unwrap();
+            });
+            service
+        });
+        cx.run_until_parked();
+        cx.update(|cx| {
+            let operation = service.read(cx).removal_status(&repo).unwrap();
+            assert!(operation.finished && operation.unregistered);
+            assert_eq!((operation.completed, operation.total), (2, 2));
+            assert_eq!(operation.errors.len(), 1, "{:?}", operation.errors);
+            assert!(operation.errors[0].contains(&replaced));
+            assert!(operation.errors[0].contains("changed after review"));
+            assert_eq!(fs::read_to_string(&marker).unwrap(), "new checkout");
+            assert!(Path::new(&unavailable_folder).exists());
+            assert!(git::list_worktrees_checked(&repo)
+                .unwrap()
+                .iter()
+                .any(|entry| entry.path == unavailable));
+            assert!(Path::new(&moved).exists());
+            assert!(Path::new(&added).exists());
+            assert!(Path::new(&repo).exists());
+            assert!(!Path::new(&unchanged).exists());
+        });
+    }
+
+    #[gpui::test]
+    fn reviewed_worktree_removal_rechecks_identity_before_sessions_and_after_teardown(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let Some((fixture, repo, path)) = git_fixture() else {
+            return;
+        };
+        let review = || {
+            let branch = git::list_worktrees_checked(&repo)
+                .unwrap()
+                .into_iter()
+                .find(|checkout| checkout.path == path)
+                .unwrap()
+                .branch;
+            ProjectService::review_worktree(&repo, &path, &branch).unwrap()
+        };
+        let replace = |name| {
+            let moved = fixture.0.join(name);
+            let git = |args: &[&str]| {
+                let result = Command::new("git")
+                    .args(["-C", &repo])
+                    .args(args)
+                    .output()
+                    .unwrap();
+                assert!(
+                    result.status.success(),
+                    "{}",
+                    String::from_utf8_lossy(&result.stderr)
+                );
+            };
+            git(&["worktree", "move", &path, moved.to_str().unwrap()]);
+            git(&["worktree", "add", "--detach", &path]);
+            fs::write(Path::new(&path).join("keep.txt"), name).unwrap();
+        };
+        let original = review();
+        replace("before-start");
+
+        let (service, registry, session) = cx.update(|cx| {
+            cx.set_global(SettingsState::new(storage::Store {
+                projects: vec![project("source", &repo)],
+                ..Default::default()
+            }));
+            let registry = cx.new(|_| SessionRegistry::new());
+            let state = cx.new(|_| WorkspaceState::default());
+            let service = cx.new(|_| ProjectService::new(registry.clone(), state));
+            let session = registry.update(cx, |registry, _| {
+                registry.insert_meta(
+                    "source".into(),
+                    path.clone(),
+                    grove_core::agent::Agent::Terminal,
+                )
+            });
+            service.update(cx, |service, cx| {
+                service
+                    .remove_reviewed_worktree(&repo, original, cx)
+                    .unwrap();
+            });
+            (service, registry, session)
+        });
+        cx.run_until_parked();
+        cx.update(|cx| {
+            let operation = service.read(cx).worktree_removal_status(&path).unwrap();
+            assert_eq!(operation.stage, WorktreeRemovalStage::Finished);
+            assert!(operation
+                .error
+                .as_deref()
+                .unwrap()
+                .contains("changed after review"));
+            assert!(registry.read(cx).meta(session).is_some());
+            assert_eq!(
+                fs::read_to_string(Path::new(&path).join("keep.txt")).unwrap(),
+                "before-start"
+            );
+            registry.update(cx, |registry, cx| registry.remove_background(session, cx));
+        });
+
+        let reviewed = review();
+        replace("during-teardown");
+        cx.update(|cx| {
+            service.update(cx, |service, cx| {
+                // Exercise the continuation after a teardown that was already in progress.
+                service.teardown_target = Some((repo.clone(), path.clone()));
+                service.worktree_removals.insert(
+                    path.clone(),
+                    WorktreeRemoval {
+                        stage: WorktreeRemovalStage::RunningScript,
+                        error: None,
+                        project_path: repo.clone(),
+                        canonical_path: reviewed.canonical_path.clone(),
+                        reviewed: Some(reviewed),
+                    },
+                );
+                service.skip_worktree_teardown_for(&path, cx).unwrap();
+            });
+        });
+        cx.run_until_parked();
+        cx.update(|cx| {
+            let operation = service.read(cx).worktree_removal_status(&path).unwrap();
+            assert_eq!(operation.stage, WorktreeRemovalStage::Finished);
+            assert!(operation
+                .error
+                .as_deref()
+                .unwrap()
+                .contains("changed after review"));
+            assert_eq!(
+                fs::read_to_string(Path::new(&path).join("keep.txt")).unwrap(),
+                "during-teardown"
+            );
         });
     }
 

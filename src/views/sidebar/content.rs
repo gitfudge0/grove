@@ -520,6 +520,9 @@ impl Sidebar {
         self.project_return_path = match &page {
             super::projects::Page::Edit(path)
             | super::projects::Page::Remove(path)
+            | super::projects::Page::RemoveWorktree {
+                project_path: path, ..
+            }
             | super::projects::Page::Move(path) => Some(path.clone()),
             super::projects::Page::Archived => None,
         };

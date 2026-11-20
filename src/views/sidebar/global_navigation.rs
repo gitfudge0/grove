@@ -79,6 +79,9 @@ impl Sidebar {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.settings_navigation_blocked(cx) {
+            return;
+        }
         if destination == Destination::NewSession {
             if self.navigation_available() {
                 cx.emit(SidebarEvent::NewSession);
@@ -91,7 +94,9 @@ impl Sidebar {
         if !self.navigation_available() {
             return;
         }
-        self.close_settings_for_session_navigation(window, cx);
+        if !self.close_settings_for_session_navigation(window, cx) {
+            return;
+        }
         self.dismiss_project_panel_for_navigation();
         self.dismiss_project_context(cx);
         self.zen_return = None;
@@ -517,6 +522,15 @@ impl Sidebar {
                                 this.divider_press(event, window, cx);
                             }),
                         ),
+                )
+            })
+            .when(self.settings_navigation_blocked(cx), |rail| {
+                rail.child(
+                    div()
+                        .absolute()
+                        .inset_0()
+                        .occlude()
+                        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation()),
                 )
             })
             .into_any_element()
