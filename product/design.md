@@ -313,7 +313,7 @@ Approve & implement is a separate explicit user action in inline and expanded fi
 
 ## Settings and diff headers
 
-Settings uses General, Agents, Projects, Terminal, Privacy, and About. The centered Settings canvas pairs a leading vertical category rail with the page body at wide canvas widths. At constrained widths and zoom, a category picker below the Settings header replaces the rail. The current category remains identified on nested pages. Settings starts at the shared content inset with no removed-appbar reservation. The Settings heading, Close, category navigation, and nested Back remain reachable while the body scrolls. Category pages start with their own title. Changing category resets body scroll. Nested pages return with Back or Escape and restore source focus. Tab remains within the owning surface. Use shared text-only grouped Off/On buttons for boolean preferences, with a neutral selected state; each action sets its named value directly. Copy describes what Run in terminal does for the user, independent of inverted storage flags. The shared Yolo mode Off/On group replaces Permission prompts and applies to new CLI and native Codex and Claude sessions. On launches with bypass permissions; off leaves provider defaults unchanged. Existing running and saved native sessions retain their permissions and saved launch identity. Only sessions launched with Yolo and actually using bypass permissions show the static Settings label; provider-reported fallback retains the access dropdown. Choosing Full access or Bypass permissions in a session launched without Yolo keeps its access dropdown available, including after restore; later Settings changes do not relabel existing sessions. Legacy CLI-only bypass preferences do not enable Yolo. OpenCode retains its own permissions. Native Codex conversations preserve separate provider sandbox and approval policies; native Claude conversations offer advertised permission modes that the saved launch supports and acknowledge live changes before displaying a selection. Claude Bypass permissions requires an explicit bypass launch capability; changing Yolo in Settings does not grant that capability to an existing process. A rejected permission change preserves the effective selection and leaves the picker usable; a later acknowledged choice clears only that permission error. Provider status and fallback are authoritative. Access summaries must not imply that an unrestricted sandbox disables approval checks, or that Claude Plan mode provides OS filesystem isolation.
+Settings uses General, Agents, Projects, Terminal, Privacy, and About. The Settings header spans the content pane. At wide canvas widths, a vertical category rail starts at the workspace edge and the readable page column is centered in the space beside it. At constrained widths and zoom, a full-width category picker below the Settings header replaces the rail and the page uses compact insets. The current category remains identified on nested pages. Settings starts at the top of the pane without an appbar reservation. The Settings heading, Close, category navigation, and nested Back remain reachable while the body scrolls. Category pages start with their own title. Changing category resets body scroll. Nested pages return with Back or Escape and restore source focus. Tab remains within the owning surface. Use shared text-only grouped Off/On buttons for boolean preferences, with a neutral selected state; each action sets its named value directly. Copy describes what Run in terminal does for the user, independent of inverted storage flags. The shared Yolo mode Off/On group replaces Permission prompts and applies to new CLI and native Codex and Claude sessions. On launches with bypass permissions; off leaves provider defaults unchanged. Existing running and saved native sessions retain their permissions and saved launch identity. Only sessions launched with Yolo and actually using bypass permissions show the static Settings label; provider-reported fallback retains the access dropdown. Choosing Full access or Bypass permissions in a session launched without Yolo keeps its access dropdown available, including after restore; later Settings changes do not relabel existing sessions. Legacy CLI-only bypass preferences do not enable Yolo. OpenCode retains its own permissions. Native Codex conversations preserve separate provider sandbox and approval policies; native Claude conversations offer advertised permission modes that the saved launch supports and acknowledge live changes before displaying a selection. Claude Bypass permissions requires an explicit bypass launch capability; changing Yolo in Settings does not grant that capability to an existing process. A rejected permission change preserves the effective selection and leaves the picker usable; a later acknowledged choice clears only that permission error. Provider status and fallback are authoritative. Access summaries must not imply that an unrestricted sandbox disables approval checks, or that Claude Plan mode provides OS filesystem isolation.
 
 Settings shows the automatic-save note only on editable preference pages and Themes, not About, Shortcuts, Changelog or Providers. Claude in Chrome describes its new-session launch scope. Privacy distinguishes the saved collection preference from an active environment override. Projects names the active workspace in its introduction. Shell-environment refresh retains a fixed action slot through available, Working, timed check confirmation and available states, with failure text and Retry retained on error. Theme acknowledgements and provider diagnostics use accessible, icon-leading disclosures with foreground-only pointer hover and independent keyboard focus.
 
@@ -787,9 +787,9 @@ previews a different symbol and color without saving; Reset restores the
 saved original assignment. No automatic, randomized or custom status label is
 shown. Save changes applies name, scripts and appearance
 atomically; Cancel discards edits, and a failed save retains the drafts and the
-previous saved appearance. The same project symbol appears in Projects, project
-pickers, selected Dashboard context and shared Codex/Claude session context and
-history headers.
+previous saved appearance. The same project symbol appears in project pickers,
+selected Dashboard context and shared Codex/Claude session context and history
+headers.
 
 ## Work-first project access
 
@@ -812,10 +812,12 @@ setup, teardown and reusable shell/prompt entries, with one Add script action.
 Save/Cancel retain their existing meaning without additional save-explanation copy.
 
 Settings → Projects omits project search. Each active project’s leading chevron,
-name and path form one disclosure. Projects expand independently and show
-indented worktrees with branch and folder identity. Project and linked-worktree
-overflow triggers align to the same trailing edge and open independently of
-expansion. Project actions retain access to editing, moving, adding a worktree
+name and path form one disclosure. Archived projects use a neutral folder icon.
+Projects expand independently and show compact indented worktree rows. Branch
+and folder share one metadata line at wide widths and stack at compact widths.
+Long paths shorten in the list and remain available in full on demand. Project
+and linked-worktree overflow triggers align to the same trailing edge and open
+independently of expansion. Project actions retain access to editing, moving, adding a worktree
 and removing the registration. Worktree actions retain Use and expose Delete
 for linked worktrees. The main checkout has no Delete action. Archived
 registrations remain available in the Archived filter, with Restore and Remove
@@ -826,7 +828,9 @@ Remove project defaults to keeping folders on disk. An explicit option lists
 the linked folders included in deletion and changes the confirmation label.
 Single-worktree confirmation identifies its branch and folder. Both flows
 describe affected sessions, potential loss of uncommitted and untracked files
-when deleting, and protection for the main project folder. Grove uses the
+when deleting, and protection for the main project folder. In Settings, the
+actions follow the review, aligning right in wide panes and left in compact panes.
+The review scrolls when space is short and the actions remain reachable. Grove uses the
 existing project and worktree removal guards and shows the operation result.
 Cancel or Back retains project expansion and restores the action trigger.
 Successful deletion restores focus to a surviving row or the Projects page.

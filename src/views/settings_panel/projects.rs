@@ -11,7 +11,16 @@ use gpui::{
 };
 use gpui_component::menu::{PopupMenu, PopupMenuItem};
 use grove_core::{git::Worktree, storage::Project};
-use std::{cell::Cell, collections::HashSet, path::Path, rc::Rc};
+use std::{
+    cell::Cell,
+    collections::HashSet,
+    path::{Path, MAIN_SEPARATOR},
+    rc::Rc,
+};
+
+const PROJECT_NAME_LINE_H: f32 = TEXT_BODY + SPACE_SM;
+const PROJECT_META_LINE_H: f32 = TEXT_SMALL + SPACE_SM;
+const WORKTREE_INDENT: f32 = SPACE_20 + SPACE_MD;
 
 #[derive(Clone, Eq, Hash, PartialEq)]
 pub(super) struct ProjectMenuTarget {
@@ -90,10 +99,12 @@ impl RowAction {
 }
 
 impl SettingsPanel {
-    pub(super) fn projects_body(&self, window: &Window, cx: &mut Context<Self>) -> Div {
-        let store = &cx.global::<SettingsState>().store;
-        let workspace = store.workspaces.name(store.workspaces.active);
-        let intro = format!("Project registrations in the {workspace} workspace");
+    pub(super) fn projects_body(
+        &self,
+        window: &Window,
+        compact: bool,
+        cx: &mut Context<Self>,
+    ) -> Div {
         let rows = self.scoped_project_rows(cx);
         let mut choices = Self::choices();
         for (id, label, archived) in [("active", "Active", false), ("archived", "Archived", true)] {
@@ -113,34 +124,23 @@ impl SettingsPanel {
                 })),
             );
         }
-        let mut body = div()
-            .flex()
-            .flex_col()
-            .gap(rpx(SPACE_2XL))
-            .pt(rpx(SPACE_LG))
-            .child(
-                div()
-                    .text_size(rpx(TEXT_SMALL))
-                    .text_color(c::FG_DIM())
-                    .child(intro),
-            )
-            .child(
-                div()
-                    .flex()
-                    .flex_wrap()
-                    .items_center()
-                    .justify_between()
-                    .gap(rpx(SPACE_LG))
-                    .child(choices)
-                    .child(
-                        self.button("settings-add-project", "Add project", false, true)
-                            .child(icon("plus", ICON_SM, c::FG_DIM()))
-                            .child("Add project")
-                            .on_click(
-                                cx.listener(|_, _, _, cx| cx.emit(SettingsPanelEvent::AddProject)),
-                            ),
-                    ),
-            );
+        let mut body = div().flex().flex_col().gap(rpx(SPACE_XL)).child(
+            div()
+                .flex()
+                .flex_wrap()
+                .items_center()
+                .justify_between()
+                .gap(rpx(SPACE_LG))
+                .child(choices)
+                .child(
+                    self.button("settings-add-project", "Add project", false, true)
+                        .child(icon("plus", ICON_SM, c::FG_DIM()))
+                        .child("Add project")
+                        .on_click(
+                            cx.listener(|_, _, _, cx| cx.emit(SettingsPanelEvent::AddProject)),
+                        ),
+                ),
+        );
         if rows.is_empty() {
             body = body.child(div().py(rpx(SPACE_3XL)).text_color(c::FG_DIM()).child(
                 if self.projects_archived {
@@ -151,7 +151,11 @@ impl SettingsPanel {
             ));
         }
 
-        let mut list = div().flex().flex_col();
+        let home = dirs::home_dir();
+        let home = home.as_deref();
+        let mut list = div().flex().flex_col().when(!rows.is_empty(), |list| {
+            list.border_t_1().border_color(c::BORDER_SOFT())
+        });
         for (visual_index, (store_index, project)) in rows.into_iter().enumerate() {
             let expanded = !project.archived && self.expanded_projects.contains(&project.path);
             let trigger_id = format!("settings-project-menu-{visual_index}");
@@ -165,7 +169,7 @@ impl SettingsPanel {
                 .gap(rpx(SPACE_LG))
                 .py(rpx(SPACE_XS))
                 .min_w_0()
-                .child(self.project_disclosure(&project, visual_index, expanded, cx))
+                .child(self.project_disclosure(&project, visual_index, expanded, home, cx))
                 .child(self.project_row_action_trigger(
                     target,
                     format!("Actions for project {}", project.name),
@@ -177,7 +181,7 @@ impl SettingsPanel {
                     .flex()
                     .flex_col()
                     .min_w_0()
-                    .border_t_1()
+                    .border_b_1()
                     .border_color(c::BORDER_SOFT())
                     .child(row)
                     .when(expanded, |project_row| {
@@ -185,6 +189,8 @@ impl SettingsPanel {
                             &project,
                             store_index,
                             visual_index,
+                            compact,
+                            window,
                             cx,
                         ))
                     }),
@@ -232,6 +238,7 @@ impl SettingsPanel {
         project: &Project,
         index: usize,
         expanded: bool,
+        home: Option<&Path>,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         let label = div()
@@ -239,10 +246,11 @@ impl SettingsPanel {
             .flex_1()
             .min_w_0()
             .flex_col()
-            .gap(rpx(SPACE_XS))
             .child(
                 div()
                     .truncate()
+                    .text_size(rpx(TEXT_BODY))
+                    .line_height(rpx(PROJECT_NAME_LINE_H))
                     .font_weight(FontWeight::SEMIBOLD)
                     .text_color(c::FG())
                     .child(project.name.clone()),
@@ -251,20 +259,42 @@ impl SettingsPanel {
                 div()
                     .truncate()
                     .text_size(rpx(TEXT_SMALL))
-                    .child(project.path.clone()),
+                    .line_height(rpx(PROJECT_META_LINE_H))
+                    .child(list_path(&project.path, home)),
             );
-        let symbol = components::project_symbol_for_path(&project.path, ICON_MD, cx);
+        let leading_glyph = div()
+            .flex()
+            .flex_shrink_0()
+            .items_center()
+            .h(rpx(PROJECT_NAME_LINE_H))
+            .child(icon(
+                if project.archived {
+                    "folder"
+                } else if expanded {
+                    "chev-down"
+                } else {
+                    "chev-right"
+                },
+                ICON_SM,
+                c::FG_DIM(),
+            ));
+        let tooltip_path = project.path.clone();
+        let path_tooltip = move |window: &mut Window, cx: &mut App| {
+            components::tooltip(tooltip_path.clone(), window).build(window, cx)
+        };
         if project.archived {
             return div()
+                .id(("settings-archived-project", index))
                 .flex()
                 .flex_1()
                 .min_w_0()
-                .items_center()
-                .gap(rpx(SPACE_LG))
-                .px(rpx(SPACE_SM))
+                .items_start()
+                .gap(rpx(SPACE_XL))
+                .px(rpx(SPACE_MD))
                 .py(rpx(SPACE_LG))
                 .text_color(c::FG_DIM())
-                .child(symbol)
+                .tooltip(path_tooltip)
+                .child(leading_glyph)
                 .child(label)
                 .into_any_element();
         }
@@ -282,20 +312,17 @@ impl SettingsPanel {
         )
         .aria_expanded(expanded)
         .flex_1()
+        .items_start()
         .justify_start()
         .w_auto()
         .h_auto()
         .min_w_0()
-        .gap(rpx(SPACE_LG))
-        .px(rpx(SPACE_SM))
+        .gap(rpx(SPACE_XL))
+        .px(rpx(SPACE_MD))
         .py(rpx(SPACE_LG))
         .focus_visible(|style| style.bg(c::BG_HOVER()).text_color(c::FG()))
-        .child(icon(
-            if expanded { "chev-down" } else { "chev-right" },
-            ICON_SM,
-            c::FG_DIM(),
-        ))
-        .child(symbol)
+        .tooltip(path_tooltip)
+        .child(leading_glyph)
         .child(label)
         .on_click(cx.listener(move |this, _, window, cx| {
             this.dismiss_projects_menu(window, cx);
@@ -316,8 +343,12 @@ impl SettingsPanel {
         project: &Project,
         store_index: usize,
         visual_index: usize,
+        compact: bool,
+        window: &Window,
         cx: &mut Context<Self>,
     ) -> Stateful<Div> {
+        let home = dirs::home_dir();
+        let metadata_size = rpx(TEXT_SMALL).to_pixels(window.rem_size());
         let selector = format!("settings-project-worktree-list-{visual_index}");
         let mut list = div()
             .id(format!("settings-worktree-list:{}", project.path))
@@ -325,7 +356,7 @@ impl SettingsPanel {
             .flex()
             .flex_col()
             .min_w_0()
-            .ml(rpx(SPACE_20 + SPACE_2XL + SPACE_LG))
+            .ml(rpx(WORKTREE_INDENT))
             .pl(rpx(SPACE_2XL))
             .border_l_1()
             .border_color(c::BORDER_SOFT());
@@ -353,6 +384,7 @@ impl SettingsPanel {
                     .items_center()
                     .gap(rpx(SPACE_SM))
                     .text_size(rpx(TEXT_SMALL))
+                    .line_height(rpx(PROJECT_META_LINE_H))
                     .text_color(c::FG_DIM())
                     .child(icon("lock", ICON_SM, c::FG_DIM()))
                     .child("Protected")
@@ -366,6 +398,84 @@ impl SettingsPanel {
                 )
                 .into_any_element()
             };
+            let branch_id = format!("settings-worktree-branch-{visual_index}-{row}");
+            let path_id = format!("settings-worktree-path-{visual_index}-{row}");
+            let branch_tooltip = worktree.branch.clone();
+            let path_tooltip = worktree.path.clone();
+            let mut branch_run = window.text_style().to_run(worktree.branch.len());
+            branch_run.font.family = crate::fonts::UI_FAMILY.into();
+            let branch_width = components::truncation_safe_label_width(
+                &worktree.branch,
+                metadata_size,
+                &branch_run,
+                window.text_system(),
+            );
+            let branch = div()
+                .id(format!(
+                    "settings-worktree-branch-tip:{}\0{}",
+                    project.path, worktree.path
+                ))
+                .debug_selector(move || branch_id.clone())
+                .flex()
+                .flex_shrink_0()
+                .min_w_0()
+                .items_center()
+                .gap(rpx(SPACE_SM))
+                .max_w(gpui::relative(if compact { 1.0 } else { 0.5 }))
+                .tooltip(move |window, cx| {
+                    components::tooltip(branch_tooltip.clone(), window).build(window, cx)
+                })
+                .child(
+                    div()
+                        .flex_shrink_0()
+                        .child(icon("git-branch", ICON_SM, c::FG_DIM())),
+                )
+                .child(
+                    div()
+                        .min_w_0()
+                        .w(branch_width)
+                        .truncate()
+                        .font_family(crate::fonts::UI_FAMILY)
+                        .child(worktree.branch),
+                );
+            let path = div()
+                .id(format!(
+                    "settings-worktree-path-tip:{}\0{}",
+                    project.path, worktree.path
+                ))
+                .debug_selector(move || path_id.clone())
+                .min_w_0()
+                .when(compact, gpui::Styled::w_full)
+                .when(!compact, gpui::Styled::flex_1)
+                .tooltip(move |window, cx| {
+                    components::tooltip(path_tooltip.clone(), window).build(window, cx)
+                })
+                .child(
+                    components::readonly_value(
+                        gpui::SharedString::from(format!(
+                            "settings-worktree-path-{}\0{}",
+                            project.path, worktree.path
+                        )),
+                        list_path(&worktree.path, home.as_deref()),
+                    )
+                    .text_size(rpx(TEXT_SMALL))
+                    .line_height(rpx(PROJECT_META_LINE_H))
+                    .text_color(c::FG_DIM())
+                    .truncate(),
+                );
+            let metadata = div()
+                .flex()
+                .items_center()
+                .min_w_0()
+                .text_color(c::FG_DIM())
+                .text_size(rpx(TEXT_SMALL))
+                .line_height(rpx(PROJECT_META_LINE_H))
+                .gap(rpx(SPACE_2XL))
+                .when(compact, |metadata| {
+                    metadata.flex_col().items_start().gap_0()
+                })
+                .child(branch)
+                .child(path);
             list = list.child(
                 div()
                     .flex()
@@ -381,36 +491,15 @@ impl SettingsPanel {
                             .flex_1()
                             .flex_col()
                             .min_w_0()
-                            .gap(rpx(SPACE_XS))
-                            .child(div().truncate().font_weight(FontWeight::MEDIUM).child(name))
                             .child(
                                 div()
-                                    .flex()
-                                    .items_center()
-                                    .gap(rpx(SPACE_SM))
-                                    .min_w_0()
-                                    .text_color(c::FG_DIM())
-                                    .text_size(rpx(TEXT_SMALL))
-                                    .child(div().flex_shrink_0().child(icon(
-                                        "git-branch",
-                                        ICON_SM,
-                                        c::FG_DIM(),
-                                    )))
-                                    .child(
-                                        div().min_w_0().flex_1().truncate().child(worktree.branch),
-                                    ),
+                                    .truncate()
+                                    .text_size(rpx(TEXT_BODY))
+                                    .line_height(rpx(PROJECT_NAME_LINE_H))
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .child(name),
                             )
-                            .child(
-                                components::readonly_value(
-                                    gpui::SharedString::from(format!(
-                                        "settings-worktree-path-{}-{}",
-                                        project.path, worktree.path
-                                    )),
-                                    worktree.path,
-                                )
-                                .text_size(rpx(TEXT_SMALL))
-                                .text_color(c::FG_DIM()),
-                            ),
+                            .child(metadata),
                     )
                     .child(action),
             );
@@ -783,6 +872,20 @@ impl SettingsPanel {
     }
 }
 
+fn list_path(path: &str, home: Option<&Path>) -> String {
+    home.and_then(|home| Path::new(path).strip_prefix(home).ok())
+        .map_or_else(
+            || path.to_owned(),
+            |relative| {
+                if relative.as_os_str().is_empty() {
+                    "~".to_owned()
+                } else {
+                    format!("~{MAIN_SEPARATOR}{}", relative.display())
+                }
+            },
+        )
+}
+
 fn worktree_name(path: &str) -> String {
     Path::new(path)
         .file_name()
@@ -804,7 +907,7 @@ mod tests {
         let workspace = tempfile::tempdir().unwrap();
         let base = workspace.path().canonicalize().unwrap();
         let repo = base.join("One");
-        let linked = base.join("linked");
+        let linked = base.join(format!("linked-{}", "long-directory-".repeat(8)));
         fixture_git_project(&repo, &[("review", &linked)]);
         let repo = repo.to_str().unwrap();
         let linked = linked.to_str().unwrap();
@@ -877,7 +980,13 @@ mod tests {
             .debug_bounds("settings-project-worktree-list-1")
             .is_some());
         assert!(cx.debug_bounds("settings-worktree-menu-0-0").is_none());
+        let wide_branch = cx.debug_bounds("settings-worktree-branch-0-1").unwrap();
+        let wide_path = cx.debug_bounds("settings-worktree-path-0-1").unwrap();
+        assert_eq!(wide_path.center().y, wide_branch.center().y);
+        assert!(wide_branch.right() < wide_path.left());
         let menu_trigger = cx.debug_bounds("settings-worktree-menu-0-1").unwrap();
+        let project_trigger = cx.debug_bounds("settings-project-menu-0").unwrap();
+        assert_eq!(menu_trigger.right(), project_trigger.right());
         cx.simulate_click(menu_trigger.center(), gpui::Modifiers::default());
         draw(cx);
         cx.update(|_, cx| assert!(panel.read(cx).project_menu.is_some()));
@@ -912,6 +1021,11 @@ mod tests {
         cx.update(|_, cx| assert!(panel.read(cx).project_menu.is_some()));
         cx.simulate_resize(gpui::size(gpui::px(560.), gpui::px(720.)));
         draw(cx);
+        let narrow_branch = cx.debug_bounds("settings-worktree-branch-0-1").unwrap();
+        let narrow_path = cx.debug_bounds("settings-worktree-path-0-1").unwrap();
+        assert_eq!(narrow_path.left(), narrow_branch.left());
+        assert!(narrow_path.top() >= narrow_branch.bottom());
+        assert_eq!(narrow_path.size.height, wide_path.size.height);
         cx.update(|window, cx| {
             let panel = panel.read(cx);
             assert!(panel.project_menu.is_none());

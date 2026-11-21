@@ -104,7 +104,7 @@ pub(in crate::views) struct ProjectPanel {
     focus: FocusHandle,
 
     return_focus: Option<FocusHandle>,
-    settings_origin: bool,
+    settings_compact: Option<bool>,
     observers: Vec<Subscription>,
     scroll: gpui::ScrollHandle,
     scripts_anchor: gpui::ScrollAnchor,
@@ -245,7 +245,7 @@ impl ProjectPanel {
             focus: cx.focus_handle(),
 
             return_focus: None,
-            settings_origin: false,
+            settings_compact: None,
             observers,
         };
         if let Page::Remove(path) = &panel.page {
@@ -340,9 +340,23 @@ impl ProjectPanel {
         cx.emit(ProjectPanelEvent::Decision(true));
         cx.notify();
     }
-    pub(in crate::views) fn in_settings(mut self) -> Self {
-        self.settings_origin = true;
+    pub(in crate::views) fn in_settings(mut self, compact: bool) -> Self {
+        self.settings_compact = Some(compact);
         self
+    }
+
+    pub(in crate::views) fn update_settings_layout(
+        &mut self,
+        compact: bool,
+        cx: &mut Context<Self>,
+    ) {
+        if self
+            .settings_compact
+            .is_some_and(|previous| previous != compact)
+        {
+            self.settings_compact = Some(compact);
+            cx.notify();
+        }
     }
 
     pub(super) fn save(&mut self, cx: &mut Context<Self>) {
@@ -1129,18 +1143,35 @@ impl Render for ProjectPanel {
             Page::Archived => "Archived projects",
         };
         let edit_page = matches!(page, Page::Edit(_));
+        let settings_origin = self.settings_compact.is_some();
         let settings_removal =
-            self.settings_origin && matches!(page, Page::Remove(_) | Page::RemoveWorktree { .. });
-        let mut content = div()
-            .w_full()
-            .min_w_0()
-            .flex()
-            .flex_col()
-            .gap(rpx(SPACE_2XL));
+            settings_origin && matches!(page, Page::Remove(_) | Page::RemoveWorktree { .. });
+        let compact = self.settings_compact.unwrap_or_default();
+        let heading_size = if settings_removal {
+            crate::views::settings_panel::settings_page_title_size(compact)
+        } else if edit_page {
+            TEXT_TITLE
+        } else {
+            CONTROL_H
+        };
+        let mut content =
+            div()
+                .w_full()
+                .min_w_0()
+                .flex()
+                .flex_col()
+                .gap(rpx(if settings_removal {
+                    SPACE_LG
+                } else {
+                    SPACE_2XL
+                }));
         let archived_page = matches!(page, Page::Archived) && self.decision.is_none();
         let mut footer = crate::views::components::form_actions()
             .debug_selector(|| "project-panel-actions".into())
-            .max_w(rpx(FORM_CONTENT_MAX_W));
+            .when(!settings_removal, |footer| {
+                footer.max_w(rpx(FORM_CONTENT_MAX_W))
+            })
+            .when(settings_removal && !compact, gpui::Styled::justify_end);
         let mut heading = title.to_owned();
         let mut description: String = match page {
             Page::Edit(_) => {
@@ -2000,6 +2031,7 @@ impl Render for ProjectPanel {
                                     window,
                                     cx,
                                 )
+                                .debug_selector(|| "settings-worktree-removal-cancel".into())
                                 .on_click(cx.listener(|this, _, _, cx| this.close(cx))),
                             )
                             .child(
@@ -2011,6 +2043,7 @@ impl Render for ProjectPanel {
                                     window,
                                     cx,
                                 )
+                                .debug_selector(|| "settings-worktree-removal-confirm".into())
                                 .disabled(self.reviewed_worktree.is_none())
                                 .on_click(cx.listener(
                                     |this, _, window, cx| this.remove_worktree(window, cx),
@@ -2196,36 +2229,45 @@ impl Render for ProjectPanel {
             .bg(c::BG())
             .text_color(c::FG())
             .text_size(rpx(TEXT_BODY))
-            .capture_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
-                if event.keystroke.key == "escape" {
-                    if this.decision.is_some() {
-                        this.cancel_decision(window, cx);
-                    } else {
-                        this.close(cx);
-                    }
-                    cx.stop_propagation();
-                } else if event.keystroke.key == "tab" && !this.settings_origin {
-                    window.prevent_default();
-                    for _ in 0..FOCUS_SCAN_LIMIT {
-                        if event.keystroke.modifiers.shift {
-                            window.focus_prev(cx);
+            .capture_key_down(
+                cx.listener(move |this, event: &gpui::KeyDownEvent, window, cx| {
+                    if event.keystroke.key == "escape" {
+                        if this.decision.is_some() {
+                            this.cancel_decision(window, cx);
                         } else {
-                            window.focus_next(cx);
+                            this.close(cx);
                         }
-                        if this.focus.contains_focused(window, cx) {
-                            break;
+                        cx.stop_propagation();
+                    } else if event.keystroke.key == "tab" && !settings_origin {
+                        window.prevent_default();
+                        for _ in 0..FOCUS_SCAN_LIMIT {
+                            if event.keystroke.modifiers.shift {
+                                window.focus_prev(cx);
+                            } else {
+                                window.focus_next(cx);
+                            }
+                            if this.focus.contains_focused(window, cx) {
+                                break;
+                            }
                         }
+                        cx.stop_propagation();
                     }
-                    cx.stop_propagation();
-                }
-            }))
+                }),
+            )
             .child(
                 crate::views::components::content_header()
                     .h(rpx(FORM_PAGE_PADDING_Y))
                     .px(rpx(SPACE_3XL))
                     .border_b_1()
                     .border_color(c::BORDER_SOFT())
-                    .when(archived_page || self.settings_origin, |header| {
+                    .when(settings_removal, |header| {
+                        header.h_auto().px_0().border_0().pt(rpx(if compact {
+                            SPACE_20
+                        } else {
+                            SPACE_20 + SPACE_LG
+                        }))
+                    })
+                    .when(archived_page || settings_origin, |header| {
                         header.child(
                             crate::views::components::back_action(
                                 "project-panel-back",
@@ -2246,12 +2288,13 @@ impl Render for ProjectPanel {
                 div()
                     .id("project-panel-scroll")
                     .debug_selector(|| "project-panel-scroll".into())
-                    .flex_1()
+                    .when(!settings_removal, gpui::Styled::flex_1)
+                    .when(settings_removal, gpui::Styled::flex_initial)
                     .min_h_0()
                     .overflow_y_scroll()
                     .track_scroll(&self.scroll)
                     .vertical_scrollbar(&self.scroll)
-                    .px(rpx(SPACE_3XL))
+                    .when(!settings_removal, |scroll| scroll.px(rpx(SPACE_3XL)))
                     .flex()
                     .items_start()
                     .justify_center()
@@ -2259,11 +2302,15 @@ impl Render for ProjectPanel {
                         div()
                             .flex_none()
                             .h_auto()
-                            .min_h_full()
                             .w_full()
-                            .max_w(rpx(FORM_CONTENT_MAX_W))
                             .min_w_0()
-                            .py(rpx(FORM_PAGE_PADDING_Y))
+                            .when(!settings_removal, |container| {
+                                container
+                                    .min_h_full()
+                                    .max_w(rpx(FORM_CONTENT_MAX_W))
+                                    .py(rpx(FORM_PAGE_PADDING_Y))
+                            })
+                            .when(settings_removal, |container| container.pt(rpx(SPACE_LG)))
                             .child(
                                 div()
                                     .mb(rpx(if edit_page {
@@ -2273,18 +2320,29 @@ impl Render for ProjectPanel {
                                     }))
                                     .child(
                                         div()
-                                            .text_size(rpx(if edit_page {
-                                                TEXT_TITLE
+                                            .text_size(rpx(heading_size))
+                                            .font_weight(if settings_removal {
+                                                FontWeight::BOLD
                                             } else {
-                                                CONTROL_H
-                                            }))
-                                            .font_weight(FontWeight::SEMIBOLD)
+                                                FontWeight::SEMIBOLD
+                                            })
+                                            .when(settings_removal, |title| {
+                                                title.line_height(rpx(heading_size + SPACE_SM))
+                                            })
                                             .child(heading),
                                     )
                                     .child(
                                         div()
-                                            .mt(rpx(SPACE_LG))
-                                            .text_size(rpx(TEXT_BODY))
+                                            .mt(rpx(if settings_removal {
+                                                SPACE_SM
+                                            } else {
+                                                SPACE_LG
+                                            }))
+                                            .text_size(rpx(if settings_removal {
+                                                TEXT_TITLE
+                                            } else {
+                                                TEXT_BODY
+                                            }))
                                             .text_color(c::FG_DIM())
                                             .child(description),
                                     ),
@@ -2298,10 +2356,16 @@ impl Render for ProjectPanel {
                         .id("project-panel-footer")
                         .debug_selector(|| "project-panel-footer".into())
                         .flex_shrink_0()
-                        .border_t_1()
-                        .border_color(c::BORDER_SOFT())
-                        .px(rpx(SPACE_3XL))
-                        .py(rpx(SPACE_3XL))
+                        .when(!settings_removal, |footer| {
+                            footer
+                                .border_t_1()
+                                .border_color(c::BORDER_SOFT())
+                                .px(rpx(SPACE_3XL))
+                                .py(rpx(SPACE_3XL))
+                        })
+                        .when(settings_removal, |footer| {
+                            footer.pt(rpx(SPACE_20)).pb(rpx(SPACE_3XL))
+                        })
                         .flex()
                         .justify_center()
                         .child(footer),

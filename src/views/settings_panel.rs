@@ -17,7 +17,7 @@ use crate::{
 };
 use gpui::{
     div, prelude::*, App, Context, Entity, EventEmitter, FocusHandle, Focusable, FontWeight,
-    Pixels, ScrollHandle, Subscription, Window,
+    Pixels, ScrollHandle, SharedString, Subscription, Window,
 };
 use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::menu::{PopupMenu, PopupMenuItem};
@@ -30,14 +30,27 @@ use grove_core::{app_theme, theme::ThemeKind};
 use std::{cell::Cell, collections::HashSet, rc::Rc};
 
 const ENVIRONMENT_ACTION_W: f32 = 176.0;
-const CATEGORY_RAIL_W: f32 = 152.0;
-const SETTINGS_W: f32 = CATEGORY_RAIL_W + MODAL_W_XL + 2.0 * SPACE_20;
+const CATEGORY_RAIL_W: f32 = 172.0;
+const SETTINGS_PAGE_W: f32 = MODAL_W_XL + SPACE_2XL;
 const SETTINGS_COMPACT_W: f32 = 620.0;
+const SETTINGS_HEADER_WIDE_H: f32 = 58.0;
+const SETTINGS_HEADER_COMPACT_H: f32 = 50.0;
+const SETTINGS_HEADER_WIDE_INSET: f32 = 38.0;
+const SETTINGS_PAGE_TITLE_WIDE_SIZE: f32 = 26.0;
+const SETTINGS_PAGE_TITLE_COMPACT_SIZE: f32 = 23.0;
 const FOCUS_SCAN_LIMIT: usize = 128;
 const THEME_ROW_H: f32 = 42.0;
 const THEME_KIND_W: f32 = 36.0;
 const THEME_SWATCH_RADIUS: f32 = 2.0;
 const SHORTCUT_KEY_W: f32 = FIELD_LABEL_COL_W + SPACE_20 * 2.0;
+
+pub(super) fn settings_page_title_size(compact: bool) -> f32 {
+    if compact {
+        SETTINGS_PAGE_TITLE_COMPACT_SIZE
+    } else {
+        SETTINGS_PAGE_TITLE_WIDE_SIZE
+    }
+}
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 enum Category {
@@ -360,11 +373,12 @@ impl SettingsPanel {
         cx: &mut Context<Self>,
     ) {
         self.nested_return_focus = window.focused(cx);
+        let compact = self.compact_layout(window);
         let runtime = self.runtime.read(cx);
         let (service, registry) = (runtime.projects.clone(), runtime.registry.clone());
         let panel = cx.new(|cx| {
             super::sidebar::projects::ProjectPanel::new(page, service, registry, window, cx)
-                .in_settings()
+                .in_settings(compact)
         });
         self.archived_subscription =
             Some(
@@ -781,6 +795,7 @@ impl SettingsPanel {
         self.standalone_shortcuts = false;
         self.nested_return_focus = window.focused(cx);
         if page == Page::Archived {
+            let compact = self.compact_layout(window);
             let runtime = self.runtime.read(cx);
             let (service, registry) = (runtime.projects.clone(), runtime.registry.clone());
             let panel = cx.new(|cx| {
@@ -791,7 +806,7 @@ impl SettingsPanel {
                     window,
                     cx,
                 )
-                .in_settings()
+                .in_settings(compact)
             });
             self.archived_subscription =
                 Some(
@@ -1635,7 +1650,7 @@ impl SettingsPanel {
                     .child(
                         div()
                             .text_size(rpx(TEXT_BODY))
-                            .font_weight(FontWeight::MEDIUM)
+                            .font_weight(FontWeight::SEMIBOLD)
                             .text_color(c::FG())
                             .child(label),
                     )
@@ -1649,9 +1664,9 @@ impl SettingsPanel {
             .child(control)
     }
 
-    fn settings_body(&self, window: &Window, cx: &mut Context<Self>) -> gpui::Div {
+    fn settings_body(&self, window: &Window, compact: bool, cx: &mut Context<Self>) -> gpui::Div {
         if self.category == Category::Projects {
-            return self.projects_body(window, cx);
+            return self.projects_body(window, compact, cx);
         }
         let store = &cx.global::<SettingsState>().store;
         let active_theme = grove_core::theme::current();
@@ -1686,6 +1701,7 @@ impl SettingsPanel {
             .child(crate::icons::icon("contrast", ICON_SM, c::FG_DIM()))
             .child(theme_swatches)
             .child(theme_label)
+            .child(crate::icons::icon("chev-right", ICON_XS, c::FG_DIM()))
             .on_click(
                 cx.listener(|this, _, window, cx| this.open_nested(Page::Themes, window, cx)),
             );
@@ -2414,43 +2430,50 @@ impl SettingsPanel {
             .border_color(c::BORDER_SOFT());
         if compact {
             let bounds = self.category_trigger_bounds.clone();
-            return main.w_full().border_b_1().py(rpx(SPACE_LG)).child(
-                self.button(
-                    "settings-category-picker",
-                    format!("Settings category: {}", self.category.label()),
-                    self.category_menu.is_some(),
-                    enabled,
-                )
-                .debug_selector(|| "settings-category-picker".into())
-                .track_focus(&self.category_trigger_focus)
-                .aria_expanded(self.category_menu.is_some())
+            return main
                 .w_full()
-                .h(rpx(CONTROL_H + SPACE_SM))
-                .justify_start()
+                .border_b_1()
+                .px(rpx(SPACE_3XL))
+                .py(rpx(SPACE_XL))
                 .child(
-                    gpui::canvas(move |rect, _, _| bounds.set(rect), |_, (), _, _| {})
-                        .absolute()
-                        .inset_0(),
-                )
-                .child(crate::icons::icon(
-                    self.category.icon(),
-                    ICON_MD,
-                    c::FG_DIM(),
-                ))
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .truncate()
-                        .child(self.category.label()),
-                )
-                .child(crate::icons::icon("chev-down", ICON_SM, c::FG_DIM()))
-                .when(enabled, |trigger| {
-                    trigger.on_click(cx.listener(|this, _, window, cx| {
-                        this.toggle_category_menu(window, cx);
-                    }))
-                }),
-            );
+                    self.button(
+                        "settings-category-picker",
+                        format!("Settings category: {}", self.category.label()),
+                        self.category_menu.is_some(),
+                        enabled,
+                    )
+                    .debug_selector(|| "settings-category-picker".into())
+                    .track_focus(&self.category_trigger_focus)
+                    .aria_expanded(self.category_menu.is_some())
+                    .w_full()
+                    .h(rpx(CONTROL_H + SPACE_2XL))
+                    .justify_start()
+                    .text_size(rpx(TEXT_BODY))
+                    .text_color(if enabled { c::FG() } else { c::FG_DIM() })
+                    .child(
+                        gpui::canvas(move |rect, _, _| bounds.set(rect), |_, (), _, _| {})
+                            .absolute()
+                            .inset_0(),
+                    )
+                    .child(crate::icons::icon(
+                        self.category.icon(),
+                        ICON_MD,
+                        c::FG_DIM(),
+                    ))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .child(self.category.label()),
+                    )
+                    .child(crate::icons::icon("chev-down", ICON_SM, c::FG_DIM()))
+                    .when(enabled, |trigger| {
+                        trigger.on_click(cx.listener(|this, _, window, cx| {
+                            this.toggle_category_menu(window, cx);
+                        }))
+                    }),
+                );
         }
 
         main.w(rpx(CATEGORY_RAIL_W))
@@ -2458,9 +2481,10 @@ impl SettingsPanel {
             .border_r_1()
             .overflow_y_scroll()
             .track_scroll(&self.category_rail_scroll)
-            .pt(rpx(SPACE_3XL))
-            .pr(rpx(SPACE_2XL))
-            .gap(rpx(SPACE_XS))
+            .pt(rpx(SPACE_20 + SPACE_XS))
+            .px(rpx(SPACE_2XL + SPACE_XS))
+            .pb(rpx(SPACE_LG))
+            .gap(rpx(SPACE_SM))
             .children(
                 Category::ALL
                     .into_iter()
@@ -2476,7 +2500,7 @@ impl SettingsPanel {
                             .aria_label(category.label())
                             .aria_selected(selected)
                             .w_full()
-                            .h(rpx(CONTROL_H + SPACE_LG))
+                            .h(rpx(CONTROL_H + SPACE_2XL))
                             .flex_shrink_0()
                             .flex()
                             .items_center()
@@ -2493,7 +2517,11 @@ impl SettingsPanel {
                             })
                             .text_color(if selected { c::FG() } else { c::FG_DIM() })
                             .when(selected, |row| row.bg(c::BG_HOVER()))
-                            .child(crate::icons::icon(category.icon(), ICON_MD, c::FG_DIM()))
+                            .child(crate::icons::icon(
+                                category.icon(),
+                                ICON_MD,
+                                if selected { c::FG() } else { c::FG_DIM() },
+                            ))
                             .child(category.label())
                             .when(enabled, |row| {
                                 row.track_focus(&self.category_rail_focus[index])
@@ -2514,14 +2542,28 @@ impl SettingsPanel {
             )
     }
 
-    fn page_description(&self) -> Option<&'static str> {
-        match self.page {
+    fn page_description(&self, cx: &App) -> Option<SharedString> {
+        if self.page == Page::Settings && self.category == Category::Projects {
+            let workspaces = &cx.global::<SettingsState>().store.workspaces;
+            let workspace = workspaces.name(workspaces.active);
+            return Some(format!("Project registrations in the {workspace} workspace").into());
+        }
+        let description = match self.page {
             Page::Settings => self.category.description(),
             Page::Themes => Some("Theme changes apply to the entire app."),
             Page::Shortcuts => Some("Commands for the current view"),
             Page::Providers => Some("Accounts and version maintenance for your agents"),
             Page::Changelog | Page::Connections | Page::Archived | Page::Project => None,
-        }
+        };
+        description.map(SharedString::from)
+    }
+
+    fn compact_layout(&self, window: &Window) -> bool {
+        let width = self
+            .canvas_width
+            .get()
+            .unwrap_or_else(|| window.viewport_size().width);
+        width < rpx(SETTINGS_COMPACT_W).to_pixels(window.rem_size())
     }
 }
 
@@ -2555,11 +2597,10 @@ impl Render for SettingsPanel {
             self.focus.focus(window, cx);
         }
 
-        let width = self
-            .canvas_width
-            .get()
-            .unwrap_or_else(|| window.viewport_size().width);
-        let compact = width < rpx(SETTINGS_COMPACT_W).to_pixels(window.rem_size());
+        let compact = self.compact_layout(window);
+        if let Some(panel) = &self.archived_panel {
+            panel.update(cx, |panel, cx| panel.update_settings_layout(compact, cx));
+        }
         let observed_width = self.canvas_width.clone();
         let owner = cx.entity().downgrade();
         let measure = gpui::canvas(
@@ -2597,10 +2638,19 @@ impl Render for SettingsPanel {
         let header = components::content_header()
             .id("settings-heading")
             .debug_selector(|| "settings-heading".into())
-            .pb(rpx(SPACE_LG))
+            .h(rpx(if compact {
+                SETTINGS_HEADER_COMPACT_H
+            } else {
+                SETTINGS_HEADER_WIDE_H
+            }))
+            .px(rpx(if compact {
+                SPACE_3XL
+            } else {
+                SETTINGS_HEADER_WIDE_INSET
+            }))
             .border_b_1()
             .border_color(c::BORDER_SOFT())
-            .child(crate::icons::icon("cog", ICON_MD, c::FG_DIM()))
+            .child(crate::icons::icon("cog", ICON_LG, c::FG_DIM()))
             .child(
                 components::content_header_title("Settings")
                     .debug_selector(|| "settings-heading-title".into()),
@@ -2622,10 +2672,10 @@ impl Render for SettingsPanel {
         let page = div()
             .flex()
             .flex_col()
-            .flex_1()
+            .w_full()
+            .max_w(rpx(SETTINGS_PAGE_W))
             .min_w_0()
-            .min_h_0()
-            .when(!compact, |column| column.pl(rpx(SPACE_20)));
+            .min_h_0();
         let page = if matches!(self.page, Page::Archived | Page::Project) {
             page.child(
                 div()
@@ -2642,7 +2692,10 @@ impl Render for SettingsPanel {
             )
         } else {
             let (title, body) = match self.page {
-                Page::Settings => (self.category.label(), self.settings_body(window, cx)),
+                Page::Settings => (
+                    self.category.label(),
+                    self.settings_body(window, compact, cx),
+                ),
                 Page::Shortcuts => ("Shortcuts", self.shortcuts_body(cx)),
                 Page::Changelog => ("Changelog", self.changelog_body(window, cx)),
                 Page::Themes => ("Themes", self.themes_body(cx)),
@@ -2650,9 +2703,24 @@ impl Render for SettingsPanel {
                 Page::Connections => ("Connections", div().child(self.connections.clone())),
                 Page::Archived | Page::Project => unreachable!(),
             };
+            let description = self.page_description(cx);
+            let title_size = settings_page_title_size(compact);
+            let description_gap = if self.page == Page::Settings {
+                if self.category == Category::Projects {
+                    if compact {
+                        SPACE_20
+                    } else {
+                        SPACE_20 + SPACE_LG
+                    }
+                } else {
+                    SPACE_LG
+                }
+            } else {
+                SPACE_3XL
+            };
             page.when(self.page != Page::Settings, |column| {
                 column.child(
-                    div().flex_shrink_0().pt(rpx(SPACE_LG)).child(
+                    div().flex().flex_shrink_0().pt(rpx(SPACE_LG)).child(
                         components::back_action(
                             "settings-back",
                             format!("Back to {}", self.category.label()),
@@ -2704,31 +2772,35 @@ impl Render for SettingsPanel {
                             .min_w_0()
                             .flex()
                             .flex_col()
-                            .pt(rpx(if self.page == Page::Settings {
+                            .pt(rpx(if self.page != Page::Settings {
+                                SPACE_LG
+                            } else if compact {
                                 SPACE_20
                             } else {
-                                SPACE_LG
+                                SPACE_20 + SPACE_LG
                             }))
+                            .pb(rpx(SPACE_20))
                             .child(
                                 div()
                                     .id("settings-page-title")
                                     .debug_selector(|| "settings-page-title".into())
-                                    .text_size(rpx(TEXT_DISPLAY))
-                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .text_size(rpx(title_size))
+                                    .line_height(rpx(title_size + SPACE_SM))
+                                    .font_weight(FontWeight::BOLD)
                                     .text_color(c::FG())
                                     .child(title),
                             )
-                            .when_some(self.page_description(), |body, description| {
+                            .when_some(description, |body, description| {
                                 body.child(
                                     div()
                                         .pt(rpx(SPACE_SM))
-                                        .pb(rpx(SPACE_LG))
-                                        .text_size(rpx(TEXT_BODY))
+                                        .pb(rpx(description_gap))
+                                        .text_size(rpx(TEXT_TITLE))
+                                        .line_height(rpx(TEXT_TITLE + SPACE_MD))
                                         .text_color(c::FG_DIM())
                                         .child(description),
                                 )
                             })
-                            .when(self.page != Page::Settings, |body| body.pb(rpx(SPACE_LG)))
                             .child(body)
                             .when(
                                 self.page == Page::Themes
@@ -2771,10 +2843,6 @@ impl Render for SettingsPanel {
             .relative()
             .flex()
             .flex_col()
-            .items_center()
-            .px(rpx(SPACE_20))
-            .pt(rpx(SPACE_20))
-            .pb(rpx(SPACE_LG))
             .track_focus(&self.focus)
             .capture_key_down(cx.listener(Self::key))
             .child(measure)
@@ -2783,7 +2851,6 @@ impl Render for SettingsPanel {
                     .id("settings-content")
                     .debug_selector(|| "settings-content".into())
                     .w_full()
-                    .max_w(rpx(SETTINGS_W))
                     .h_full()
                     .min_h_0()
                     .min_w_0()
@@ -2800,7 +2867,16 @@ impl Render for SettingsPanel {
                             .when(!self.standalone_shortcuts, |columns| {
                                 columns.child(self.category_navigation(compact, cx))
                             })
-                            .child(page),
+                            .child(
+                                div()
+                                    .flex()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .min_h_0()
+                                    .justify_center()
+                                    .px(rpx(if compact { SPACE_3XL } else { SPACE_20 }))
+                                    .child(page),
+                            ),
                     ),
             )
             .when_some(self.category_menu.clone(), |panel, popup| {
@@ -4320,9 +4396,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn settings_headers_start_at_content_inset_at_zoom_and_short_heights(
-        cx: &mut gpui::TestAppContext,
-    ) {
+    fn settings_header_spans_the_canvas_at_zoom_and_short_heights(cx: &mut gpui::TestAppContext) {
         cx.update(setup);
         let (panel, cx) = cx.add_window_view(|_, cx| {
             let runtime = cx.new(Runtime::new);
@@ -4347,22 +4421,21 @@ mod tests {
                     });
                 });
                 draw(cx);
-                let chrome_bottom = gpui::px(SPACE_20 * zoom);
+                let canvas = cx.debug_bounds("settings-panel").expect("Settings canvas");
                 let heading = cx
                     .debug_bounds("settings-heading")
                     .expect("settings heading");
-                assert!(
-                    heading.top() >= chrome_bottom,
-                    "{page:?} at {zoom}x: heading {heading:?} precedes content inset ending at {chrome_bottom:?}"
-                );
+                assert_eq!(heading.top(), canvas.top());
+                assert_eq!(heading.left(), canvas.left());
+                assert_eq!(heading.right(), canvas.right());
                 for selector in ["settings-close", "settings-back"] {
                     if selector == "settings-back" && page == Page::Settings {
                         continue;
                     }
                     let control = cx.debug_bounds(selector).expect("settings header control");
                     assert!(
-                        control.top() >= chrome_bottom,
-                        "{selector} precedes content inset at {zoom}x"
+                        control.top() > canvas.top(),
+                        "{selector} must stay inset from the canvas top at {zoom}x"
                     );
                     assert!(
                         control.bottom() <= gpui::px(height),
@@ -4422,6 +4495,14 @@ mod tests {
             .expect("compact category navigation");
         assert!(cx.debug_bounds("settings-category-picker").is_some());
         let close = cx.debug_bounds("settings-close").expect("close");
+        assert_eq!(picker.left(), heading.left());
+        assert_eq!(picker.right(), heading.right());
+        let picker_control = cx
+            .debug_bounds("settings-category-picker")
+            .expect("compact category picker");
+        let body = cx.debug_bounds("settings-body").expect("body");
+        assert_eq!(picker_control.left(), body.left());
+        assert_eq!(picker_control.right(), body.right());
         assert_eq!(picker.bottom(), scroll.top());
         assert!(scroll.bottom() <= gpui::px(200.));
         assert!(close.top() >= heading.top() && close.bottom() <= heading.bottom());
@@ -4460,7 +4541,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn desktop_settings_centers_the_category_rail_and_body(cx: &mut gpui::TestAppContext) {
+    fn desktop_settings_anchors_the_rail_and_centers_the_body(cx: &mut gpui::TestAppContext) {
         cx.update(setup);
         let (panel, cx) = cx.add_window_view(|_, cx| {
             let runtime = cx.new(Runtime::new);
@@ -4482,14 +4563,18 @@ mod tests {
         let agents = cx
             .debug_bounds("settings-category-Agents")
             .expect("Agents category");
-        assert_eq!(content.size.width, gpui::px(SETTINGS_W));
-        assert_eq!(content.center().x, gpui::px(640.));
+        assert_eq!(content.size.width, gpui::px(1280.));
         assert_eq!(heading.left(), rail.left());
+        assert_eq!(heading.right(), content.right());
         assert_eq!(rail.size.width, gpui::px(CATEGORY_RAIL_W));
-        assert!(rail.right() < body.left());
+        assert_eq!(heading.bottom(), rail.top());
+        assert_eq!(rail.bottom(), content.bottom());
+        assert_eq!(body.size.width, gpui::px(SETTINGS_PAGE_W));
+        assert_eq!(body.left() - rail.right(), heading.right() - body.right());
         assert_eq!(general.left(), agents.left());
+        assert!(general.left() > rail.left());
+        assert!(general.right() < rail.right());
         assert!(general.bottom() < agents.top());
-        assert_eq!(body.right(), heading.right());
     }
 
     #[gpui::test]
