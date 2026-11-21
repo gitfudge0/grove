@@ -273,6 +273,7 @@ fn svg_for(name: &str) -> String {
             r#"<circle cx="8" cy="8" r="6"/><path d="M6 6a2 2 0 1 1 3 1.73C8 8.3 8 8.5 8 9M8 11h.01"/>"#
         }
         "check" => r#"<path d="M3 8l4 4 6-7"/>"#,
+        "send" => r#"<path d="m2 7 12-5-5 12-2-5-5-2zm5 2 7-7"/>"#,
         "play" => r#"<path d="M4.5 3.5l8 4.5-8 4.5z"/>"#,
         "chev-down" => r#"<path d="M4 6l4 4 4-4"/>"#,
         "chev-up" => r#"<path d="M4 10l4-4 4 4"/>"#,
@@ -521,6 +522,7 @@ mod tests {
             "git-pull-request",
             "no-git",
             "play",
+            "send",
             "term",
             "terminal",
             "more",

@@ -24,6 +24,7 @@ const STAT_COL_W: f32 = 48.;
 const AGENT_STATUS_W: f32 = ICON_MD;
 const AGENT_LINE_H: f32 = 18.;
 const SCRIPT_VISIBLE_ROWS: usize = 5;
+const SCRIPT_DETAILS_MAX_H: f32 = 160.;
 /// Top-level action and supporting copy starts after the leading icon slot.
 const CHECKOUT_LABEL_INSET: f32 = SPACE_2XL + ICON_LG + SPACE_SM;
 
@@ -110,9 +111,13 @@ pub(super) struct CheckoutPanel {
     pub(super) agent_focus: HashMap<String, FocusHandle>,
     pub(super) agent_bounds:
         HashMap<String, std::rc::Rc<std::cell::Cell<gpui::Bounds<gpui::Pixels>>>>,
-    script_context_scroll: HashMap<String, ScrollHandle>,
-    script_run_bounds: HashMap<String, std::rc::Rc<std::cell::Cell<gpui::Bounds<gpui::Pixels>>>>,
-    script_run_focus: HashMap<String, FocusHandle>,
+    script_row_focus: HashMap<(String, String), (FocusHandle, gpui::Subscription)>,
+    script_details_focus: HashMap<(String, String), FocusHandle>,
+    script_run_focus: HashMap<(String, String), FocusHandle>,
+    script_details_scroll: HashMap<(String, String), ScrollHandle>,
+    script_name_bounds:
+        HashMap<(String, String), std::rc::Rc<std::cell::Cell<gpui::Bounds<gpui::Pixels>>>>,
+    open_script_preview: Option<(String, String)>,
     scripts_show_all: std::collections::HashSet<String>,
     path: Option<String>,
     state: Option<Result<CheckoutGitState, String>>,
@@ -246,6 +251,7 @@ impl CheckoutPanel {
             .as_ref()
             .and_then(|path| self.operations.remove(path))
             .unwrap_or_default();
+        self.open_script_preview = None;
         self.path = path;
     }
 
@@ -1003,221 +1009,14 @@ impl Sidebar {
                         )),
                     ),
             );
-        for entry in entries.iter().take(if show_all {
-            usize::MAX
-        } else {
-            SCRIPT_VISIBLE_ROWS
-        }) {
-            let (command, prompt) = match &entry.kind {
-                ProjectActionKind::Shell { command } => (command, false),
-                ProjectActionKind::Prompt { template } => (template, true),
-            };
+        let mut hidden_count = 0;
+        for (index, entry) in entries.iter().enumerate() {
+            let key = (path.to_owned(), entry.id.clone());
             let script_feedback = self
                 .checkout_panel
                 .feedback
                 .get(path, &format!("script-{}", entry.id));
-            let context = format!("{}\n{}", entry.name, command);
-            let project_path = project.path.clone();
-            let target = path.to_owned();
-            let entry_id = entry.id.clone();
-            let focus_key = format!("{}:{}", project.path, entry.id);
-            if !self
-                .checkout_panel
-                .script_run_focus
-                .contains_key(&focus_key)
-            {
-                let focus = cx.focus_handle();
-                self.observers
-                    .push(cx.on_focus_in(&focus, window, |_, _, cx| cx.notify()));
-                self.observers
-                    .push(cx.on_focus_out(&focus, window, |_, _, _, cx| cx.notify()));
-                self.checkout_panel
-                    .script_run_focus
-                    .insert(focus_key.clone(), focus);
-            }
-            let focus = self.checkout_panel.script_run_focus[&focus_key].clone();
-            let focused = focus.is_focused(window);
-            let context_scroll = self
-                .checkout_panel
-                .script_context_scroll
-                .entry(focus_key.clone())
-                .or_default()
-                .clone();
-            let bounds = self
-                .checkout_panel
-                .script_run_bounds
-                .entry(focus_key)
-                .or_default()
-                .clone();
-            let context_position = bounds.get().bottom_right();
-            let selector = format!("checkout-script-{}", entry.id);
-            section = section.child(
-                crate::views::components::checkout_register_frame()
-                    .id(SharedString::from(selector.clone()))
-                    .debug_selector(move || selector.clone())
-                    .relative()
-                    .child(
-                        gpui::canvas(move |rect, _, _| bounds.set(rect), |_, (), _, _| {})
-                            .absolute()
-                            .inset_0(),
-                    )
-                    .on_key_down({
-                        let scroll = context_scroll.clone();
-                        move |event: &gpui::KeyDownEvent, window, cx| {
-                            if focused {
-                                let direction = match event.keystroke.key.as_str() {
-                                    "pagedown" => -1.,
-                                    "pageup" => 1.,
-                                    _ => return,
-                                };
-                                let mut offset = scroll.offset();
-                                offset.y += scroll.bounds().size.height * 0.8 * direction;
-                                scroll.set_offset(offset);
-                                window.refresh();
-                                cx.stop_propagation();
-                            }
-                        }
-                    })
-                    .child(
-                        crate::views::components::checkout_register_leading().child(icon(
-                            if prompt { "reply" } else { "terminal" },
-                            ICON_SM,
-                            c::FG_DIM(),
-                        )),
-                    )
-                    .child(
-                        crate::views::components::checkout_register_label()
-                            .when_some(script_feedback.as_ref(), |label, feedback| {
-                                label.text_color(if feedback.completed.is_some() {
-                                    c::STATUS_SUCCESS()
-                                } else {
-                                    c::STATUS_INFO()
-                                })
-                            })
-                            .id(SharedString::from(format!(
-                                "checkout-script-name-{}",
-                                entry.id
-                            )))
-                            .debug_selector({
-                                let id = entry.id.clone();
-                                move || format!("checkout-script-name-{id}")
-                            })
-                            .child(script_feedback.as_ref().map_or_else(
-                                || entry.name.clone(),
-                                |feedback| format!("{} · {}", entry.name, feedback.label),
-                            ))
-                            .tooltip({
-                                let context = context.clone();
-                                move |window, cx| {
-                                    script_tooltip_content(context.clone().into(), window)
-                                        .build(window, cx)
-                                }
-                            }),
-                    )
-                    .child(script_control_tooltip(
-                        SharedString::from(format!("checkout-script-run-tooltip-{}", entry.id)),
-                        format!(
-                            "{context}\n{}",
-                            if prompt {
-                                "Send to the current chat."
-                            } else {
-                                "Run inline in this checkout."
-                            }
-                        ),
-                        checkout_action(
-                            SharedString::from(format!("checkout-script-run-{}", entry.id)),
-                            format!(
-                                "{} {}: {}",
-                                if prompt { "Send prompt" } else { "Run script" },
-                                entry.name,
-                                command
-                            ),
-                            false,
-                            window,
-                            cx,
-                        )
-                        .debug_selector({
-                            let id = entry.id.clone();
-                            move || format!("checkout-script-run-{id}")
-                        })
-                        .icon_only()
-                        .w(rpx(CONTROL_H))
-                        .h(rpx(CONTROL_H))
-                        .rounded(rpx(RADIUS_CONTROL).to_pixels(window.rem_size()))
-                        .flex_shrink_0()
-                        .with_focus_handle(focus)
-                        .disabled(script_feedback.is_some())
-                        .child(if let Some(feedback) = &script_feedback {
-                            super::action_feedback::mark(
-                                format!("script-{}", entry.id),
-                                feedback,
-                                ICON_SM,
-                                cx,
-                            )
-                        } else {
-                            icon("play", ICON_SM, c::FG_DIM()).into_any_element()
-                        })
-                        .on_click(cx.listener(
-                            move |this, _, window, cx| {
-                                this.act(
-                                    Action::RunNamedScript(
-                                        project_path.clone(),
-                                        target.clone(),
-                                        entry_id.clone(),
-                                    ),
-                                    window,
-                                    cx,
-                                );
-                            },
-                        )),
-                    ))
-                    .when(focused, |row| {
-                        let margin = rpx(SPACE_LG).to_pixels(window.rem_size());
-                        let max_width = window.viewport_size().width - margin * 2.;
-                        let max_height = window.viewport_size().height - margin * 2.;
-                        row.child(gpui::deferred(
-                            gpui::anchored()
-                                .position_mode(gpui::AnchoredPositionMode::Window)
-                                .anchor(gpui::Anchor::TopRight)
-                                .position(context_position)
-                                .snap_to_window_with_margin(margin)
-                                .child(
-                                    div()
-                                        .id("checkout-script-focus-context")
-                                        .debug_selector(|| "checkout-script-focus-context".into())
-                                        .max_w(max_width)
-                                        .max_h(max_height)
-                                        .overflow_y_scroll()
-                                        .track_scroll(&context_scroll)
-                                        .child(cx.new(|_| {
-                                            script_tooltip_content(
-                                                format!(
-                                                    "{}\nPage Up/Down scroll command details.\n{}",
-                                                    entry.name, command
-                                                )
-                                                .into(),
-                                                window,
-                                            )
-                                            .max_w(max_width)
-                                        })),
-                                ),
-                        ))
-                    }),
-            );
-            if let Some(error) = self
-                .checkout_panel
-                .script_errors
-                .get(&(path.to_owned(), entry.id.clone()))
-            {
-                section = section.child(
-                    div()
-                        .px(rpx(SPACE_2XL))
-                        .text_size(rpx(TEXT_SMALL))
-                        .text_color(c::STATUS_ERROR())
-                        .whitespace_normal()
-                        .child(error.clone()),
-                );
-            }
+            let error = self.checkout_panel.script_errors.get(&key).cloned();
             let runs = self
                 .runtime
                 .read(cx)
@@ -1230,9 +1029,343 @@ impl Sidebar {
                 })
                 .cloned()
                 .collect::<Vec<_>>();
-            for run in runs {
-                section = section.child(self.script_run_row(run, cx));
+            let retain_run = runs.iter().any(|run| {
+                let terminal = run.terminal.read(cx);
+                !terminal.has_exited()
+                    || terminal.exit_code() != Some(0)
+                    || self
+                        .checkout_panel
+                        .script_peek
+                        .as_ref()
+                        .is_some_and(|peek| peek.id == run.id)
+                    || self
+                        .checkout_panel
+                        .feedback
+                        .get(path, &format!("run-{}", run.id))
+                        .is_some()
+            });
+            let has_focus = self
+                .checkout_panel
+                .script_row_focus
+                .get(&key)
+                .is_some_and(|(focus, _)| focus.contains_focused(window, cx));
+            let open = self.checkout_panel.open_script_preview.as_ref() == Some(&key);
+            if index >= SCRIPT_VISIBLE_ROWS
+                && !retain_run
+                && script_feedback.is_none()
+                && error.is_none()
+                && !has_focus
+                && !open
+            {
+                hidden_count += 1;
+                if !show_all {
+                    continue;
+                }
             }
+            let (command, prompt) = match &entry.kind {
+                ProjectActionKind::Shell { command } => (command, false),
+                ProjectActionKind::Prompt { template } => (template, true),
+            };
+            let (row_focus, _) = self
+                .checkout_panel
+                .script_row_focus
+                .entry(key.clone())
+                .or_insert_with(|| {
+                    let focus = cx.focus_handle();
+                    let row_key = key.clone();
+                    let observer = cx.on_focus_out(&focus, window, move |this, _, _, cx| {
+                        if this.checkout_panel.open_script_preview.as_ref() == Some(&row_key) {
+                            this.checkout_panel.open_script_preview = None;
+                        }
+                        cx.notify();
+                    });
+                    (focus, observer)
+                });
+            let row_focus = row_focus.clone();
+            let details_focus = self
+                .checkout_panel
+                .script_details_focus
+                .entry(key.clone())
+                .or_insert_with(|| cx.focus_handle())
+                .clone();
+            let details_scroll = self
+                .checkout_panel
+                .script_details_scroll
+                .entry(key.clone())
+                .or_default()
+                .clone();
+            let keyboard_scroll = details_scroll.clone();
+            let run_focus = self
+                .checkout_panel
+                .script_run_focus
+                .entry(key.clone())
+                .or_insert_with(|| cx.focus_handle())
+                .clone();
+            let keyboard_run = run_focus.clone();
+            let run_enabled = script_feedback.is_none();
+            let name_bounds = self
+                .checkout_panel
+                .script_name_bounds
+                .entry(key.clone())
+                .or_default()
+                .clone();
+            let anchor = name_bounds.get().origin;
+            let preview_key = key.clone();
+            let preview_focus = details_focus.clone();
+            let escape_focus = details_focus.clone();
+            let show_preview =
+                move |this: &mut Self, window: &mut Window, cx: &mut Context<Self>| {
+                    this.checkout_panel.open_script_preview = Some(preview_key.clone());
+                    preview_focus.focus(window, cx);
+                    cx.notify();
+                };
+            let click_preview = show_preview.clone();
+            let project_path = project.path.clone();
+            let target = path.to_owned();
+            let entry_id = entry.id.clone();
+            let dispatch = move |this: &mut Self, window: &mut Window, cx: &mut Context<Self>| {
+                this.act(
+                    Action::RunNamedScript(project_path.clone(), target.clone(), entry_id.clone()),
+                    window,
+                    cx,
+                );
+            };
+            let click_run = dispatch.clone();
+            let dismiss_key = key.clone();
+            let selector = format!("checkout-script-{}", entry.id);
+            let mut item = div()
+                .id(SharedString::from(format!(
+                    "checkout-script-item-{}",
+                    entry.id
+                )))
+                .track_focus(&row_focus)
+                .on_key_down(
+                    cx.listener(move |this, event: &gpui::KeyDownEvent, window, cx| {
+                        match event.keystroke.key.as_str() {
+                            "escape"
+                                if this.checkout_panel.open_script_preview.as_ref()
+                                    == Some(&key) =>
+                            {
+                                this.checkout_panel.open_script_preview = None;
+                                escape_focus.focus(window, cx);
+                                cx.notify();
+                            }
+                            "enter" | "space"
+                                if !event.is_held && escape_focus.is_focused(window) =>
+                            {
+                                show_preview(this, window, cx);
+                            }
+                            "enter" | "space"
+                                if !event.is_held
+                                    && run_enabled
+                                    && keyboard_run.is_focused(window) =>
+                            {
+                                dispatch(this, window, cx);
+                            }
+                            "pageup" | "pagedown" if open && escape_focus.is_focused(window) => {
+                                let direction = if event.keystroke.key == "pageup" {
+                                    1.
+                                } else {
+                                    -1.
+                                };
+                                let mut offset = keyboard_scroll.offset();
+                                offset.y += keyboard_scroll.bounds().size.height * 0.8 * direction;
+                                keyboard_scroll.set_offset(offset);
+                                window.refresh();
+                            }
+                            _ => return,
+                        }
+                        cx.stop_propagation();
+                    }),
+                )
+                .child(
+                    crate::views::components::checkout_register_frame()
+                        .id(SharedString::from(selector.clone()))
+                        .debug_selector(move || selector.clone())
+                        .child(
+                            crate::views::components::focusable_inline_disclosure(
+                                SharedString::from(format!("checkout-script-preview-{}", entry.id)),
+                                format!(
+                                    "Preview {}: {}",
+                                    if prompt { "prompt" } else { "command" },
+                                    entry.name
+                                ),
+                            )
+                            .flex_1()
+                            .min_w_0()
+                            .w_auto()
+                            .h(rpx(CONTROL_H))
+                            .justify_start()
+                            .gap(rpx(SPACE_SM))
+                            .relative()
+                            .track_focus(&details_focus)
+                            .aria_expanded(open)
+                            .focus_visible(|style| style.bg(c::BG_HOVER()))
+                            .child(
+                                gpui::canvas(
+                                    move |bounds, _, _| name_bounds.set(bounds),
+                                    |_, (), _, _| {},
+                                )
+                                .absolute()
+                                .inset_0(),
+                            )
+                            .child(crate::views::components::checkout_register_leading().child(
+                                icon(
+                                    if prompt { "message-circle" } else { "terminal" },
+                                    ICON_SM,
+                                    c::FG_DIM(),
+                                ),
+                            ))
+                            .child(
+                                crate::views::components::checkout_register_label()
+                                    .id(SharedString::from(format!(
+                                        "checkout-script-name-{}",
+                                        entry.id
+                                    )))
+                                    .debug_selector({
+                                        let id = entry.id.clone();
+                                        move || format!("checkout-script-name-{id}")
+                                    })
+                                    .child(entry.name.clone()),
+                            )
+                            .on_click(cx.listener(
+                                move |this, _, window, cx| {
+                                    click_preview(this, window, cx);
+                                },
+                            )),
+                        )
+                        .child(script_control_tooltip(
+                            SharedString::from(format!("checkout-script-run-tooltip-{}", entry.id)),
+                            if prompt {
+                                "Send to the current chat"
+                            } else {
+                                "Run in this checkout"
+                            },
+                            checkout_action(
+                                SharedString::from(format!("checkout-script-run-{}", entry.id)),
+                                format!(
+                                    "{} {}",
+                                    if prompt { "Send prompt" } else { "Run script" },
+                                    entry.name
+                                ),
+                                false,
+                                window,
+                                cx,
+                            )
+                            .debug_selector({
+                                let id = entry.id.clone();
+                                move || format!("checkout-script-run-{id}")
+                            })
+                            .icon_only()
+                            .w(rpx(CONTROL_H))
+                            .h(rpx(CONTROL_H))
+                            .rounded(rpx(RADIUS_CONTROL).to_pixels(window.rem_size()))
+                            .flex_shrink_0()
+                            .with_focus_handle(run_focus)
+                            .disabled(!run_enabled)
+                            .child(if let Some(feedback) = &script_feedback {
+                                super::action_feedback::mark(
+                                    format!("script-{}", entry.id),
+                                    feedback,
+                                    ICON_SM,
+                                    cx,
+                                )
+                            } else {
+                                icon(if prompt { "send" } else { "play" }, ICON_MD, c::FG_DIM())
+                                    .into_any_element()
+                            })
+                            .on_click(cx.listener(
+                                move |this, _, window, cx| {
+                                    click_run(this, window, cx);
+                                },
+                            )),
+                        )),
+                );
+            if open {
+                let margin = rpx(SPACE_LG).to_pixels(window.rem_size());
+                let width = rpx(CARD_WIDTH)
+                    .to_pixels(window.rem_size())
+                    .min(window.viewport_size().width - margin * 2.)
+                    .max(gpui::px(1.));
+                let max_height = rpx(SCRIPT_DETAILS_MAX_H)
+                    .to_pixels(window.rem_size())
+                    .min(window.viewport_size().height - margin * 2.)
+                    .max(gpui::px(1.));
+                item = item.child(gpui::deferred(
+                    gpui::anchored()
+                        .position_mode(gpui::AnchoredPositionMode::Window)
+                        .anchor(gpui::Anchor::TopRight)
+                        .position(gpui::point(anchor.x - margin, anchor.y))
+                        .snap_to_window_with_margin(margin)
+                        .child(
+                            project_field_well(false, false)
+                                .id("checkout-script-preview")
+                                .debug_selector(|| "checkout-script-details-text".into())
+                                .w(width)
+                                .h_auto()
+                                .px_0()
+                                .max_h(max_height)
+                                .on_mouse_down_out(cx.listener(move |this, _, _, cx| {
+                                    if this.checkout_panel.open_script_preview.as_ref()
+                                        == Some(&dismiss_key)
+                                    {
+                                        this.checkout_panel.open_script_preview = None;
+                                        cx.notify();
+                                    }
+                                }))
+                                .child(
+                                    div()
+                                        .id("scroll")
+                                        .overflow_y_scroll()
+                                        .track_scroll(&details_scroll)
+                                        .px(rpx(SPACE_SM))
+                                        .py(rpx(SPACE_SM))
+                                        .text_size(rpx(TEXT_SMALL))
+                                        .child(
+                                            div()
+                                                .font_weight(gpui::FontWeight::MEDIUM)
+                                                .child(entry.name.clone()),
+                                        )
+                                        .child(
+                                            div()
+                                                .whitespace_normal()
+                                                .when(!prompt, |text| {
+                                                    text.font_family(crate::fonts::MONO_FAMILY)
+                                                })
+                                                .child(command.clone()),
+                                        ),
+                                ),
+                        ),
+                ));
+            }
+            if let Some(feedback) = script_feedback.filter(|_| prompt) {
+                item = item.child(
+                    div()
+                        .pl(rpx(CHECKOUT_LABEL_INSET))
+                        .pr(rpx(SPACE_2XL))
+                        .text_size(rpx(TEXT_SMALL))
+                        .text_color(if feedback.completed.is_some() {
+                            c::STATUS_SUCCESS()
+                        } else {
+                            c::STATUS_INFO()
+                        })
+                        .child(feedback.label),
+                );
+            }
+            if let Some(error) = error {
+                item = item.child(
+                    div()
+                        .px(rpx(SPACE_2XL))
+                        .text_size(rpx(TEXT_SMALL))
+                        .text_color(c::STATUS_ERROR())
+                        .whitespace_normal()
+                        .child(error),
+                );
+            }
+            for run in runs {
+                item = item.child(self.script_run_row(run, cx));
+            }
+            section = section.child(item);
         }
         if entries.is_empty() {
             section = section.child(
@@ -1241,23 +1374,27 @@ impl Sidebar {
                     .py(rpx(SPACE_LG))
                     .text_size(rpx(TEXT_SMALL))
                     .text_color(c::FG_DIM())
-                    .child("No scripts yet. Add a shell command or prompt."),
+                    .child("No scripts yet"),
             );
-        } else if entries.len() > SCRIPT_VISIBLE_ROWS {
+        } else if show_all || hidden_count > 0 {
             let project_path = project.path.clone();
+            let label = if show_all {
+                "Show fewer".to_owned()
+            } else if hidden_count == 1 {
+                "Show 1 more script".to_owned()
+            } else {
+                format!("Show {hidden_count} more scripts")
+            };
             section = section.child(
                 checkout_action(
                     "checkout-scripts-disclosure",
-                    if show_all {
-                        "Show fewer".to_owned()
-                    } else {
-                        format!("Show all {} scripts", entries.len())
-                    },
+                    label.clone(),
                     false,
                     window,
                     cx,
                 )
                 .debug_selector(|| "checkout-scripts-disclosure".into())
+                .aria_expanded(show_all)
                 .icon_only()
                 .w_full()
                 .px(rpx(SPACE_2XL))
@@ -1281,11 +1418,7 @@ impl Sidebar {
                                 .flex_1()
                                 .min_w_0()
                                 .truncate()
-                                .child(if show_all {
-                                    "Show fewer".to_owned()
-                                } else {
-                                    format!("Show all {} scripts", entries.len())
-                                }),
+                                .child(label),
                         ),
                 )
                 .on_click(cx.listener(move |this, _, _, cx| {
@@ -3870,10 +4003,6 @@ impl Sidebar {
                                 .text_color(c::FG_DIM())
                                 .child("Choose a checkout to view and run scripts."),
                         )
-                        .child(
-                            checkout_row("checkout-script", "Add script", "plus", window, cx)
-                                .disabled(true),
-                        )
                         .into_any_element(),
                 );
             }
@@ -5366,51 +5495,57 @@ mod tests {
                 if let Some(panel) = &sidebar.project_panel {
                     div().size_full().child(panel.clone()).into_any_element()
                 } else {
-                    project_field_well(false, false)
-                        .w_full()
-                        .h_auto()
-                        .px_0()
-                        .py(rpx(SPACE_SM))
-                        .child(checkout_row(
-                            "checkout-finder",
-                            "Open in Finder",
-                            "folder",
-                            window,
-                            cx,
-                        ))
-                        .child(checkout_divider("checkout-scripts-divider"))
-                        .child(sidebar.render_checkout_scripts(
-                            &self.1,
-                            "/tmp/selected-checkout",
-                            window,
-                            cx,
-                        ))
-                        .child(checkout_divider("checkout-divider"))
-                        .child(checkout_git_heading())
-                        .child(checkout_row(
-                            "checkout-pr",
-                            "main",
-                            "git-branch",
-                            window,
-                            cx,
-                        ))
+                    div()
+                        .id("scripts-fixture-scroll")
+                        .size_full()
+                        .overflow_y_scroll()
                         .child(
-                            checkout_row(
-                                "checkout-commit-publish",
-                                "No local commits",
-                                "git",
-                                window,
-                                cx,
-                            )
-                            .disabled(true),
+                            project_field_well(false, false)
+                                .w_full()
+                                .h_auto()
+                                .px_0()
+                                .py(rpx(SPACE_SM))
+                                .child(checkout_row(
+                                    "checkout-finder",
+                                    "Open in Finder",
+                                    "folder",
+                                    window,
+                                    cx,
+                                ))
+                                .child(checkout_divider("checkout-scripts-divider"))
+                                .child(sidebar.render_checkout_scripts(
+                                    &self.1,
+                                    &self.1.path,
+                                    window,
+                                    cx,
+                                ))
+                                .child(checkout_divider("checkout-divider"))
+                                .child(checkout_git_heading())
+                                .child(checkout_row(
+                                    "checkout-pr",
+                                    "main",
+                                    "git-branch",
+                                    window,
+                                    cx,
+                                ))
+                                .child(
+                                    checkout_row(
+                                        "checkout-commit-publish",
+                                        "No local commits",
+                                        "git",
+                                        window,
+                                        cx,
+                                    )
+                                    .disabled(true),
+                                )
+                                .child(checkout_row(
+                                    "checkout-changes",
+                                    "Changes",
+                                    "unified",
+                                    window,
+                                    cx,
+                                )),
                         )
-                        .child(checkout_row(
-                            "checkout-changes",
-                            "Changes",
-                            "unified",
-                            window,
-                            cx,
-                        ))
                         .into_any_element()
                 }
             })
@@ -5483,57 +5618,55 @@ mod tests {
         assert!(run.left() > row.left() && run.right() <= row.right());
         assert!(cx.debug_bounds("checkout-script-add").is_some());
         assert!(cx.debug_bounds("checkout-script-manage").is_some());
+        let name = cx.debug_bounds("checkout-script-name-shell-4").unwrap();
+        let run = cx.debug_bounds("checkout-script-run-shell-4").unwrap();
+        assert!(name.right() <= run.left());
         cx.update(|window, cx| {
             sidebar.update(cx, |sidebar, cx| {
-                sidebar.checkout_panel.script_run_focus[&format!("{}:shell-0", project.path)]
+                sidebar.checkout_panel.script_details_focus
+                    [&(project.path.clone(), "shell-4".into())]
                     .focus(window, cx);
             });
         });
+        cx.simulate_keystrokes("enter");
         cx.run_until_parked();
         cx.update(|window, cx| {
             let _ = window.draw(cx);
         });
-        assert!(cx.debug_bounds("checkout-script-focus-context").is_some());
-        cx.simulate_resize(gpui::size(gpui::px(220.), gpui::px(220.)));
-        cx.update(|window, cx| {
-            sidebar.update(cx, |sidebar, cx| {
-                sidebar.checkout_panel.script_run_focus[&format!("{}:shell-4", project.path)]
-                    .focus(window, cx);
-            });
+        let context = cx.debug_bounds("checkout-script-details-text").unwrap();
+        assert!(context.left() >= gpui::px(0.) && context.right() <= gpui::px(240.));
+        assert!(context.size.height > gpui::px(100.));
+        let open_run = cx.debug_bounds("checkout-script-run-shell-4").unwrap();
+        assert_eq!(open_run, run, "the floating preview does not move the row");
+        sidebar.read_with(cx, |sidebar, cx| {
+            assert!(sidebar.runtime.read(cx).script_runs.is_empty());
         });
-        cx.run_until_parked();
-        cx.update(|window, cx| {
-            let _ = window.draw(cx);
-        });
-        let context = cx.debug_bounds("checkout-script-focus-context").unwrap();
-        assert!(context.left() >= gpui::px(0.) && context.right() <= gpui::px(220.));
-        assert!(
-            context.top() >= gpui::px(0.) && context.bottom() <= gpui::px(220.),
-            "keyboard context stays within viewport: {context:?}"
-        );
-        let text = cx.debug_bounds("checkout-script-context-text").unwrap();
-        assert!(
-            text.left() >= context.left() && text.right() <= context.right(),
-            "literal command text stays within the context viewport: {text:?} in {context:?}"
-        );
         cx.simulate_keystrokes("pagedown");
         cx.run_until_parked();
         cx.update(|window, cx| {
             let _ = window.draw(cx);
+            sidebar.update(cx, |sidebar, _| {
+                assert!(
+                    sidebar.checkout_panel.script_details_scroll
+                        [&(project.path.clone(), "shell-4".into())]
+                        .offset()
+                        .y
+                        < gpui::px(0.),
+                    "Page Down reveals later lines without moving focus"
+                );
+            });
         });
-        sidebar.read_with(cx, |sidebar, _| {
-            assert!(
-                sidebar.checkout_panel.script_context_scroll[&format!("{}:shell-4", project.path)]
-                    .offset()
-                    .y
-                    < gpui::px(0.),
-                "Page Down reveals later command lines"
-            );
-        });
+        cx.simulate_keystrokes("escape");
+        cx.run_until_parked();
         cx.update(|window, cx| {
-            window.blur();
-            sidebar.update(cx, |_, cx| cx.notify());
+            let _ = window.draw(cx);
+            sidebar.update(cx, |sidebar, _| {
+                assert!(sidebar.checkout_panel.script_details_focus
+                    [&(project.path.clone(), "shell-4".into())]
+                    .is_focused(window));
+            });
         });
+        assert!(cx.debug_bounds("checkout-script-details-text").is_none());
         cx.simulate_resize(gpui::size(gpui::px(240.), gpui::px(800.)));
         cx.run_until_parked();
         cx.update(|window, cx| {
@@ -5573,6 +5706,7 @@ mod tests {
             let _ = window.draw(cx);
         });
         assert!(cx.debug_bounds("checkout-script-shell-5").is_none());
+        assert!(cx.debug_bounds("checkout-script-prompt-only").is_some());
         let manage = cx.debug_bounds("checkout-script-manage").unwrap();
         cx.simulate_click(manage.center(), gpui::Modifiers::default());
         cx.run_until_parked();
@@ -5725,12 +5859,12 @@ mod tests {
             if focus {
                 cx.update_window(window.into(), |_, window, cx| {
                     owner.borrow().as_ref().unwrap().update(cx, |sidebar, cx| {
-                        sidebar.checkout_panel.script_run_focus[&format!(
-                            "{}:shell-{}",
-                            project.path,
-                            if label == "bottom-context" { 4 } else { 0 }
-                        )]
-                            .focus(window, cx);
+                        let key = (
+                            project.path.clone(),
+                            format!("shell-{}", if label == "bottom-context" { 4 } else { 0 }),
+                        );
+                        sidebar.checkout_panel.open_script_preview = Some(key.clone());
+                        sidebar.checkout_panel.script_details_focus[&key].focus(window, cx);
                         cx.notify();
                     });
                 })

@@ -526,7 +526,15 @@ findings never use an approval or unqualified clean-state label. Out of date
 results remain copyable. Reader entrance/exit uses restrained shared motion;
 input focus and captured diff selection are immediate.
 
-Checkout overflow controls omit hover tooltips while preserving accessible names. Local changes, Git and Scripts reserve matching fixed trailing control bounds and insets. Checkout action rows share leading icon slots and the small icon-to-label gap. The Scripts empty message aligns with its heading; the heading plus control is the sole add action in that section. These static geometry and copy changes need no motion.
+Checkout overflow controls omit hover tooltips while preserving accessible names. Local changes, Git and Scripts reserve matching fixed trailing control bounds and insets. Checkout action rows share leading icon slots and the small icon-to-label gap. The Scripts empty message aligns with its heading; the heading plus control is the sole add action in that section.
+
+Script entries use one line, with the name opening a read-only preview and a
+fixed trailing Run or Send control. The preview leaves row positions unchanged.
+Page Up and Page Down scroll long contents from the name control. Escape closes
+the preview and restores focus to that control. The folded register shows the
+first five entries and retains entries with active runs, unexpired receipts,
+errors, open previews, or focus. Its disclosure counts the remaining hidden
+entries.
 
 Adjacent transcript provider warnings collapse into one transparent, keyboard-accessible disclosure by default. Its summary identifies the warning count, or unavailable MCP server count with authentication status when applicable. Expanding preserves every diagnostic title and literal detail; identical recovery text appears once. Grouping never crosses another message or a question anchor. Expansion preferences belong to the session and remain stable as more notices arrive. Disclosure activation updates immediately, matching transcript work/tool input feedback.
 

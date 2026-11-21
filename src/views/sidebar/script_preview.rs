@@ -9,7 +9,7 @@ const HOVER_INTENT: Duration = Duration::from_millis(220);
 const HOVER_GRACE: Duration = Duration::from_millis(260);
 
 pub(super) struct ScriptPeek {
-    id: u64,
+    pub(super) id: u64,
     selection: Option<Selection>,
     explicit: bool,
     focus: FocusHandle,

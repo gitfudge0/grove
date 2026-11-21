@@ -2715,3 +2715,23 @@ The fixture populated the Projects list and covered the worktree removal
 confirmation using temporary Git repositories. The separate GPUI fixtures cover
 keyboard navigation and source focus. Windows and Linux native rendering and live
 Codex and Claude authentication and update operations were not exercised.
+
+## Checkout Scripts preview and folding
+
+Linux GPUI fixtures exercise opening the script-name preview with Enter,
+keeping the Run control stationary, paging through long contents, restoring
+focus with Escape, folding the list around a rejected prompt, and reaching Add
+and Manage. Isolated Linux desktop captures showed the floating preview and
+larger Play and Send glyphs in dark and light themes. A dark desktop run showed
+active and failed shell entries retained while folded, and successful runs
+reported exit 0. Narrow-width coverage used a 240 px GPUI fixture. The Codex
+and Claude named-prompt fixtures verify checkout
+rejection, queue receipts, and draft preservation through mocked connections.
+Two existing Checkout assertions still report a 48 px header offset where they
+expect zero on Linux.
+
+Live Linux transport smoke runs were attempted separately for Codex and Claude.
+Codex settled both turns with two user messages and two assistant messages, but
+the smoke did not observe the exact expected transcript. Claude failed after
+one reply with the second prompt still queued. Full live provider acceptance
+remains unverified for both. macOS and Windows were not exercised.
