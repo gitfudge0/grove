@@ -31,6 +31,11 @@ interface. Keep findings separate from authorized display content. Reconcile new
 user direction with completed and pending work, update this task state, and
 propagate it to any workers before dependent work continues.
 
+For approved designs, use the [approved design handoff](../../../product/ui-mocks.md#approved-design-handoff)
+before implementing or delegating. Every Grove delivery workflow uses the
+[native comparison](../../../product/ui-acceptance.md#verify-an-approved-design-in-the-app)
+early in implementation and again before reporting visual acceptance.
+
 ## Load the relevant procedure
 
 Read only the guides needed for the task. Implementation and review require the

@@ -27,6 +27,26 @@ frame times, scrolling and input latency; do not claim smoothness or short/long
 parity from CPU improvements alone. Record the original experience target as
 unfinished when only an intermediate metric improves.
 
+## Verify an approved design in the app
+
+Start from the [approved design handoff](ui-mocks.md#approved-design-handoff).
+As soon as one representative screen renders through its native route, compare
+it with the pinned reference. Make this comparison before extending the shared
+layout or component to other screens so a mistaken interpretation stays local.
+Repeat the comparison on the exact delivery build for the affected states.
+
+Match viewport, theme, zoom, fixture content, and interaction state. Include the
+surrounding pane and edges that establish the approved placement. For example,
+show the workspace edge when checking the Settings rail and show the removal
+details when checking where their buttons land. Record the build, conditions,
+paired captures, and results in task state.
+
+Where existing native geometry tests can cover a stable layout relationship,
+derive the assertion from the approved expectation. A Settings rail anchored to
+the workspace edge should share the content pane's left edge. Correct any drift
+and rerun the affected comparison. If a capture is unavailable, leave visual
+verification open and record the blocker separately from functional checks.
+
 ## Choose the relevant checks
 
 Inspect the actual native rendering against the selected reference at normal and narrower widths, with long names where applicable. Check spacing, type, contrast, glyphs, clipping, and stable columns. Audit action and navigation buttons for a visible catalog icon, including custom controls, app-owned HTML actions and disabled/loading states. Text-labelled grouped preference choices use labels and neutral selection without decorative icons; icon-only grouped controls retain catalog glyphs and accessible names. Distinguish native radio/checkbox/switch controls and text links by their actual semantics; text-only action and navigation buttons are violations. For text-and-icon buttons, including directional and custom actions: the icon must precede the label with the shared `SPACE_SM` gap. Measure rendered glyph/label bounds at default and changed rem zoom; disabled and loading states retain their leading slot. Distinguish buttons from non-button field indicators and metadata before moving trailing glyphs. Exercise the states changed by the task rather than every screen on every edit:

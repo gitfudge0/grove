@@ -27,6 +27,19 @@ claiming appearance or interaction verification.
 Keep exploratory HTML distinct from measured, implementation-ready references.
 A selected direction does not make unsupported native treatments certified.
 
+## Approved design handoff
+
+Before implementation or delegation, pin the exact approved reference in task
+state. Link the artifact and revision, or retain the approved capture if the
+source can change. Record the visible expectations that define the approval,
+including placement in the surrounding pane, consequential states, and responsive
+changes. Give implementers and reviewers that same reference and expectations.
+
+Keep the approved reference available throughout implementation. If an existing
+native component or the design contract conflicts with an approved expectation,
+resolve the conflict before adapting that part of the design. Record any approved
+revision or deviation in task state and update the affected checks.
+
 ## Implement a selected reference
 
 For an HTML reference that will become native Grove UI, follow the [reference workflow](ui-reference.md). Use its typed component document and native design-system export; do not infer dimensions, reconstruct controls from CSS or maintain a parallel palette. Ordinary exploratory HTML is not implementation-ready. Unsupported treatments require an extension in the existing native owner and its adapter/checks, rather than a local approximation.
