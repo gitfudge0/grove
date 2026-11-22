@@ -1,4 +1,7 @@
 //! Main canvas driven by the sidebar's stable selection.
+mod terminal_status;
+use terminal_status::{agent_name, canvas_state, session_signature, CanvasState};
+
 #[cfg(test)]
 use super::display_task_title;
 use super::{
@@ -2455,95 +2458,6 @@ fn canvas_section_header(title: String) -> impl gpui::IntoElement {
         .text_size(rpx(TEXT_BODY))
         .font_weight(FontWeight::MEDIUM)
         .child(div().min_w_0().truncate().child(title))
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum CanvasState {
-    Starting,
-    Running,
-    Working,
-    NeedsYou,
-    Done,
-    Idle,
-    Failed,
-    Exited,
-}
-impl CanvasState {
-    fn label(self) -> &'static str {
-        match self {
-            Self::Starting => "Starting",
-            Self::Running => "Running",
-            Self::Working => "Working",
-            Self::NeedsYou => "Needs you",
-            Self::Done => "Done",
-            Self::Idle => "Idle",
-            Self::Failed => "Failed",
-            Self::Exited => "Exited",
-        }
-    }
-    fn color(self) -> gpui::Hsla {
-        super::super::status::session_kind(self.label()).color()
-    }
-    fn message(self, error: Option<&str>) -> Option<String> {
-        match self {
-            Self::Starting => Some("Starting session. Preparing the terminal…".into()),
-            Self::NeedsYou => {
-                Some("This session needs your input. Review the terminal to continue.".into())
-            }
-            Self::Failed => Some(error.map_or_else(
-                || "The session could not start.".into(),
-                |error| format!("Could not start the session: {error}"),
-            )),
-            Self::Exited => Some("The session process has exited. Files remain on disk.".into()),
-            _ => None,
-        }
-    }
-}
-fn canvas_state(
-    agent: Agent,
-    activity: ActivityState,
-    failed: bool,
-    pending: bool,
-    missing: bool,
-    exited: bool,
-) -> CanvasState {
-    if failed {
-        CanvasState::Failed
-    } else if pending || missing {
-        CanvasState::Starting
-    } else if exited || activity == ActivityState::Exited {
-        CanvasState::Exited
-    } else if agent == Agent::Terminal {
-        CanvasState::Running
-    } else {
-        match activity {
-            ActivityState::Working => CanvasState::Working,
-            ActivityState::WaitingForInput => CanvasState::NeedsYou,
-            ActivityState::Done => CanvasState::Done,
-            ActivityState::Idle => CanvasState::Idle,
-            ActivityState::Exited => CanvasState::Exited,
-        }
-    }
-}
-fn agent_name(agent: Agent) -> &'static str {
-    match agent {
-        Agent::Codex => "Codex",
-        Agent::Claude => "Claude Code",
-        Agent::OpenCode => "OpenCode",
-        Agent::Terminal => "Terminal",
-    }
-}
-fn session_signature(
-    session: &gpui::Entity<crate::entities::terminal_session::TerminalSession>,
-    cx: &gpui::App,
-) -> (Option<String>, Option<String>, bool, bool) {
-    let session = session.read(cx);
-    (
-        session.title(),
-        session.spawn_error().map(str::to_owned),
-        session.is_pending_attach(),
-        session.has_exited(),
-    )
 }
 
 fn validate_worktree_fields(name: &str, branch: &str, base: &str) -> [Option<String>; 3] {
