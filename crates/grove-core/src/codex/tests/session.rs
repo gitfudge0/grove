@@ -55,6 +55,7 @@ fn session_waiting_requires_explicit_open_parent_wait_tool() {
     assert!(!snapshot.reconnecting);
 }
 
+/// Real-session clone/update CPU timings; excludes rendering, I/O and provider latency.
 #[test]
 #[ignore = "manual snapshot payload benchmark; GROVE_PERF_SESSION selects a private fixture"]
 fn snapshot_payload_benchmark() {
@@ -104,6 +105,7 @@ fn snapshot_payload_benchmark() {
     assert_eq!(serde_json::to_value(&state.saved).unwrap(), serialized);
 }
 
+/// Includes full recovery-file serialization, atomic replacement and durability syncs.
 #[test]
 #[ignore = "manual private recovery persistence benchmark"]
 fn snapshot_persistence_benchmark() {

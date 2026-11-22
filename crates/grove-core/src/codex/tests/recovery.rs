@@ -322,6 +322,8 @@ fn session_history_archive_failure_preserves_active_recovery() {
     assert_eq!(load_from_dir(&active).unwrap().sessions.len(), 1);
 }
 
+/// Compares the previous deep-Vec item copy with an existing prose-row edit.
+/// Measures transcript item storage only, excluding other Snapshot metadata.
 #[test]
 #[ignore = "manual transcript existing-row mutation benchmark"]
 fn transcript_existing_row_edit_benchmark() {

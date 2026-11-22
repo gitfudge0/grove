@@ -667,9 +667,9 @@ fn bottom_form_action_groups_do_not_fork_alignment() {
             "\"checkout-confirmation\"",
         ),
         (
-            "src/views/codex_view.rs",
+            "src/views/codex_view/rewind.rs",
             "\"edit from here?\"",
-            "fn ensure_control_focus(",
+            "fn request_edit_item(",
         ),
     ] {
         let text = source(path);
@@ -885,7 +885,7 @@ fn inline_transcript_disclosures_do_not_fill_when_expanded() {
         .split("fn task_strip(")
         .nth(1)
         .unwrap()
-        .split("fn render_work_header(")
+        .split("fn render_provider_notices(")
         .next()
         .unwrap();
     assert!(!tasks.contains(".when(expanded, |style| style.bg("));
@@ -893,18 +893,22 @@ fn inline_transcript_disclosures_do_not_fill_when_expanded() {
         .split("let keyboard_group = group_id.clone();")
         .nth(1)
         .unwrap()
-        .split("let mut detail_row")
+        .split("messages =")
         .next()
         .unwrap();
     assert!(tools.contains("super::components::inline_disclosure("));
     assert!(!tools.contains(".when(expanded, |style| style.bg("));
-    assert!(!transcript.contains(".when(tool_expanded, |style| style.bg("));
+    let rows = source("src/views/codex_view/message_rows.rs");
+    for source in [&transcript, &rows] {
+        assert!(!source.contains(".when(tool_expanded, |style| style.bg("));
+    }
 }
 
 #[test]
 fn application_popup_menus_use_shared_dropdown_recipe() {
     for path in [
         "src/views/codex_view.rs",
+        "src/views/codex_view/composer_options.rs",
         "src/views/sidebar.rs",
         "src/views/sidebar/dashboard.rs",
         "src/views/sidebar/session_history.rs",

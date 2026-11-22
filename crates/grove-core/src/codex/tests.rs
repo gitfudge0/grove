@@ -47,13 +47,6 @@ fn saved() -> SavedSession {
     }
 }
 
-/// Real-session clone/update CPU timings; excludes rendering, I/O and provider latency.
-
-/// Compares the previous deep-Vec item copy with an existing prose-row edit.
-/// Measures transcript item storage only, excluding other Snapshot metadata.
-
-/// Includes full recovery-file serialization, atomic replacement and durability syncs.
-
 fn reference(id: &str) -> ReferenceDraft {
     ReferenceDraft {
         id: id.into(),
