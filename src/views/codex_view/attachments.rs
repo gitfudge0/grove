@@ -370,3 +370,66 @@ impl CodexView {
         .detach();
     }
 }
+
+fn prepare_images(images: Vec<gpui::Image>) -> Result<Vec<(String, Arc<gpui::Image>)>, String> {
+    use std::io::Cursor;
+    if images.len() > 10
+        || images
+            .iter()
+            .map(|image| image.bytes().len())
+            .sum::<usize>()
+            > 20 * 1024 * 1024
+    {
+        return Err("Attach up to 10 images, totaling at most 20 MiB.".into());
+    }
+    images
+        .into_iter()
+        .map(|image| {
+            let format = match image.format {
+                gpui::ImageFormat::Png => image::ImageFormat::Png,
+                gpui::ImageFormat::Jpeg => image::ImageFormat::Jpeg,
+                gpui::ImageFormat::Webp => image::ImageFormat::WebP,
+                gpui::ImageFormat::Gif => image::ImageFormat::Gif,
+                gpui::ImageFormat::Tiff => image::ImageFormat::Tiff,
+                gpui::ImageFormat::Bmp => image::ImageFormat::Bmp,
+                _ => return Err("Paste a PNG, JPEG, WebP, GIF, TIFF, or BMP image.".into()),
+            };
+            let mut reader = image::ImageReader::with_format(Cursor::new(image.bytes()), format);
+            let mut limits = image::Limits::default();
+            limits.max_image_width = Some(8192);
+            limits.max_image_height = Some(8192);
+            limits.max_alloc = Some(128 * 1024 * 1024);
+            reader.limits(limits);
+            let decoded = reader
+                .decode()
+                .map_err(|error| format!("Couldn't read pasted image: {error}"))?;
+            let image = if matches!(
+                image.format,
+                gpui::ImageFormat::Tiff | gpui::ImageFormat::Bmp
+            ) {
+                let mut bytes = Cursor::new(Vec::new());
+                decoded
+                    .write_to(&mut bytes, image::ImageFormat::Png)
+                    .map_err(|error| format!("Couldn't prepare pasted image: {error}"))?;
+                gpui::Image::from_bytes(gpui::ImageFormat::Png, bytes.into_inner())
+            } else {
+                image
+            };
+            let url = format!(
+                "data:{};base64,{}",
+                image.format.mime_type(),
+                STANDARD.encode(image.bytes())
+            );
+            Ok((url, Arc::new(image)))
+        })
+        .collect()
+}
+
+pub(super) fn image_from_url(url: &str) -> Option<Arc<gpui::Image>> {
+    let (mime, encoded) = url.strip_prefix("data:")?.split_once(";base64,")?;
+    let format = gpui::ImageFormat::from_mime_type(mime)?;
+    Some(Arc::new(gpui::Image::from_bytes(
+        format,
+        STANDARD.decode(encoded).ok()?,
+    )))
+}

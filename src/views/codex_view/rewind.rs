@@ -324,3 +324,161 @@ impl CodexView {
         }
     }
 }
+
+/// Paint a visual source aperture without creating any pointer hit-test hole.
+fn paint_confirmation_veil(
+    pane: gpui::Bounds<gpui::Pixels>,
+    source: gpui::Bounds<gpui::Pixels>,
+    window: &mut Window,
+) {
+    if source.is_empty() {
+        window.paint_quad(gpui::fill(pane, c::QUIET_VEIL()));
+        return;
+    }
+    for (left, top, right, bottom) in [
+        (pane.left(), pane.top(), pane.right(), source.top()),
+        (pane.left(), source.bottom(), pane.right(), pane.bottom()),
+        (pane.left(), source.top(), source.left(), source.bottom()),
+        (source.right(), source.top(), pane.right(), source.bottom()),
+    ] {
+        if right > left && bottom > top {
+            window.paint_quad(gpui::fill(
+                gpui::Bounds::from_corners(gpui::point(left, top), gpui::point(right, bottom)),
+                c::QUIET_VEIL(),
+            ));
+        }
+    }
+    let mut outline = gpui::outline(source, c::BORDER_STRONG(), gpui::BorderStyle::default());
+    outline.corner_radii = rpx(RADIUS_PANEL).to_pixels(window.rem_size()).into();
+    window.paint_quad(outline);
+}
+
+/// Deferred after the message action's canvas, so resize and scrolling use this frame's
+/// source geometry. The independently constrained panel cannot leave the pane.
+struct EditConfirmationTray {
+    panel: Option<gpui::AnyElement>,
+    placed: Option<gpui::AnyElement>,
+    pane: Rc<Cell<gpui::Bounds<gpui::Pixels>>>,
+    source: Rc<Cell<gpui::Bounds<gpui::Pixels>>>,
+    scroll: gpui::ScrollHandle,
+    source_anchor: gpui::ScrollAnchor,
+    owner: gpui::WeakEntity<CodexView>,
+}
+impl gpui::Element for EditConfirmationTray {
+    type RequestLayoutState = ();
+    type PrepaintState = ();
+    fn id(&self) -> Option<gpui::ElementId> {
+        None
+    }
+    fn source_location(&self) -> Option<&'static core::panic::Location<'static>> {
+        None
+    }
+    fn request_layout(
+        &mut self,
+        _: Option<&gpui::GlobalElementId>,
+        _: Option<&gpui::InspectorElementId>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (gpui::LayoutId, ()) {
+        (
+            window.request_layout(
+                gpui::Style {
+                    position: gpui::Position::Absolute,
+                    ..Default::default()
+                },
+                std::iter::empty(),
+                cx,
+            ),
+            (),
+        )
+    }
+    fn prepaint(
+        &mut self,
+        _: Option<&gpui::GlobalElementId>,
+        _: Option<&gpui::InspectorElementId>,
+        _: gpui::Bounds<gpui::Pixels>,
+        (): &mut (),
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        let pane = self.pane.get();
+        let source = self
+            .source
+            .get()
+            .intersect(&self.scroll.bounds())
+            .intersect(&pane);
+        if source.is_empty() {
+            // Keep the blocker in place, reveal the initiating action, then
+            // attach on the next frame rather than showing a detached fallback.
+            self.source_anchor.scroll_to(window, cx);
+            let owner = self.owner.clone();
+            window.on_next_frame(move |_, cx| {
+                let _ = owner.update(cx, |_, cx| cx.notify());
+            });
+            return;
+        }
+        let margin = rpx(SPACE_LG).to_pixels(window.rem_size());
+        let above = source.center().y >= pane.center().y;
+        let available_height = if above {
+            source.top() - pane.top() - margin
+        } else {
+            pane.bottom() - source.bottom() - margin
+        };
+        let width = rpx(MODAL_W_SM)
+            .to_pixels(window.rem_size())
+            .min(source.right() - pane.left() - margin)
+            .max(gpui::px(0.));
+        let Some(panel) = self.panel.take() else {
+            return;
+        };
+        let panel = div()
+            .id("codex-edit-confirmation-scroll")
+            .w(width)
+            .max_h(available_height.max(gpui::px(0.)))
+            .overflow_y_scroll()
+            .child(panel);
+        let mut anchored = gpui::anchored()
+            .position_mode(gpui::AnchoredPositionMode::Window)
+            .anchor(if above {
+                gpui::Anchor::BottomRight
+            } else {
+                gpui::Anchor::TopRight
+            })
+            .position(gpui::point(
+                source.right(),
+                if above { source.top() } else { source.bottom() },
+            ))
+            .child(panel)
+            .into_any_element();
+        anchored.prepaint_as_root(
+            gpui::Point::default(),
+            gpui::size(
+                gpui::AvailableSpace::Definite(pane.size.width),
+                gpui::AvailableSpace::Definite(pane.size.height),
+            ),
+            window,
+            cx,
+        );
+        self.placed = Some(anchored);
+    }
+    fn paint(
+        &mut self,
+        _: Option<&gpui::GlobalElementId>,
+        _: Option<&gpui::InspectorElementId>,
+        _: gpui::Bounds<gpui::Pixels>,
+        (): &mut (),
+        (): &mut (),
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        if let Some(panel) = &mut self.placed {
+            panel.paint(window, cx);
+        }
+    }
+}
+impl gpui::IntoElement for EditConfirmationTray {
+    type Element = Self;
+    fn into_element(self) -> Self {
+        self
+    }
+}

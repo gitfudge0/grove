@@ -471,7 +471,11 @@ fn button_cursor_policy_covers_shared_recipes_and_vendor_states() {
 #[test]
 fn text_icon_action_regressions_use_the_leading_vendor_slot() {
     for (file, start, end) in [
-        ("src/views/native_plan.rs", "\"plan-approve\"", ".disabled("),
+        (
+            "src/views/native_plan/render.rs",
+            "\"plan-approve\"",
+            ".disabled(",
+        ),
         (
             "src/views/sidebar/project_setup.rs",
             "form_action(\"project-choose\"",
@@ -502,7 +506,7 @@ fn text_icon_action_regressions_use_the_leading_vendor_slot() {
     );
     // Checkout launch rows use a full-width content layout so the provider
     // precedes its name while the quiet destination indicator stays fixed.
-    let launch_source = source("src/views/sidebar/content.rs");
+    let launch_source = source("src/views/sidebar/content/start_panel.rs");
     let launch = launch_source
         .split_once(".id(\"project-start-actions\")")
         .unwrap()
@@ -545,14 +549,14 @@ fn text_icon_action_regressions_use_the_leading_vendor_slot() {
 fn disclosure_buttons_keep_icons_before_their_labels() {
     for (file, start, end, icon, label) in [
         (
-            "src/views/codex_view.rs",
+            "src/views/codex_view/task_strip.rs",
             ".id(\"codex-task-strip\")",
             ".on_key_down(",
             ".child(crate::icons::icon(",
             ".child(cluster)",
         ),
         (
-            "src/views/sidebar/checkout_panel.rs",
+            "src/views/sidebar/checkout_panel/agents.rs",
             "\"checkout-agents-previous\",",
             ".on_click(",
             ".child(icon(\"chev-down\"",
@@ -662,8 +666,8 @@ fn bottom_form_action_groups_do_not_fork_alignment() {
             "impl ProjectSetup {",
         ),
         (
-            "src/views/sidebar/checkout_panel.rs",
-            "pub(super) fn render_checkout_confirmation(",
+            "src/views/sidebar/checkout_panel/git_confirmation.rs",
+            "fn render_checkout_confirmation(",
             "\"checkout-confirmation\"",
         ),
         (
@@ -774,9 +778,10 @@ fn source_guards_detect_regressions_without_borrowing_neighbor_contracts() {
 
 #[test]
 fn subagents_stay_in_session_right_panel_and_preview_is_read_only() {
-    let transcript = source("src/views/codex_view.rs");
+    let mount = source("src/views/codex_view/mount.rs");
+    let transcript = source("src/views/codex_view/transcript_surface.rs");
     let rows = source("src/views/codex_view/message_rows.rs");
-    for source in [&transcript, &rows] {
+    for source in [&mount, &transcript, &rows] {
         assert!(!source.contains("subagent_summary("));
         assert!(!source.contains("subagent_row("));
     }
@@ -793,9 +798,9 @@ fn subagents_stay_in_session_right_panel_and_preview_is_read_only() {
     assert!(!preview.contains("SubagentActivityKind::"));
     assert!(!preview.contains("TextView::markdown("));
     assert!(!preview.contains("session.send("));
-    assert!(transcript.contains("view.preview_child = Some(child)"));
-    assert!(transcript.contains("self.history_readonly || self.preview_child.is_some()"));
-    assert!(transcript.contains("Self::new_with_history_mode(session, true, window, cx)"));
+    assert!(mount.contains("view.preview_child = Some(child)"));
+    assert!(mount.contains("self.history_readonly || self.preview_child.is_some()"));
+    assert!(mount.contains("Self::new_with_history_mode(session, true, window, cx)"));
     let preview_return = transcript
         .split("if self.transcript_only() {\n            self.message_slots")
         .nth(1)
@@ -807,7 +812,7 @@ fn subagents_stay_in_session_right_panel_and_preview_is_read_only() {
     assert!(preview_return.contains("self.scroll.scroll_to_bottom()"));
     assert!(preview_return.contains(".child(messages.px("));
     assert!(!preview_return.contains("session.send("));
-    assert!(transcript.contains("if this.transcript_only() {\n                    return;"));
+    assert!(mount.contains("if this.transcript_only() {\n                    return;"));
     let message_row = rows
         .split_once("fn render_message_row(")
         .expect("message rows own their read-only preview guard")
@@ -859,16 +864,17 @@ fn generic_controls_do_not_attach_tooltips_by_default() {
         .next()
         .unwrap();
     assert!(!header.contains(".tooltip("));
-    let sidebar = source("src/views/sidebar.rs");
-    let control = sidebar
-        .split("    fn control(")
+    let controls = source("src/views/sidebar/navigation_controls.rs");
+    let control = controls
+        .split("fn control(")
         .nth(1)
         .unwrap()
-        .split("    fn control_with_tooltip(")
+        .split("fn control_with_tooltip(")
         .next()
         .unwrap();
     assert!(!control.contains(".tooltip("));
-    let done = sidebar
+    let rows = source("src/views/sidebar/session_rows.rs");
+    let done = rows
         .split("format!(\"Done: close {} in {}\"")
         .nth(1)
         .unwrap()
@@ -880,15 +886,10 @@ fn generic_controls_do_not_attach_tooltips_by_default() {
 
 #[test]
 fn inline_transcript_disclosures_do_not_fill_when_expanded() {
-    let transcript = source("src/views/codex_view.rs");
-    let tasks = transcript
-        .split("fn task_strip(")
-        .nth(1)
-        .unwrap()
-        .split("fn render_provider_notices(")
-        .next()
-        .unwrap();
+    let checklist = source("src/views/codex_view/task_strip.rs");
+    let tasks = checklist.split("fn task_strip(").nth(1).unwrap();
     assert!(!tasks.contains(".when(expanded, |style| style.bg("));
+    let transcript = source("src/views/codex_view/transcript_surface.rs");
     let tools = transcript
         .split("let keyboard_group = group_id.clone();")
         .nth(1)
@@ -896,7 +897,7 @@ fn inline_transcript_disclosures_do_not_fill_when_expanded() {
         .split("messages =")
         .next()
         .unwrap();
-    assert!(tools.contains("super::components::inline_disclosure("));
+    assert!(tools.contains("components::inline_disclosure("));
     assert!(!tools.contains(".when(expanded, |style| style.bg("));
     let rows = source("src/views/codex_view/message_rows.rs");
     for source in [&transcript, &rows] {
@@ -907,12 +908,11 @@ fn inline_transcript_disclosures_do_not_fill_when_expanded() {
 #[test]
 fn application_popup_menus_use_shared_dropdown_recipe() {
     for path in [
-        "src/views/codex_view.rs",
         "src/views/codex_view/composer_options.rs",
-        "src/views/sidebar.rs",
-        "src/views/sidebar/dashboard.rs",
+        "src/views/sidebar/worktree_actions.rs",
+        "src/views/sidebar/dashboard/destination_tray.rs",
         "src/views/sidebar/session_history.rs",
-        "src/views/sidebar/checkout_panel.rs",
+        "src/views/sidebar/checkout_panel/git_confirmation.rs",
     ] {
         let text = source(path);
         assert_eq!(

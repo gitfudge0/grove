@@ -370,3 +370,215 @@ impl CodexView {
         .detach();
     }
 }
+
+/// Rank the whole catalog before applying the popup limit, so an early scattered
+/// match cannot hide a later exact or prefix match. Stable sorting preserves the
+/// catalog order for ties and for the empty query.
+fn fuzzy_completion_choices(
+    choices: impl IntoIterator<Item = (String, String)>,
+    query: &str,
+) -> Vec<(String, String)> {
+    let mut matches = choices
+        .into_iter()
+        .filter_map(|choice| {
+            let name = choice.0.trim_start_matches(['/', '$']);
+            crate::launcher::fuzzy_score(query, name, "", "").map(|score| (score, choice))
+        })
+        .collect::<Vec<_>>();
+    matches.sort_by(|(a, _), (b, _)| b.cmp(a));
+    matches.into_iter().map(|(_, choice)| choice).collect()
+}
+
+pub(super) fn skill_choices(state: &codex::Snapshot, query: &str) -> Vec<(String, String)> {
+    fuzzy_completion_choices(
+        grove_core::describe_skill::completion('$', "")
+            .into_iter()
+            .chain(grove_core::review_skill::completion('$', ""))
+            .chain(state.skills.iter().filter_map(|skill| {
+                let name = skill["name"].as_str()?;
+                (name != grove_core::describe_skill::NAME
+                    && name != grove_core::review_skill::NAME
+                    && (state.saved.provider != codex::Provider::Claude || !host_command(name))
+                    && skill["enabled"].as_bool() != Some(false))
+                .then(|| {
+                    (
+                        format!(
+                            "{}{name}",
+                            if state.saved.provider == codex::Provider::Claude {
+                                "/"
+                            } else {
+                                "$"
+                            }
+                        ),
+                        format!(
+                            "{name} · {}",
+                            skill["description"].as_str().unwrap_or("Skill")
+                        ),
+                    )
+                })
+            })),
+        query,
+    )
+    .into_iter()
+    .take(8)
+    .collect()
+}
+
+/// Host commands first, then (for Claude) the CLI's own commands Grove does not host.
+pub(super) fn slash_choices(state: &codex::Snapshot, query: &str) -> Vec<(String, String)> {
+    let mut choices: Vec<(String, String)> = [
+        (
+            "/describe-changes",
+            "Describe the selected checkout or attached PR",
+        ),
+        ("/review", "Review changes for actionable defects"),
+        ("/model", "Choose model"),
+        ("/effort", "Choose reasoning effort"),
+        ("/access", "Choose access level"),
+        ("/stop", "Interrupt the current turn"),
+        ("/compact", "Compact conversation context"),
+        ("/queue", "Send the next queued prompt"),
+        ("/clear", "Start a new conversation"),
+    ]
+    .into_iter()
+    .map(|(command, label)| (command.into(), format!("{command} · {label}")))
+    .collect();
+    if state.saved.provider == codex::Provider::Claude {
+        choices.extend(state.skills.iter().filter_map(|skill| {
+            let name = skill["name"].as_str()?;
+            (!host_command(name) && skill["enabled"].as_bool() != Some(false)).then(|| {
+                (
+                    format!("/{name}"),
+                    format!(
+                        "/{name} · {}",
+                        skill["description"].as_str().unwrap_or("Claude command")
+                    ),
+                )
+            })
+        }));
+    }
+    fuzzy_completion_choices(choices, query)
+}
+
+pub(super) fn host_command(name: &str) -> bool {
+    matches!(
+        name,
+        "review"
+            | "describe-changes"
+            | "model"
+            | "effort"
+            | "access"
+            | "stop"
+            | "queue"
+            | "clear"
+            | "compact"
+    )
+}
+
+/// Complete the token around a collapsed caret without replacing later draft text.
+pub(super) fn completion_trigger(
+    text: &str,
+    cursor: usize,
+) -> Option<(std::ops::Range<usize>, char, &str)> {
+    let prefix = text.get(..cursor)?;
+    let start = prefix
+        .char_indices()
+        .rfind(|(_, ch)| ch.is_whitespace())
+        .map_or(0, |(at, ch)| at + ch.len_utf8());
+    let token = &prefix[start..];
+    let trigger = token.chars().next()?;
+    if !(matches!(trigger, '@' | '$') || trigger == '/' && start == 0) {
+        return None;
+    }
+    let end = text[cursor..]
+        .find(char::is_whitespace)
+        .map_or(text.len(), |at| cursor + at);
+    Some((start..end, trigger, &token[trigger.len_utf8()..]))
+}
+
+pub(super) fn trailing_trigger(text: &str) -> Option<(char, &str)> {
+    let token = text.rsplit(char::is_whitespace).next()?;
+    let trigger = token.chars().next()?;
+    if matches!(trigger, '@' | '$') || (trigger == '/' && token == text) {
+        Some((trigger, &token[trigger.len_utf8()..]))
+    } else {
+        None
+    }
+}
+/// Search only the active checkout, including untracked but non-ignored files.
+pub(super) fn file_choices(cwd: &str, query: &str) -> Vec<String> {
+    let root = std::path::Path::new(cwd);
+    let output = std::process::Command::new("git")
+        .args([
+            "ls-files",
+            "--cached",
+            "--others",
+            "--exclude-standard",
+            "-z",
+            "--",
+            ".",
+        ])
+        .current_dir(root)
+        .output();
+    let mut paths = std::collections::BTreeSet::new();
+    if let Some(output) = output.ok().filter(|output| output.status.success()) {
+        for path in output
+            .stdout
+            .split(|byte| *byte == 0)
+            .filter(|path| !path.is_empty())
+        {
+            let path = String::from_utf8_lossy(path).into_owned();
+            if root.join(&path).is_file() {
+                paths.insert(path);
+            }
+        }
+    } else {
+        // Ordinary directories also support completion. Do not follow directory
+        // symlinks, which may escape the checkout or form cycles.
+        let mut directories = vec![std::path::PathBuf::new()];
+        while let Some(directory) = directories.pop() {
+            let Ok(entries) = fs_err::read_dir(root.join(&directory)) else {
+                continue;
+            };
+            for entry in entries.filter_map(Result::ok) {
+                let Ok(kind) = entry.file_type() else {
+                    continue;
+                };
+                let name = entry.file_name();
+                if name.to_string_lossy().starts_with('.') {
+                    continue;
+                }
+                let relative = directory.join(name);
+                if kind.is_dir() {
+                    directories.push(relative);
+                } else if kind.is_file() {
+                    paths.insert(relative.to_string_lossy().replace('\\', "/"));
+                }
+            }
+        }
+    }
+    // Keep directory completion available alongside recursive filename lookup.
+    for path in paths.clone() {
+        let mut parent = std::path::Path::new(&path).parent();
+        while let Some(directory) = parent.filter(|p| !p.as_os_str().is_empty()) {
+            paths.insert(format!("{}/", directory.to_string_lossy()));
+            parent = directory.parent();
+        }
+    }
+    let mut matches = paths
+        .into_iter()
+        .filter_map(|path| {
+            let name = path
+                .trim_end_matches('/')
+                .rsplit('/')
+                .next()
+                .unwrap_or(&path);
+            let score = crate::launcher::fuzzy_score(query, name, "", "")
+                .map(|score| score + 200)
+                .or_else(|| crate::launcher::fuzzy_score(query, &path, "", ""))?;
+            Some((score, path))
+        })
+        .collect::<Vec<_>>();
+    matches.sort_by(|(a_score, a), (b_score, b)| b_score.cmp(a_score).then_with(|| a.cmp(b)));
+    matches.into_iter().take(8).map(|(_, path)| path).collect()
+}

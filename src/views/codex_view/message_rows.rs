@@ -1190,3 +1190,62 @@ impl CodexView {
         row
     }
 }
+
+// Snapshot/schema transport is retained for recovery and model context, while
+// the conversation presents its user-facing command and completion prose.
+pub(super) fn description_conversation_text(
+    scope: Option<&grove_core::change_description::Scope>,
+    kind: &str,
+    text: &str,
+) -> String {
+    let Some(scope) = scope else {
+        return text.into();
+    };
+    if kind == "userMessage"
+        && text.starts_with("Describe ONLY the supplied immutable change snapshot.")
+        && text.contains("\n\nGrove request identity: ")
+    {
+        return match scope {
+            grove_core::change_description::Scope::Local => "/describe-changes local".into(),
+            grove_core::change_description::Scope::PullRequest { url } => {
+                format!("/describe-changes {url}")
+            }
+        };
+    }
+    if kind != "agentMessage" {
+        return text.into();
+    }
+    let mut result = Vec::new();
+    let mut hidden = false;
+    let mut other_fence = false;
+    for line in text.lines() {
+        let marker = line.trim();
+        if hidden {
+            if marker == "```" {
+                hidden = false;
+            }
+            continue;
+        }
+        if other_fence {
+            result.push(line);
+            if marker == "```" {
+                other_fence = false;
+            }
+            continue;
+        }
+        if marker == "```grove-description" {
+            hidden = true;
+            continue;
+        }
+        if marker.starts_with("```") {
+            other_fence = true;
+        }
+        result.push(line);
+    }
+    let result = result.join("\n").trim().to_owned();
+    if result.is_empty() && text.contains("```grove-description") {
+        "Change description data".into()
+    } else {
+        result
+    }
+}
