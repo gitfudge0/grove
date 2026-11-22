@@ -25,6 +25,21 @@ Upstream examples can drift too: compile any borrowed pattern against this
 checkout. Old copied snippets and claims marked “EXACT” without a pinned revision
 are not a verified API reference. Inspect signatures before writing code.
 
+## Organize code by responsibility
+
+Use a private child module when a workflow has a distinct responsibility or
+needs its own tests. Keep the parent as the feature entry point and put the
+boundary around the work and its invariants. Dashboard activity projection can
+be exercised separately from the timeline's GPUI focus and rendering. Provider
+subprocess modules own framing and shutdown, while the actors coordinate
+ordered state changes. Preserve existing public paths through targeted
+re-exports when moving their definitions.
+
+Keep fixtures beside the behavior they exercise. Before moving tests, check
+full-name filters, relative fixture paths and embedded script literals. Compare
+test discovery after the move. Use file length to find mixed responsibilities
+and use Cargo timings to assess build performance.
+
 ## Implementation checks
 
 - Keep subscription/task handles alive for the required lifetime; detaching or

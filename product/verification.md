@@ -1,3 +1,27 @@
+## Rust module refactoring
+
+The Linux workspace nextest CI profile reported 2,435 passes, 13 failures and
+63 skipped tests. All 13 failures also reproduced on the starting revision
+`a589eee6e664`. They cover Checkout and Dashboard layout, Dashboard fork error
+copy, Side Chat layout, and Sidebar navigation or ordering. The refactor
+preserved all 1,415 app test names when counted by leaf name.
+
+Linux GPUI fixtures exercise Codex and Claude snapshots, keyboard routing,
+draft handoff, task controls and transcript interaction. The live Codex native
+receipt smoke initialized a session and confirmed that the acknowledgement
+pointed to the submitted input before its response. The live Claude receipt
+smoke initialized, then the CLI rejected the first submission because it was
+signed out. End-to-end task-activity smoke remains unverified for both
+providers. Codex completed the turn and produced three checklist snapshots,
+but the fixture timed out waiting for its exact completion marker. Claude
+failed on submission.
+
+Native screenshot comparison remains open. Xvfb produced uniform captures
+because Mesa could not present without DRI3. The existing X11 display could
+not connect to either isolated fixture. Use an isolated rendering-capable
+display to compare the affected native surfaces. macOS and Windows were
+untested.
+
 ## Dashboard transcript launch shortcut
 
 Linux GPUI fixtures verified keyboard routing and the per-launch transcript
