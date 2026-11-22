@@ -1,4 +1,7 @@
 use super::*;
+#[cfg(unix)]
+use crate::claude::permissions::discover_permission_modes;
+use crate::claude::permissions::{PermissionProbe, PermissionProbeCache, PERMISSION_HELP_RETRY};
 
 #[test]
 fn permission_probe_reuses_success_and_preserves_cancellation() {

@@ -1,6 +1,7 @@
 //! Claude child stream attribution and subagent lifecycle.
 
 use super::*;
+use crate::provider::SubagentStatus;
 
 impl Actor {
     pub(super) fn register_subagent(&mut self, block: &Value) {
@@ -401,6 +402,273 @@ impl Actor {
             {
                 self.subagent_report(&id, report);
             }
+        }
+    }
+}
+
+#[derive(Default)]
+pub(super) struct ChildTranscript {
+    transcript: crate::claude_transcript::ClaudeTranscriptState,
+    pub(super) items: provider::TranscriptItems,
+    message_id: String,
+    blocks: HashMap<u64, String>,
+}
+impl ChildTranscript {
+    pub(super) fn restore(items: provider::TranscriptItems) -> Self {
+        let mut child = Self {
+            items,
+            ..Self::default()
+        };
+        child.transcript.restore(&mut child.items);
+        child
+    }
+
+    fn assistant_block_id(
+        &self,
+        message: &str,
+        index: usize,
+        block: &Value,
+        claimed: &[String],
+    ) -> String {
+        let fallback = format!("{message}-{index}");
+        let kind = match block["type"].as_str() {
+            Some("text") => "agentMessage",
+            _ => return fallback,
+        };
+        if self.message_id != message {
+            return fallback;
+        }
+        let text = block[if kind == "reasoning" {
+            "thinking"
+        } else {
+            "text"
+        }]
+        .as_str()
+        .unwrap_or_default();
+        let mut candidates = self
+            .blocks
+            .iter()
+            .filter_map(|(stream_index, id)| {
+                if claimed.contains(id) {
+                    return None;
+                }
+                self.items
+                    .iter()
+                    .find(|item| item["id"] == *id && item["type"] == kind)
+                    .map(|item| (*stream_index, id, item))
+            })
+            .collect::<Vec<_>>();
+        candidates.sort_by_key(|(stream_index, _, _)| *stream_index);
+        let content = |item: &Value| -> String {
+            if kind == "reasoning" {
+                item["content"][0].as_str().unwrap_or_default().to_owned()
+            } else {
+                item["text"].as_str().unwrap_or_default().to_owned()
+            }
+        };
+        if let Some((_, id, _)) = candidates.iter().find(|(_, _, item)| content(item) == text) {
+            return (*id).clone();
+        }
+        if let Some((_, id, _)) = candidates.iter().find(|(_, _, item)| {
+            let streamed = content(item);
+            !streamed.is_empty() && (text.starts_with(&streamed) || streamed.starts_with(text))
+        }) {
+            return (*id).clone();
+        }
+        if let Some((_, id, _)) = candidates
+            .iter()
+            .find(|(stream_index, _, _)| *stream_index == index as u64)
+        {
+            return (*id).clone();
+        }
+        if candidates.len() == 1 {
+            return candidates[0].1.clone();
+        }
+        fallback
+    }
+    fn upsert(&mut self, item: Value) {
+        if let Some(old) = self.items.iter_mut().find(|old| old["id"] == item["id"]) {
+            *old = item.into();
+        } else {
+            self.items.push(item);
+        }
+    }
+    fn report(&mut self, text: &str) {
+        if text.trim().is_empty() {
+            return;
+        }
+        if let Some(item) = self
+            .items
+            .iter_mut()
+            .rev()
+            .find(|item| item["type"] == "agentMessage" && item["text"].as_str() == Some(text))
+        {
+            item["phase"] = json!("final_answer");
+        } else {
+            self.upsert(json!({"id":format!("child-final-report-{}", self.items.len()),"type":"agentMessage","phase":"final_answer","text":text}));
+        }
+    }
+    fn block(&mut self, id: &str, block: &Value, cwd: &str) {
+        match block["type"].as_str() {
+            Some("text") => {
+                self.upsert(json!({"id":id,"type":"agentMessage","text":block["text"]}));
+            }
+            Some("tool_use") => {
+                let id = block["id"].as_str().unwrap_or(id);
+                let mut item = if block["name"] == "Bash" {
+                    json!({"id":id,"type":"commandExecution","command":block["input"]["command"],"cwd":cwd,"status":"inProgress","aggregatedOutput":""})
+                } else {
+                    json!({"id":id,"type":"mcpToolCall","server":"Claude Code","tool":block["name"],"arguments":block["input"],"status":"inProgress"})
+                };
+                if let Some(old) = self.items.iter().find(|old| old["id"] == id) {
+                    for key in [
+                        "status",
+                        "result",
+                        "error",
+                        "aggregatedOutput",
+                        "progress",
+                        "structuredResult",
+                        "plan",
+                        "text",
+                        "detached",
+                    ] {
+                        if let Some(value) = old.get(key) {
+                            item[key] = value.clone();
+                        }
+                    }
+                }
+                self.transcript.normalize_tool_item(&mut item);
+                self.upsert(item);
+            }
+            _ => {} // Private reasoning is never a child transcript message.
+        }
+    }
+    pub(super) fn message(&mut self, value: &Value, cwd: &str) {
+        match value["type"].as_str() {
+            Some("assistant") => {
+                let message = value["message"]["id"]
+                    .as_str()
+                    .or(value["uuid"].as_str())
+                    .unwrap_or(&self.message_id)
+                    .to_owned();
+                if let Some(blocks) = value["message"]["content"].as_array() {
+                    let mut claimed = Vec::new();
+                    for (index, block) in blocks.iter().enumerate() {
+                        let id = self.assistant_block_id(&message, index, block, &claimed);
+                        self.block(&id, block, cwd);
+                        claimed.push(id);
+                    }
+                }
+            }
+            Some("stream_event") => {
+                let event = &value["event"];
+                let index = event["index"].as_u64().unwrap_or(0);
+                match event["type"].as_str() {
+                    Some("message_start") => {
+                        self.message_id = event["message"]["id"]
+                            .as_str()
+                            .unwrap_or("child-stream")
+                            .into();
+                        self.blocks.clear();
+                    }
+                    Some("content_block_start") => {
+                        let block = &event["content_block"];
+                        let id = block["id"]
+                            .as_str()
+                            .map_or_else(|| format!("{}-{index}", self.message_id), str::to_owned);
+                        self.block(&id, block, cwd);
+                        self.blocks.insert(index, id);
+                    }
+                    Some("content_block_delta") => {
+                        if let Some(text) = event["delta"]["text"].as_str() {
+                            if let Some(item) = self.blocks.get(&index).and_then(|id| {
+                                self.items.iter_mut().rev().find(|item| item["id"] == *id)
+                            }) {
+                                provider::append_json_text(&mut item["text"], text);
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            Some("user") => {
+                let content = &value["message"]["content"];
+                let blocks = content.as_array().cloned().unwrap_or_else(|| {
+                    content
+                        .as_str()
+                        .map(|text| vec![json!({"type":"text","text":text})])
+                        .unwrap_or_default()
+                });
+                let visible: Vec<Value> = blocks
+                    .iter()
+                    .filter(|block| {
+                        block["type"] != "tool_result"
+                            && block["type"] != "thinking"
+                            && block["type"] != "redacted_thinking"
+                    })
+                    .cloned()
+                    .collect();
+                if !visible.is_empty() {
+                    let id = value["uuid"]
+                        .as_str()
+                        .or(value["message"]["id"].as_str())
+                        .map_or_else(|| format!("child-user-{}", self.items.len()), str::to_owned);
+                    self.upsert(json!({"id":id,"type":"userMessage","content":visible}));
+                }
+                for block in blocks.iter().filter(|block| block["type"] == "tool_result") {
+                    if let Some(item) = self
+                        .items
+                        .iter_mut()
+                        .find(|item| item["id"] == block["tool_use_id"])
+                    {
+                        self.transcript.apply_tool_result(
+                            item,
+                            &block["content"],
+                            value.get("tool_use_result"),
+                            block["is_error"] == true,
+                        );
+                        if item["type"] == "commandExecution" {
+                            item["aggregatedOutput"] =
+                                json!(block["content"].as_str().map_or_else(
+                                    || block["content"]
+                                        .as_array()
+                                        .into_iter()
+                                        .flatten()
+                                        .filter_map(|part| part["text"].as_str())
+                                        .collect::<Vec<_>>()
+                                        .join("\n"),
+                                    str::to_owned
+                                ));
+                        }
+                    }
+                }
+            }
+            Some("tool_progress") => {
+                if let Some(item) = self
+                    .items
+                    .iter_mut()
+                    .find(|item| item["id"] == value["tool_use_id"])
+                {
+                    item["progress"] =
+                        json!(format!("Running for {}s", value["elapsed_time_seconds"]));
+                }
+            }
+            Some("result") => {
+                if let Some(text) = value["result"].as_str() {
+                    self.report(text);
+                }
+
+                for item in &mut self.items {
+                    if item["status"] == "inProgress" && item["detached"] != true {
+                        item["status"] = json!(if value["is_error"] == true {
+                            "failed"
+                        } else {
+                            "completed"
+                        });
+                    }
+                }
+            }
+            _ => {}
         }
     }
 }

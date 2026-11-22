@@ -8,7 +8,10 @@ mod subagents;
 mod transport;
 
 use super::*;
+use super::{context::context_measurement, permissions::permission_modes_from_help};
+use crate::provider::{SubagentStatus, SubmissionMode};
 use std::io::{BufRead, BufReader};
+use std::process::{Command, Stdio};
 
 fn actor() -> Actor {
     let saved:SavedSession=serde_json::from_value(json!({"key":"claude-test","provider":"claude","project":"test","cwd":"/tmp","label":"Claude","roots":[],"thread_id":null,"items":[]})).unwrap();

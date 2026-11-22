@@ -2,6 +2,187 @@
 
 use super::*;
 
+/// A locally observed provider turn; item bounds are half-open transcript indices.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct WorkPeriod {
+    pub start_item: usize,
+    pub end_item: Option<usize>,
+    pub duration_ms: Option<u64>,
+    #[serde(default)]
+    pub subagents: Vec<Subagent>,
+}
+/// Observed child work only; absence of provider data is never completion.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SubagentStatus {
+    Working,
+    Completed,
+    Failed,
+    Interrupted,
+    Unknown,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Subagent {
+    pub id: String,
+    pub name: String,
+    pub activity: String,
+    #[serde(default)]
+    pub role: Option<String>,
+    #[serde(default)]
+    pub task: Option<String>,
+    pub status: SubagentStatus,
+}
+/// Provider-visible observations only; deliberately excluded from saved sessions.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SubagentActivityKind {
+    Tool,
+    Commentary,
+}
+#[derive(Clone, Debug)]
+pub struct SubagentActivityEvent {
+    pub id: String,
+    pub text: String,
+    pub kind: SubagentActivityKind,
+    pub observed_at: Instant,
+}
+#[derive(Clone, Debug, Default)]
+pub struct SubagentActivity {
+    /// Full provider-visible transcript items, in chronological order.
+    pub items: TranscriptItems,
+    pub events: Vec<SubagentActivityEvent>,
+    pub observed_at: Option<Instant>,
+    pub refreshing: bool,
+    pub refresh_error: bool,
+    pub truncated: bool,
+    pub(super) poll_cursor: Option<(u64, u64)>,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SubagentTranscriptAvailability {
+    Awaiting,
+    Live,
+    Restored,
+    Unavailable,
+}
+/// Canonical provider-visible Claude child data; monotonic observation clocks
+/// and private reasoning are deliberately not persisted.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct SavedClaudeSubagent {
+    #[serde(default)]
+    pub items: TranscriptItems,
+    #[serde(default)]
+    pub task_ids: Vec<String>,
+    #[serde(default)]
+    pub run_id: Option<String>,
+}
+fn activity_hash(text: &str) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    text.hash(&mut hasher);
+    hasher.finish()
+}
+fn bounded_excerpt(text: &str, limit: usize) -> String {
+    let mut end = text.len().min(limit);
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    text[..end].to_owned()
+}
+/// Latest observation per child in this session, including terminal tombstones.
+/// Work-period closure describes the parent and does not complete its children.
+pub fn active_subagents(periods: &[WorkPeriod]) -> Vec<Subagent> {
+    let mut latest: Vec<Subagent> = Vec::new();
+    for agent in periods.iter().flat_map(|period| &period.subagents) {
+        if let Some(previous) = latest.iter_mut().find(|old| old.id == agent.id) {
+            *previous = agent.clone();
+        } else {
+            latest.push(agent.clone());
+        }
+    }
+    latest.retain(|agent| {
+        matches!(
+            agent.status,
+            SubagentStatus::Working | SubagentStatus::Unknown
+        )
+    });
+    latest
+}
+
+fn update_subagent_metadata(agent: &mut Subagent, role: Option<&str>, task: Option<&str>) {
+    for (target, observed) in [(&mut agent.role, role), (&mut agent.task, task)] {
+        if let Some(text) = observed.filter(|text| !text.trim().is_empty()) {
+            *target = Some(text.split_whitespace().collect::<Vec<_>>().join(" "));
+        }
+    }
+}
+
+fn collab_status(status: Option<&str>) -> SubagentStatus {
+    match status {
+        Some("pendingInit" | "running" | "inProgress") => SubagentStatus::Working,
+        Some("completed") => SubagentStatus::Completed,
+        Some("interrupted") => SubagentStatus::Interrupted,
+        Some("errored" | "failed") => SubagentStatus::Failed,
+        _ => SubagentStatus::Unknown,
+    }
+}
+fn subagent_activity(item: &Value) -> Option<String> {
+    let text = match item["type"].as_str()? {
+        "commandExecution" => item["command"].as_str(),
+        "mcpToolCall" => item["progress"].as_str().or_else(|| item["tool"].as_str()),
+        "agentMessage" => item["text"].as_str(),
+        "fileChange" => return Some("Editing files".into()),
+        "webSearch" => item["query"].as_str(),
+        "reasoning" => return Some("Thinking".into()),
+        _ => None,
+    }?;
+    (!text.trim().is_empty()).then(|| text.into())
+}
+pub(crate) fn record_subagent(
+    period: &mut WorkPeriod,
+    id: &str,
+    name: Option<&str>,
+    activity: Option<&str>,
+    status: SubagentStatus,
+) {
+    if id.is_empty() {
+        return;
+    }
+    let agent = if let Some(index) = period.subagents.iter().position(|a| a.id == id) {
+        &mut period.subagents[index]
+    } else {
+        period.subagents.push(Subagent {
+            id: id.into(),
+            name: format!("Agent {}", period.subagents.len() + 1),
+            activity: "Activity unavailable".into(),
+            role: None,
+            task: None,
+            status,
+        });
+        let index = period.subagents.len() - 1;
+        &mut period.subagents[index]
+    };
+    if let Some(name) = name.filter(|s| !s.trim().is_empty()) {
+        agent.name = name.trim().into();
+    }
+    if let Some(activity) = activity.filter(|s| !s.trim().is_empty()) {
+        agent.activity = activity
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .chars()
+            .take(240)
+            .collect();
+    }
+    if status != SubagentStatus::Unknown
+        && !(status == SubagentStatus::Working
+            && matches!(
+                agent.status,
+                SubagentStatus::Completed | SubagentStatus::Failed | SubagentStatus::Interrupted
+            ))
+    {
+        agent.status = status;
+    }
+}
+
 impl Snapshot {
     pub fn subagent_transcript_availability(&self, id: &str) -> SubagentTranscriptAvailability {
         if let Some(activity) = self
