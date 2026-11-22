@@ -1,3 +1,30 @@
+## Rust module refactoring follow-up
+
+The second pass split the 18 first-party Rust files at or above 2,000 lines on
+`275d29d`. The largest first-party source file is now 1,997 lines. The
+conversation and Sidebar entry points are 1,169 and 981 lines, respectively.
+
+The Linux nextest CI confirmation reported 2,435 passes, 13 failures and
+63 skipped tests. All 13 failures reproduced in the `275d29d` application
+binary. A project-removal fixture passed on retry in the first run, then
+passed on the confirmation run and in 15 isolated repeats on each build. The
+1,415 app test leaf names were preserved. Strict production Clippy, all-target
+Clippy with CI test allowances, doctests, formatting and artifact checks passed.
+
+Isolated native Linux Weston captures matched pixel-for-pixel for Codex and
+Claude conversation and plan fixtures at 1,000 and 640 pixels. The full Sidebar
+and Checkout fixture passed its navigation and draft assertions on both
+builds. Its 20 capture pairs matched apart from the project symbols assigned
+to different temporary repository paths. The accessibility uniqueness check
+had no active accessibility tree. macOS and Windows were untested.
+
+Live Codex verified intermediate checklist state, session activity, completion,
+and two explicitly completed action reports on an ordinary request. The
+scripted exact activity sequence timed out. Live Claude submission was
+blocked by authentication. Linux fixtures exercised both providers'
+conversation, plan and Checkout states. The installed Linux executable
+matched the local build byte-for-byte.
+
 ## Rust module refactoring
 
 The Linux workspace nextest CI profile reported 2,435 passes, 13 failures and
