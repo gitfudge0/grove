@@ -1978,7 +1978,7 @@ mod tests {
         git(&["worktree", "add", "--detach", &unavailable]);
         fs::rename(&unavailable, &unavailable_folder).unwrap();
         let review = ProjectService::review_project_worktrees(&repo).unwrap();
-        assert_eq!(review.skipped_paths, [unavailable.clone()]);
+        assert_eq!(review.skipped_paths, std::slice::from_ref(&unavailable));
         assert_eq!(review.verified.len(), 2);
         assert!(review.verified.iter().any(|tree| tree.path() == replaced));
         assert!(review.verified.iter().any(|tree| tree.path() == unchanged));

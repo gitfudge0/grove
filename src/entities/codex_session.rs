@@ -1301,7 +1301,7 @@ mod dashboard_tests {
             });
             cx.run_until_parked();
             assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
-            session.update(cx, |session, cx| session.ensure_connected(cx));
+            session.update(cx, CodexSession::ensure_connected);
             for attempt in 1..=2 {
                 let deadline = std::time::Instant::now() + Duration::from_secs(10);
                 loop {

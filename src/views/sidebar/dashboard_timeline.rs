@@ -429,7 +429,7 @@ impl Sidebar {
         let _ = self.terminal_content(id, false, window, cx);
         if let Some(view) = self.codex_views.get(&id) {
             view.update(cx, |view, cx| {
-                view.focus_activity_request(target, window, cx)
+                view.focus_activity_request(target, window, cx);
             });
         }
     }

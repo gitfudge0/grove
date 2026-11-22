@@ -40,8 +40,8 @@ fn rewind_confirmation_blocks_background_and_preserves_composer(cx: &mut gpui::T
                     json!({"id":"later-answer", "type":"agentMessage", "text":"Incoming update"}),
                 );
                 cx.notify();
-            })
-        })
+            });
+        });
     });
     draw(cx);
     assert!(cx.debug_bounds("codex-edit-confirmation").is_some());

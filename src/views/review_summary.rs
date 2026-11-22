@@ -410,7 +410,7 @@ impl ReviewSummary {
                         .child(verification),
                 )
             })
-            .when_some(primary, |el, link| el.child(link))
+            .when_some(primary, gpui::ParentElement::child)
             .when(other_count > 0, |el| {
                 let label = format!("Links and artifacts · {other_count}");
                 let id = format!("{key}-links");
@@ -807,7 +807,7 @@ mod tests {
 #[test]
 fn only_a_single_labeled_deliverable_is_promoted() {
     let dir = tempfile::tempdir().unwrap();
-    std::fs::write(dir.path().join("demo.mp4"), "").unwrap();
+    fs_err::write(dir.path().join("demo.mp4"), "").unwrap();
     let brief = ReviewSummary::from_brief(
             "Recorded a demo.\nVerification: macOS playback is untested.\nDeliverable: [Open demo](demo.mp4)",
             dir.path(),
