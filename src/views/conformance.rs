@@ -775,8 +775,11 @@ fn source_guards_detect_regressions_without_borrowing_neighbor_contracts() {
 #[test]
 fn subagents_stay_in_session_right_panel_and_preview_is_read_only() {
     let transcript = source("src/views/codex_view.rs");
-    assert!(!transcript.contains("subagent_summary("));
-    assert!(!transcript.contains("subagent_row("));
+    let rows = source("src/views/codex_view/message_rows.rs");
+    for source in [&transcript, &rows] {
+        assert!(!source.contains("subagent_summary("));
+        assert!(!source.contains("subagent_row("));
+    }
     let panel = source("src/views/sidebar/checkout_panel.rs");
     assert!(panel.contains("selected_session_has_agents"));
     assert!(panel.contains("let agents_only = self.is_zen() || targets.is_empty()"));
@@ -805,13 +808,10 @@ fn subagents_stay_in_session_right_panel_and_preview_is_read_only() {
     assert!(preview_return.contains(".child(messages.px("));
     assert!(!preview_return.contains("session.send("));
     assert!(transcript.contains("if this.transcript_only() {\n                    return;"));
-    let message_row = transcript
-        .split("fn render_message_row(")
-        .nth(1)
+    let message_row = rows
+        .split_once("fn render_message_row(")
         .expect("message rows own their read-only preview guard")
-        .split("fn render_message_minimap(")
-        .next()
-        .unwrap();
+        .1;
     let message_row = message_row.split_whitespace().collect::<Vec<_>>().join(" ");
     let guarded_edit = message_row
         .split("if !self.transcript_only() && approval.is_none() && source_index.is_some() {")
