@@ -1,3 +1,12 @@
+## Dashboard Activity heading colors
+
+Linux dark and light desktop captures showed Needs you, Review and Working
+using colored heading text at the panel inset with muted counts. Ready was
+below the capture viewport. The temporary capture fixture reported leaked GPUI
+input handles on teardown after writing the images. The mixed-session fixture
+verified all four groups at 1100 and 560 px, including enlarged rem at 560 px,
+with Codex and Claude snapshots. Live provider transport was untested.
+
 ## Rust module refactoring follow-up
 
 The second pass split the 18 first-party Rust files at or above 2,000 lines on

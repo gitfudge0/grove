@@ -1047,9 +1047,6 @@ impl Sidebar {
                             this.hover_review_category(workspace, *hovered, cx);
                         }))
                     });
-                // Group headings use stationary catalog marks. A row's own status
-                // still reflects its current state while its group move settles.
-                let group_status = super::super::status::session_kind(section);
                 category = category.child(
                     div()
                         .id(gpui::SharedString::from(format!(
@@ -1064,21 +1061,10 @@ impl Sidebar {
                         .text_size(rpx(TEXT_SMALL))
                         .child(
                             div()
-                                .w(rpx(ICON_LG))
-                                .flex_shrink_0()
-                                .flex()
-                                .justify_center()
-                                .child(icon(
-                                    group_status.icon_name(),
-                                    ICON_SM,
-                                    group_status.color(),
-                                )),
-                        )
-                        .child(
-                            div()
                                 .flex_1()
                                 .min_w_0()
                                 .font_weight(gpui::FontWeight::MEDIUM)
+                                .text_color(super::super::status::session_kind(section).color())
                                 .child(section),
                         )
                         .child(
