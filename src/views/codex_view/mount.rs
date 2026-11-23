@@ -75,16 +75,6 @@ impl CodexView {
                 if this.menu.is_some() && !this.composer_menu_valid(cx) {
                     this.close_menu(cx);
                 }
-                if let Some(picker) = &this.model_picker {
-                    let session = this.session.read(cx);
-                    if session.catalog_missing_executable.is_some() {
-                        let provider = session.state.saved.provider;
-                        picker.update(cx, |picker, cx| {
-                            picker.mark_missing(provider, cx);
-                            picker.discover(cx);
-                        });
-                    }
-                }
                 cx.notify();
             }),
             cx.observe(&input, |this, _, cx| {

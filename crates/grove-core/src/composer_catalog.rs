@@ -391,6 +391,19 @@ pub fn models_require_refresh(saved: &SavedSession, args: &[String]) -> bool {
     crate::model_catalog::is_stale(saved, args)
 }
 
+/// Hydrate model rows on a background thread. Expired rows can still be shown
+/// while discovery runs. The boolean reports whether the rows satisfy discovery.
+pub fn hydrate_models(
+    saved: &SavedSession,
+    args: &[String],
+) -> Option<(Vec<serde_json::Value>, bool)> {
+    let key = crate::model_catalog::Key::new(saved, args)?;
+    if let Some(models) = crate::model_catalog::load(&key) {
+        return Some((models, true));
+    }
+    crate::model_catalog::cached(saved, args).map(|models| (models, false))
+}
+
 /// Model browsing does not need checkout skills or configured defaults. Disk hydration is
 /// deliberately on the caller's background thread; only a missing catalog starts discovery.
 pub fn discover_models(

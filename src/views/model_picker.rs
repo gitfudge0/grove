@@ -1,7 +1,12 @@
 //! Provider browsing is independent of the conversation's selected provider.
 use super::*;
 use crate::{settings::SettingsState, views::components::disabled_header_control};
+use grove_core::composer_catalog::{self, Scope};
 use serde_json::Value;
+use std::{
+    collections::VecDeque,
+    time::{Duration, Instant},
+};
 
 const PICKER_W: f32 = 360.0;
 const RAIL_W: f32 = 44.0;
@@ -38,6 +43,142 @@ pub(super) enum PickerEvent {
     Select(codex::Provider, String),
     Dismiss,
 }
+// These results outlive the popup and are shared by matching pickers. Provider
+// rows themselves use the existing in-memory and persisted model cache.
+#[derive(Default)]
+struct PickerDiscovery {
+    requests: VecDeque<(Scope, Entity<ModelRequest>)>,
+    availability: Option<Entity<Availability>>,
+}
+impl gpui::Global for PickerDiscovery {}
+
+#[derive(Clone, Default)]
+struct ModelRequest {
+    pending: bool,
+    remembered: Option<Vec<Value>>,
+    result: Option<Result<Vec<Value>, String>>,
+}
+
+impl ModelRequest {
+    fn start(
+        &mut self,
+        saved: codex::SavedSession,
+        args: Vec<String>,
+        draft: bool,
+        retry: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let hydrate = cx.background_spawn({
+            let saved = saved.clone();
+            let args = args.clone();
+            async move {
+                if draft {
+                    grove_core::env_path::wait_for_initial_environment();
+                    saved
+                        .provider
+                        .agent()
+                        .check_executable()
+                        .map_err(|error| error.to_string())?;
+                }
+                let remembered = composer_catalog::hydrate_models(&saved, &args);
+                if retry {
+                    composer_catalog::invalidate(&saved, &args);
+                }
+                Ok(remembered)
+            }
+        });
+        cx.spawn(async move |this, cx| {
+            let result = match hydrate.await {
+                Ok(Some((rows, true))) if !retry => Ok(rows),
+                Ok(remembered) => {
+                    if let Some((rows, _)) = remembered {
+                        let _ = this.update(cx, |request, cx| {
+                            request.remembered = Some(rows);
+                            cx.notify();
+                        });
+                    }
+                    cx.background_spawn(async move {
+                        composer_catalog::discover(saved, args)
+                            .map(|snapshot| snapshot.models.to_vec())
+                    })
+                    .await
+                }
+                Err(error) => Err(error),
+            };
+            let _ = this.update(cx, |request, cx| {
+                request.finish(result, cx);
+            });
+        })
+        .detach();
+    }
+
+    fn finish(&mut self, result: Result<Vec<Value>, String>, cx: &mut Context<Self>) {
+        self.pending = false;
+        if result.is_ok() {
+            self.remembered = None;
+        }
+        self.result = Some(result);
+        cx.notify();
+    }
+}
+
+#[derive(Default)]
+struct Availability {
+    available: [Option<bool>; 2],
+    checked_at: Option<Instant>,
+    pending: bool,
+}
+
+impl Availability {
+    fn refresh(&mut self, force: bool, cx: &mut Context<Self>) {
+        const FRESHNESS: Duration = Duration::from_secs(5);
+        if self.pending || (!force && self.checked_at.is_some_and(|at| at.elapsed() < FRESHNESS)) {
+            return;
+        }
+        self.pending = true;
+        let task = cx.background_spawn(async {
+            grove_core::env_path::wait_for_initial_environment();
+            PROVIDERS.map(|provider| provider.agent().executable_available())
+        });
+        cx.spawn(async move |this, cx| {
+            let available = task.await;
+            let _ = this.update(cx, |this, cx| {
+                this.available = available;
+                this.checked_at = Some(Instant::now());
+                this.pending = false;
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+}
+
+fn shared_request(scope: Scope, cx: &mut App) -> Entity<ModelRequest> {
+    const MAX_REQUESTS: usize = 32;
+    let requests = &cx.global::<PickerDiscovery>().requests;
+    if let Some(index) = requests.iter().position(|(key, _)| key == &scope) {
+        let request = requests[index].1.clone();
+        cx.global_mut::<PickerDiscovery>()
+            .requests
+            .make_contiguous()[index..]
+            .rotate_left(1);
+        return request;
+    }
+    if requests.len() >= MAX_REQUESTS {
+        if let Some(index) = requests
+            .iter()
+            .position(|(_, entry)| !entry.read(cx).pending)
+        {
+            cx.global_mut::<PickerDiscovery>().requests.remove(index);
+        }
+    }
+    let request = cx.new(|_| ModelRequest::default());
+    cx.global_mut::<PickerDiscovery>()
+        .requests
+        .push_back((scope, request.clone()));
+    request
+}
+
 pub(super) struct ModelPicker {
     pub(super) passive: bool,
     saved: codex::SavedSession,
@@ -48,6 +189,9 @@ pub(super) struct ModelPicker {
     generations: [u64; 2],
     refreshing: [bool; 2],
     refresh_errors: [Option<String>; 2],
+    request_subscriptions: [Option<Subscription>; 2],
+    availability: Option<Entity<Availability>>,
+    _availability_subscription: Option<Subscription>,
     refresh_focus: FocusHandle,
     search: Entity<InputState>,
     cursor: usize,
@@ -115,9 +259,36 @@ impl ModelPicker {
             .model_favorites
             .iter()
             .any(|favorite| allow_switch || favorite.provider == state.saved.provider);
+        if !cx.has_global::<PickerDiscovery>() {
+            cx.set_global(PickerDiscovery::default());
+        }
+        let availability = allow_switch.then(|| {
+            if let Some(availability) = &cx.global::<PickerDiscovery>().availability {
+                return availability.clone();
+            }
+            let availability = cx.new(|_| Availability::default());
+            cx.global_mut::<PickerDiscovery>().availability = Some(availability.clone());
+            availability
+        });
+        let availability_subscription = availability.as_ref().map(|availability| {
+            cx.observe(availability, |this, _, cx| {
+                if !this.passive {
+                    this.discover(cx);
+                }
+            })
+        });
+        let mut saved = codex::SavedSession::empty(
+            state.saved.key.clone(),
+            state.saved.provider,
+            state.saved.project.clone(),
+            state.saved.cwd.clone(),
+        );
+        saved.roots.clone_from(&state.saved.roots);
+        saved.config_args.clone_from(&state.saved.config_args);
+        saved.native_config_version = state.saved.native_config_version;
         let picker = Self {
             passive: false,
-            saved: state.saved.clone(),
+            saved,
             allow_switch,
             selected: state.model.clone().or_else(|| state.resolved_model.clone()),
             filter: if has_scoped_favorites {
@@ -129,6 +300,9 @@ impl ModelPicker {
             generations: [0; 2],
             refreshing: [false; 2],
             refresh_errors: [None, None],
+            request_subscriptions: [None, None],
+            availability,
+            _availability_subscription: availability_subscription,
             refresh_focus: cx.focus_handle(),
             search,
             cursor: 0,
@@ -170,37 +344,61 @@ impl ModelPicker {
             }
     }
     pub(super) fn discover(&mut self, cx: &mut Context<Self>) {
+        self.refresh_availability(false, cx);
         self.update_provider_groups(cx);
         for provider in PROVIDERS {
             if !self.needs_provider(provider, cx) {
                 continue;
             }
-            let needs_catalog = matches!(self.catalogs[index(provider)], Catalog::Unloaded);
-            let stale = if matches!(self.catalogs[index(provider)], Catalog::Ready(_)) {
-                let mut saved = self.saved.clone();
-                saved.provider = provider;
-                let settings = &cx.global::<SettingsState>().store;
-                let args = provider.agent().launch_args_for_backend(
-                    true,
-                    settings.yolo_enabled,
-                    settings.chrome_enabled.unwrap_or(false),
-                );
-                let stale = grove_core::composer_catalog::models_require_refresh(&saved, &args);
-                #[cfg(test)]
-                let stale = self
-                    .catalog_fixture
-                    .as_ref()
-                    .filter(|(selected, _, _)| *selected == provider)
-                    .map_or(stale, |(_, _, stale)| *stale);
-                stale
-            } else {
-                false
-            };
-            if needs_catalog || stale {
-                self.load(provider, false, cx);
+            let i = index(provider);
+            if self.refreshing[i] || self.refresh_errors[i].is_some() {
+                continue;
+            }
+            let args = Self::launch_args(provider, cx);
+            let mut saved = self.saved.clone();
+            saved.provider = provider;
+            let stale = composer_catalog::models_require_refresh(&saved, &args);
+            #[cfg(test)]
+            let stale = self
+                .catalog_fixture
+                .as_ref()
+                .filter(|(selected, _, _)| *selected == provider)
+                .map_or(stale, |(_, _, stale)| *stale);
+            if matches!(self.catalogs[i], Catalog::Unloaded | Catalog::Ready(_)) {
+                let scope = Scope::new(&saved, &args);
+                let shared = cx
+                    .global::<PickerDiscovery>()
+                    .requests
+                    .iter()
+                    .find(|(key, _)| key == &scope)
+                    .map(|(_, request)| request.read(cx));
+                if matches!(self.catalogs[i], Catalog::Unloaded)
+                    || stale
+                    || shared.is_some_and(|request| {
+                        request.pending || matches!(request.result, Some(Err(_)))
+                    })
+                {
+                    self.load(provider, false, cx);
+                }
             }
         }
     }
+
+    fn launch_args(provider: codex::Provider, cx: &App) -> Vec<String> {
+        let settings = &cx.global::<SettingsState>().store;
+        provider.agent().launch_args_for_backend(
+            true,
+            settings.yolo_enabled,
+            settings.chrome_enabled.unwrap_or(false),
+        )
+    }
+
+    fn refresh_availability(&self, force: bool, cx: &mut Context<Self>) {
+        if let Some(availability) = &self.availability {
+            availability.update(cx, |availability, cx| availability.refresh(force, cx));
+        }
+    }
+
     fn update_provider_groups(&mut self, cx: &mut Context<Self>) {
         if !self.allow_switch {
             return;
@@ -230,7 +428,9 @@ impl ModelPicker {
         if !self.allow_switch {
             return false;
         }
-        let missing = provider.agent().check_executable().is_err();
+        let missing = self.availability.as_ref().is_some_and(|availability| {
+            availability.read(cx).available[index(provider)] == Some(false)
+        });
         #[cfg(test)]
         let missing = missing || self.missing_fixture == Some(provider);
         if missing {
@@ -239,111 +439,119 @@ impl ModelPicker {
         missing
     }
 
-    pub(super) fn mark_missing(&mut self, provider: codex::Provider, cx: &mut Context<Self>) {
+    fn mark_missing(&mut self, provider: codex::Provider, cx: &mut Context<Self>) {
         let i = index(provider);
         if matches!(self.catalogs[i], Catalog::Missing) {
             return;
         }
         self.generations[i] = self.generations[i].wrapping_add(1);
+        self.request_subscriptions[i] = None;
         self.refreshing[i] = false;
         self.refresh_errors[i] = None;
         self.catalogs[i] = Catalog::Missing;
         cx.notify();
     }
 
-    fn load(&mut self, provider: codex::Provider, refresh: bool, cx: &mut Context<Self>) {
+    fn load(&mut self, provider: codex::Provider, retry: bool, cx: &mut Context<Self>) {
         let i = index(provider);
-        if self.check_missing(provider, cx) || self.refreshing[i] {
-            return;
-        }
-        let retry = refresh
-            || matches!(self.catalogs[i], Catalog::Error(_) | Catalog::Missing)
-            || self.refresh_errors[i].is_some();
-        self.generations[i] = self.generations[i].wrapping_add(1);
-        let generation = self.generations[i];
-        self.refresh_errors[i] = None;
-        let retained = matches!(self.catalogs[i], Catalog::Ready(_));
-        if !retained {
-            self.catalogs[i] = Catalog::Loading;
-        }
-        if !std::path::Path::new(&self.saved.cwd).is_dir() {
-            self.catalogs[i] =
-                Catalog::Error("The selected checkout is no longer available.".into());
-            cx.notify();
+        if self.passive || self.check_missing(provider, cx) || self.refreshing[i] {
             return;
         }
         let mut saved = self.saved.clone();
         saved.provider = provider;
         saved.label = provider.label().into();
-        saved.thread_id = None;
-        saved.claude_resume = None;
-        saved.items.clear();
-        saved.draft.clear();
-        saved.draft_images.clear();
-        saved.draft_reference = None;
-        saved.composer = codex::ComposerSettings::default();
-        let settings = &cx.global::<SettingsState>().store;
-        let args = provider.agent().launch_args_for_backend(
-            true,
-            settings.yolo_enabled,
-            settings.chrome_enabled.unwrap_or(false),
-        );
-        if !retry {
-            let remembered = grove_core::composer_catalog::cached_models(&saved, &args);
-            #[cfg(test)]
-            let remembered = self
-                .catalog_fixture
-                .as_ref()
-                .filter(|(selected, _, _)| *selected == provider)
-                .map(|(_, rows, _)| rows.clone())
-                .or(remembered);
-            if let Some(state) = remembered {
-                let stale = grove_core::composer_catalog::models_require_refresh(&saved, &args);
-                #[cfg(test)]
-                let stale = self
-                    .catalog_fixture
-                    .as_ref()
-                    .filter(|(selected, _, _)| *selected == provider)
-                    .map_or(stale, |(_, _, stale)| *stale);
-                self.restore_cached_models(provider, state, cx);
-                if !stale {
-                    return;
-                }
-            }
-        }
-        self.refreshing[i] = true;
+        let args = Self::launch_args(provider, cx);
+        let scope = Scope::new(&saved, &args);
+
         #[cfg(test)]
         let fixture = self
             .catalog_fixture
             .as_ref()
-            .is_some_and(|(selected, _, _)| *selected == provider);
-        let draft = self.allow_switch;
-        let task = cx.background_spawn(async move {
-            #[cfg(test)]
-            if fixture {
-                return Err("offline catalog fixture".into());
+            .filter(|(selected, _, _)| *selected == provider);
+        #[cfg(test)]
+        let uses_fixture = fixture.is_some();
+        // A newer successful transport or discovery can supersede an earlier
+        // picker error. Keep an in-flight explicit refresh visible to all pickers.
+        let request = shared_request(scope, cx);
+        let pending = request.read(cx).pending;
+        let remembered = composer_catalog::cached_models(&saved, &args);
+        #[cfg(test)]
+        let remembered = fixture.map(|(_, rows, _)| rows.clone()).or(remembered);
+        if !retry && !pending {
+            if let Some(rows) = &remembered {
+                let stale = composer_catalog::models_require_refresh(&saved, &args);
+                #[cfg(test)]
+                let stale = fixture.map_or(stale, |(_, _, stale)| *stale);
+                self.restore_cached_models(provider, rows.clone(), cx);
+                if !stale {
+                    if request.read(cx).result.is_some() {
+                        request.update(cx, |request, _| *request = ModelRequest::default());
+                    }
+                    return;
+                }
             }
-            if draft {
-                grove_core::env_path::wait_for_initial_environment();
-                provider
-                    .agent()
-                    .check_executable()
-                    .map_err(|missing| missing.to_string())?;
-            }
-            if retry {
-                grove_core::composer_catalog::invalidate(&saved, &args);
-            }
-            grove_core::composer_catalog::discover_models(saved, args)
-        });
-        cx.spawn(async move |this, cx| {
-            let result = task.await;
-            let _ = this.update(cx, |this, cx| {
-                this.complete_models(provider, generation, result, cx);
+        }
+
+        self.generations[i] = self.generations[i].wrapping_add(1);
+        let generation = self.generations[i];
+        self.refresh_errors[i] = None;
+        if !matches!(self.catalogs[i], Catalog::Ready(_)) {
+            self.catalogs[i] = Catalog::Loading;
+        }
+        // A removed checkout cannot start discovery.
+        if !std::path::Path::new(&saved.cwd).is_dir() {
+            self.catalogs[i] =
+                Catalog::Error("The selected checkout is no longer available.".into());
+            cx.notify();
+            return;
+        }
+        if !retry && matches!(request.read(cx).result, Some(Err(_))) {
+            self.sync_request(provider, generation, request.read(cx).clone(), cx);
+            return;
+        }
+
+        self.refreshing[i] = true;
+        self.request_subscriptions[i] = Some(cx.observe(&request, move |this, request, cx| {
+            this.sync_request(provider, generation, request.read(cx).clone(), cx);
+        }));
+        if pending {
+            self.sync_request(provider, generation, request.read(cx).clone(), cx);
+        } else {
+            request.update(cx, |request, cx| {
+                request.pending = true;
+                request.result = None;
+                if remembered.is_some() {
+                    request.remembered = remembered;
+                }
+                #[cfg(test)]
+                if uses_fixture {
+                    return;
+                }
+                request.start(saved, args, self.allow_switch, retry, cx);
             });
-        })
-        .detach();
+        }
         cx.notify();
     }
+
+    fn sync_request(
+        &mut self,
+        provider: codex::Provider,
+        generation: u64,
+        request: ModelRequest,
+        cx: &mut Context<Self>,
+    ) {
+        if self.passive || self.generations[index(provider)] != generation {
+            return;
+        }
+        if let Some(rows) = request.remembered {
+            self.catalogs[index(provider)] = Catalog::Ready(models(provider, rows));
+            cx.notify();
+        }
+        if let Some(result) = request.result {
+            self.complete_models(provider, generation, result, cx);
+        }
+    }
+
     fn restore_cached_models(
         &mut self,
         provider: codex::Provider,
@@ -370,6 +578,7 @@ impl ModelPicker {
             self.discover(cx);
             return;
         }
+        self.request_subscriptions[i] = None;
         self.refreshing[i] = false;
         match result {
             Ok(values) => {
@@ -388,12 +597,12 @@ impl ModelPicker {
         if self.passive || self.refreshing.iter().any(|pending| *pending) {
             return;
         }
+        self.refresh_availability(true, cx);
         self.update_provider_groups(cx);
         for provider in PROVIDERS {
-            if !self.needs_provider(provider, cx) {
-                continue;
+            if self.needs_provider(provider, cx) {
+                self.load(provider, true, cx);
             }
-            self.load(provider, true, cx);
         }
     }
     fn visible(&self, cx: &App) -> Vec<Model> {
@@ -819,12 +1028,12 @@ impl Render for ModelPicker {
                                 .child(crate::icons::icon("refresh", ICON_SM, c::FG_DIM()))
                                 .child("Retry")
                                 .on_click(cx.listener(move |this, _, _, cx| {
-                                    this.load(provider, false, cx);
+                                    this.load(provider, true, cx);
                                 }))
                                 .on_key_down(cx.listener(
                                     move |this, event: &gpui::KeyDownEvent, _, cx| {
                                         if action_key(event) {
-                                            this.load(provider, false, cx);
+                                            this.load(provider, true, cx);
                                             cx.stop_propagation();
                                         }
                                     },
@@ -1075,7 +1284,12 @@ mod tests {
                     .toggle_model_favorite(available, available_model);
                 picker.update(cx, |picker, cx| {
                     seed(picker);
-                    picker.missing_fixture = Some(missing);
+                    let availability = picker.availability.clone().unwrap();
+                    availability.update(cx, |availability, _| {
+                        availability.pending = true;
+                        availability.available = [Some(true); 2];
+                        availability.available[index(missing)] = Some(false);
+                    });
                     let generation = picker.generations[index(missing)];
                     let rows = vec![serde_json::json!({"model": missing_model})];
                     picker.change_filter(Filter::Favorites, cx);
@@ -1099,7 +1313,9 @@ mod tests {
                     assert_eq!(picker.filter, Filter::Provider(available));
                     assert_eq!(picker.saved.provider, codex::Provider::Codex);
 
-                    picker.missing_fixture = None;
+                    availability.update(cx, |availability, _| {
+                        availability.available[index(missing)] = Some(true);
+                    });
                     picker.catalog_fixture = Some((missing, rows.clone(), false));
                     cx.global_mut::<SettingsState>()
                         .store
@@ -1108,10 +1324,15 @@ mod tests {
                     picker.refresh_visible(cx);
                     assert!(picker.shows_provider(missing));
                     assert!(matches!(picker.catalogs[index(missing)], Catalog::Loading));
-                    picker.complete_models(
+                    let mut saved = picker.saved.clone();
+                    saved.provider = missing;
+                    let args = ModelPicker::launch_args(missing, cx);
+                    let request = shared_request(Scope::new(&saved, &args), cx);
+                    request.update(cx, |request, cx| request.finish(Ok(rows), cx));
+                    picker.sync_request(
                         missing,
                         picker.generations[index(missing)],
-                        Ok(rows),
+                        request.read(cx).clone(),
                         cx,
                     );
                     assert!(picker.visible(cx).iter().any(|m| m.id == missing_model));
@@ -1165,78 +1386,76 @@ mod tests {
     }
 
     #[gpui::test]
-    fn expired_cached_rows_remain_visible_during_background_refresh(cx: &mut gpui::TestAppContext) {
+    fn reopening_reuses_fresh_rows_and_shared_refresh_state(cx: &mut gpui::TestAppContext) {
         cx.update(|cx| {
             gpui_component::init(cx);
             cx.set_global(SettingsState::new(grove_core::storage::Store::default()));
         });
         let cwd = tempfile::tempdir().unwrap();
-        let (_, _) = cx.add_window_view(|window, cx| {
-            let picker = cx.new(|cx| {
-                let mut state = state();
-                state.saved.cwd = cwd.path().to_string_lossy().into_owned();
-                state.models.clear();
-                let mut picker = ModelPicker::new(&state, true, window, cx);
-                for provider in [codex::Provider::Codex, codex::Provider::Claude] {
-                    picker.filter = Filter::Provider(provider);
-                    picker.catalogs = [Catalog::Unloaded, Catalog::Unloaded];
-                    picker.catalog_fixture = Some((
-                        provider,
-                        vec![serde_json::json!({"model":"remembered"})],
-                        true,
-                    ));
-                    picker.discover(cx);
-                    assert!(
-                        picker.refreshing[index(provider)],
-                        "expired rows must continue into load's background task"
-                    );
-                    assert!(
-                        !picker.refreshing[index(if provider == codex::Provider::Codex {
-                            codex::Provider::Claude
-                        } else {
-                            codex::Provider::Codex
-                        })]
-                    );
-                    assert_eq!(picker.visible(cx)[0].id, "remembered");
-                    picker.complete_models(
-                        provider,
-                        picker.generations[index(provider)],
-                        Err("offline".into()),
-                        cx,
-                    );
-                    assert!(!picker.refreshing[index(provider)]);
-                    assert_eq!(picker.visible(cx)[0].id, "remembered");
-                    assert_eq!(
-                        picker.refresh_errors[index(provider)].as_deref(),
-                        Some("offline")
-                    );
-                    picker.refresh_errors[index(provider)] = None;
-                    picker.catalogs[index(provider)] = Catalog::Unloaded;
-                    picker.catalog_fixture =
-                        Some((provider, vec![serde_json::json!({"model":"fresh"})], false));
-                    picker.discover(cx);
-                    assert!(
-                        !picker.refreshing[index(provider)],
-                        "fresh cache must skip the background task"
-                    );
-                    assert_eq!(picker.visible(cx)[0].id, "fresh");
-                    picker.catalog_fixture.as_mut().unwrap().2 = true;
-                    picker.discover(cx);
-                    assert!(
-                        picker.refreshing[index(provider)],
-                        "a Ready catalog that ages must refresh too"
-                    );
-                    picker.complete_models(
-                        provider,
-                        picker.generations[index(provider)],
-                        Err("offline".into()),
-                        cx,
-                    );
-                }
-                picker
-            });
+        let (_, cx) = cx.add_window_view(|window, cx| {
+            let picker = cx.new(|cx| ModelPicker::new(&state(), false, window, cx));
             gpui_component::Root::new(picker, window, cx).bordered(false)
         });
+        for provider in PROVIDERS {
+            let (state, request, reopened) = cx.update(|window, cx| {
+                let mut state = state();
+                state.saved.cwd = cwd.path().to_string_lossy().into_owned();
+                state.saved.provider = provider;
+                state.models.clear();
+                let rows = vec![serde_json::json!({"model":"cached"})];
+                let args = ModelPicker::launch_args(provider, cx);
+                let scope = Scope::new(&state.saved, &args);
+                let make_picker = |stale, window: &mut Window, cx: &mut App| {
+                    cx.new(|cx| {
+                        let mut picker = ModelPicker::new(&state, false, window, cx);
+                        picker.catalog_fixture = Some((provider, rows.clone(), stale));
+                        picker.discover(cx);
+                        picker
+                    })
+                };
+
+                for _ in 0..2 {
+                    let warm = make_picker(false, window, cx);
+                    assert!(!warm.read(cx).refreshing[index(provider)]);
+                    assert_eq!(warm.read(cx).visible(cx)[0].id, "cached");
+                }
+                let first = make_picker(true, window, cx);
+                assert!(first.read(cx).refreshing[index(provider)]);
+                drop(first);
+                let request = shared_request(scope.clone(), cx);
+                assert!(request.read(cx).pending);
+                let reopened = make_picker(true, window, cx);
+                assert!(reopened.read(cx).refreshing[index(provider)]);
+                assert_eq!(reopened.read(cx).visible(cx)[0].id, "cached");
+                assert_eq!(shared_request(scope, cx).entity_id(), request.entity_id());
+                (state, request, reopened)
+            });
+            cx.update(|_, cx| {
+                request.update(cx, |request, cx| request.finish(Err("offline".into()), cx));
+            });
+            cx.update(|window, cx| {
+                assert_eq!(
+                    reopened.read(cx).refresh_errors[index(provider)].as_deref(),
+                    Some("offline")
+                );
+                let failed = cx.new(|cx| {
+                    let mut picker = ModelPicker::new(&state, false, window, cx);
+                    picker.catalog_fixture =
+                        Some((provider, vec![serde_json::json!({"model":"cached"})], true));
+                    picker.discover(cx);
+                    picker
+                });
+                assert_eq!(failed.read(cx).visible(cx)[0].id, "cached");
+                assert_eq!(
+                    failed.read(cx).refresh_errors[index(provider)].as_deref(),
+                    Some("offline")
+                );
+                assert!(!request.read(cx).pending);
+                failed.update(cx, |picker, cx| picker.load(provider, true, cx));
+                assert!(request.read(cx).pending);
+                assert!(failed.read(cx).refreshing[index(provider)]);
+            });
+        }
     }
 
     #[gpui::test]
@@ -1495,7 +1714,10 @@ mod tests {
         draw(cx);
         picker.read_with(cx, |p, cx| {
             assert_eq!(p.saved.provider, codex::Provider::Codex);
-            assert_eq!(p.saved.draft, "Keep this draft");
+            assert!(
+                p.saved.draft.is_empty(),
+                "discovery does not retain the draft"
+            );
             assert_eq!(p.visible(cx).len(), 1);
         });
         assert!(events.borrow().is_empty());

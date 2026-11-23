@@ -309,14 +309,16 @@ pub(crate) fn revision_for_key(key: Option<&Key>) -> Option<(String, bool)> {
 }
 
 pub(crate) fn load(key: &Key) -> Option<Vec<Value>> {
-    let mut cache = cache()
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    if cache.invalidated.contains(&key.fingerprint) {
-        return None;
-    }
-    if let Some(entry) = cache.entries.get(&key.fingerprint) {
-        return entry.fresh_at(now_seconds()).then(|| entry.models.clone());
+    {
+        let cache = cache()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if cache.invalidated.contains(&key.fingerprint) {
+            return None;
+        }
+        if let Some(entry) = cache.entries.get(&key.fingerprint) {
+            return entry.fresh_at(now_seconds()).then(|| entry.models.clone());
+        }
     }
     if fs_err::metadata(&key.path).ok()?.len() > MAX_MODELS {
         return None;
@@ -327,6 +329,15 @@ pub(crate) fn load(key: &Key) -> Option<Vec<Value>> {
         || persisted.models.is_empty()
     {
         return None;
+    }
+    let mut cache = cache()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if cache.invalidated.contains(&key.fingerprint) {
+        return None;
+    }
+    if let Some(entry) = cache.entries.get(&key.fingerprint) {
+        return entry.fresh_at(now_seconds()).then(|| entry.models.clone());
     }
     let models = persisted.models;
     if cache.entries.len() >= MAX_ENTRIES {

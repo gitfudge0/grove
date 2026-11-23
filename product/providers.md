@@ -29,7 +29,9 @@ checkouts can share a catalog; custom configuration keeps conservative isolation
 Disk loading and fingerprinting run on background/provider threads.
 
 Model lists require rediscovery after 24 hours (or a backward clock change), while
-remembered rows remain available for display. Source changes invalidate workspace
+remembered rows remain available for display. Picker refreshes and their outcomes
+are shared within the matching scope across opens. Reopening joins pending work
+and preserves failures for explicit Retry. Source changes invalidate workspace
 metadata through shared, provider-specific background scans at five-second
 intervals; explicit retry bypasses the scan memo. Matching sessions share a scan
 and pass its input fingerprint through discovery rather than scanning twice.
@@ -64,10 +66,11 @@ conversation. Successful refresh replaces the shared model catalog. The last
 successful disk record survives a failed refresh; it does not turn that refresh
 into a success.
 
-For a Dashboard draft, Grove rechecks executable resolution before reusing
-provider models and before launch. Confirmed missing executables remove
-provider groups and cached rows from the picker and gate launch while
-retaining the successful disk catalog. An inconclusive
+For a Dashboard draft, Grove checks executable availability separately from model
+freshness. Pickers share a short-lived availability check on a background thread.
+Grove rechecks the executable before launching a draft. Confirmed missing
+executables remove provider groups and cached rows from the picker and gate
+launch while retaining the successful disk catalog. An inconclusive
 lookup still allows the Unix login-shell fallback. Retry resolves the
 executable again, so installation into an existing search directory can
 recover without restarting Grove. A live conversation can continue to use
