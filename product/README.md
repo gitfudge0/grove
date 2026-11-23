@@ -14,6 +14,7 @@ verification records are evidence, not competing specifications.
 | Exploratory UI mocks and selected references | [Mocks and references](ui-mocks.md) |
 | UI acceptance and completion evidence | [UI acceptance](ui-acceptance.md) |
 | Plans, reports or change categories | [Feature behavior](features.md) |
+| Rust module boundaries, public paths or test moves | [Organize code by responsibility](development.md#organize-code-by-responsibility) |
 | GPUI APIs, state, async work or rendering | [Development guidance](development.md) |
 | A measured native/HTML component reference | [Reference workflow](ui-reference.md) |
 | Native provider contracts, completion, ownership or diagnostics | [Provider guidance](providers.md) |

@@ -1,7 +1,9 @@
-# GPUI development guidance
+# Rust and GPUI development guidance
 
-Use this when changing GPUI bootstrap, entities, actions, focus, async work,
-custom elements, text rendering or platform behavior. For Grove UI semantics
+For Rust module changes, follow [Organize code by responsibility](#organize-code-by-responsibility).
+
+For GPUI bootstrap, entities, actions, focus, async work, custom elements,
+text rendering or platform behavior, verify the pinned source. For Grove UI semantics
 and native acceptance use the [design contract](design.md) and
 [Grove UI skill](../.agents/skills/grove-ui/SKILL.md).
 

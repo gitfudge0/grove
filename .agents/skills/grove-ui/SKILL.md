@@ -46,6 +46,7 @@ acceptance guide as well as the relevant implementation/reference procedure.
 | Native controls, layout, typography, interaction states or motion | [Native implementation](../../../product/ui-implementation.md) |
 | Exploratory mock creation/revision or implementation of a selected HTML reference | [Mocks and references](../../../product/ui-mocks.md); measured-reference work also uses its linked reference workflow |
 | Native implementation, review, verification or completion claims | [UI acceptance](../../../product/ui-acceptance.md), including the relevant surface checks and Codex/Claude evidence boundaries |
+| Splitting Rust UI modules or relocating their tests | [Organize code by responsibility](../../../product/development.md#organize-code-by-responsibility) |
 
 For GPUI mechanics, use the pinned-source procedure in
 [development guidance](../../../product/development.md). Delivery follows

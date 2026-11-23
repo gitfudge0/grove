@@ -20,6 +20,8 @@
   identify what was actually exercised. Cover affected platforms when changing
   platform-specific behavior.
 - Read the [product guidance index](product/README.md) before product changes.
+- Before reorganizing Rust modules or moving their tests, follow
+  [Organize code by responsibility](product/development.md#organize-code-by-responsibility).
 - [product/design.md](product/design.md) is the normative UI contract; the project UI skill
   defines how to implement and verify it. Exact geometry comes from
   `src/views/tokens.rs` (or named module constants for one-consumer dimensions),
