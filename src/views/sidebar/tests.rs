@@ -74,8 +74,7 @@ impl Render for NavigationComponentFixture {
             } else {
                 sidebar.project_tree(None, window, cx)
             };
-            let hide_component = (sidebar.project_panel.is_some()
-                || sidebar.pending_new_worktree.is_some())
+            let hide_component = sidebar.project_panel.is_some()
                 && Sidebar::logical_window_width(window) < 640.0;
             let component = div()
                 .id("sidebar-rail")
@@ -109,11 +108,7 @@ impl Render for NavigationComponentFixture {
             let dashboard = sidebar.dashboard_open;
             sidebar.destination = global_navigation::Destination::Sessions;
             sidebar.dashboard_open = false;
-            let content = if sidebar.selection.is_none()
-                && sidebar.project_panel.is_none()
-                && sidebar.project_setup.is_none()
-                && sidebar.pending_new_worktree.is_none()
-            {
+            let content = if sidebar.selection.is_none() && sidebar.project_panel.is_none() {
                 div().into_any_element()
             } else {
                 sidebar.render_content(window, cx)
@@ -149,9 +144,7 @@ impl Render for NavigationComponentFixture {
                     cx.listener(|sidebar, event: &gpui::KeyDownEvent, window, cx| {
                         if event.keystroke.key == "escape"
                             && !sidebar.project_decision
-                            && (sidebar.pending_new_worktree.is_some()
-                                || sidebar.menu.is_some()
-                                || sidebar.confirmation_open())
+                            && (sidebar.menu.is_some() || sidebar.confirmation_open())
                         {
                             sidebar.act(Action::Cancel, window, cx);
                             cx.stop_propagation();
@@ -267,11 +260,7 @@ fn assert_empty_cross_project_launch(
     cx.update(|cx| {
         gpui_component::init(cx);
         let mut store = grove_core::storage::Store {
-            default_landing_page: if list {
-                grove_core::storage::LandingPage::Sessions
-            } else {
-                grove_core::storage::LandingPage::Projects
-            },
+            default_landing_page: grove_core::storage::LandingPage::Home,
             ..Default::default()
         };
         if projects {

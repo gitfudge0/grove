@@ -325,6 +325,23 @@ fn new_session_landing_opens_main_screen(cx: &mut gpui::TestAppContext) {
 }
 
 #[gpui::test]
+fn legacy_sessions_landing_opens_main_screen(cx: &mut gpui::TestAppContext) {
+    cx.update(|cx| {
+        init(cx);
+        let saved: grove_core::storage::Store =
+            serde_json::from_str(r#"{"default_landing_page":"sessions"}"#).unwrap();
+        cx.global_mut::<crate::settings::SettingsState>()
+            .store
+            .default_landing_page = saved.default_landing_page;
+    });
+    let (_, cx) = cx.add_window_view(Shell::new);
+    draw(cx);
+    assert!(cx.debug_bounds("dashboard-summary").is_some());
+    assert!(cx.debug_bounds("worktree-launcher-panel").is_none());
+    assert!(cx.debug_bounds("legacy-session-list").is_none());
+}
+
+#[gpui::test]
 fn numbered_destinations_route_and_respect_blocking_overlays(cx: &mut gpui::TestAppContext) {
     cx.update(init);
     cx.update(|cx| cx.bind_keys(k::shell_bindings()));

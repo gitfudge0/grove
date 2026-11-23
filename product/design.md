@@ -807,8 +807,8 @@ a destination. Manage projects opens the current workspace list. Manage worktree
 opens Active in that same list, expands the current project, scrolls to it, and
 focuses its disclosure. If the project is no longer active in the workspace,
 show the current list with an explanation. Neither entry changes the composer draft.
-Projects is not a primary sidebar destination. Legacy Projects startup preferences
-land on New session.
+Projects is not a primary sidebar destination. Legacy Projects and Sessions
+startup preferences land on New session.
 
 Add project and New worktree open nested forms in Settings → Projects from both
 the Settings list and Home shortcuts. Cancel returns to the source, restoring

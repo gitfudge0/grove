@@ -198,8 +198,6 @@ impl Sidebar {
         if self.confirmation_open()
             || self.project_panel.is_some()
             || self.menu.is_some()
-            || self.project_setup.is_some()
-            || self.pending_new_worktree.is_some()
             || self
                 .settings_panel
                 .as_ref()
@@ -473,8 +471,6 @@ impl Sidebar {
                             .any(|entry| entry.id == run.script_id)
                 })
             && self.project_panel.is_none()
-            && self.project_setup.is_none()
-            && self.pending_new_worktree.is_none()
             && !self.confirmation_open()
             && self.menu.is_none()
             && self

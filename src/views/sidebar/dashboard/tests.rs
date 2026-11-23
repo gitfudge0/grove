@@ -1079,7 +1079,22 @@ fn worktree_round_trip(cx: &mut gpui::TestAppContext, provider: grove_core::code
     });
     let (sidebar, cx) = cx.add_window_view(|window, cx| {
         let runtime = cx.new(Runtime::new);
-        Sidebar::new(runtime, window, cx)
+        use crate::views::settings_panel::{SettingsPanel, SettingsPanelEvent};
+
+        let settings = cx.new(|cx| SettingsPanel::new(runtime.clone(), cx));
+        let mut sidebar = Sidebar::new(runtime, window, cx);
+        sidebar.set_settings_panel(settings.clone(), cx);
+        cx.subscribe_in(
+            &settings,
+            window,
+            |sidebar: &mut Sidebar, _, event, window, cx| {
+                if let SettingsPanelEvent::UseCheckout { root, path } = event {
+                    sidebar.open_project_checkout_from_settings(root, path, window, cx);
+                }
+            },
+        )
+        .detach();
+        sidebar
     });
     cx.simulate_resize(gpui::size(gpui::px(1100.), gpui::px(800.)));
     cx.run_until_parked();
@@ -1109,42 +1124,35 @@ fn worktree_round_trip(cx: &mut gpui::TestAppContext, provider: grove_core::code
             let tray = sidebar.read(cx).dashboard.as_ref().unwrap().tray.clone();
             tray.update(cx, |_, cx| cx.emit(DestinationEvent::NewWorktree));
         });
-        cx.run_until_parked();
-        cx.update(|_, cx| assert_eq!(sidebar.read(cx).pending_new_worktree, Some(0)));
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            cx.run_until_parked();
+            cx.update(|window, cx| {
+                let _ = window.draw(cx);
+            });
+            if cx.debug_bounds("worktree-name-field").is_some() {
+                break;
+            }
+            assert!(std::time::Instant::now() < deadline, "worktree form did not open");
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
         cx.simulate_input(if cancel {
             "discarded-worktree"
         } else {
             "dashboard-round-trip"
         });
         cx.run_until_parked();
-        cx.update(|window, cx| {
-            sidebar.update(cx, |sidebar, cx| {
-                if cancel {
-                    sidebar.act(Action::Cancel, window, cx);
-                } else {
-                    sidebar.submit_worktree(cx);
-                    assert!(
-                        sidebar.worktree_errors.iter().all(Option::is_none),
-                        "{:?}",
-                        sidebar.worktree_errors
-                    );
-                }
-            });
-        });
+        cx.simulate_keystrokes(if cancel { "escape" } else { "enter" });
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-        while sidebar.read_with(cx, |sidebar, _| sidebar.worktree_creating)
-            && std::time::Instant::now() < deadline
-        {
+        while sidebar.read_with(cx, |sidebar, cx| {
+            sidebar.settings_panel.as_ref().unwrap().read(cx).is_open()
+        }) && std::time::Instant::now() < deadline {
             cx.run_until_parked();
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
         cx.update(|window, cx| {
             sidebar.update(cx, |sidebar, cx| {
-                assert!(
-                    !sidebar.worktree_creating,
-                    "worktree creation did not finish"
-                );
-                assert!(sidebar.pending_new_worktree.is_none());
+                assert!(!sidebar.settings_panel.as_ref().unwrap().read(cx).is_open());
                 assert!(sidebar.dashboard_open);
                 let d = sidebar.dashboard.as_ref().unwrap();
                 assert_eq!(d.session.entity_id(), session_id);

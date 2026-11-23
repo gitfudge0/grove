@@ -1008,15 +1008,6 @@ fn invalid_branch_does_not_enable_submit() {
         );
     }
 }
-#[test]
-fn server_errors_attach_to_their_source_field() {
-    assert_eq!(
-        worktree_error_field("Branch feat/billing already exists."),
-        1
-    );
-    assert_eq!(worktree_error_field("Worktree path /x already exists."), 2);
-    assert_eq!(worktree_error_field("git rev-parse --verify failed"), 2);
-}
 fn assert_spaced_session_breadcrumb(cx: &mut gpui::VisualTestContext) {
     let selectors = [
         "session-header-project-1",
@@ -1061,13 +1052,20 @@ fn worktree_form_fields_stay_within_narrow_and_desktop_canvas(cx: &mut gpui::Tes
         }));
         cx.set_global(crate::zoom::CurrentPtyDims::default());
     });
-    let (sidebar, cx) = cx.add_window_view(|window, cx| {
+    let (_, cx) = cx.add_window_view(|window, cx| {
         let runtime = cx.new(crate::runtime::Runtime::new);
-        Sidebar::new(runtime, window, cx)
+        let service = runtime.read(cx).projects.clone();
+        let setup = cx.new(|cx| {
+            super::super::worktree_form::WorktreeSetup::new(repo.path(), service, true, window, cx)
+        });
+        gpui_component::Root::new(setup, window, cx)
     });
-    cx.update(|window, cx| {
-        sidebar.update(cx, |sidebar, cx| sidebar.begin_worktree(0, window, cx));
-    });
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while cx.debug_bounds("worktree-name-field").is_none() {
+        assert!(std::time::Instant::now() < deadline, "worktree form did not open");
+        draw(cx);
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
     for (width, height) in [(1280., 800.), (320., 200.)] {
         cx.simulate_resize(gpui::size(gpui::px(width), gpui::px(height)));
         draw(cx);

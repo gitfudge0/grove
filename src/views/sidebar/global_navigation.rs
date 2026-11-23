@@ -32,7 +32,6 @@ impl From<LandingPage> for Destination {
             LandingPage::Home => Self::Home,
             LandingPage::Projects => Self::Home,
             LandingPage::History => Self::History,
-            LandingPage::Sessions => Self::Sessions,
         }
     }
 }
@@ -1300,12 +1299,9 @@ mod tests {
         });
     }
     #[test]
-    fn legacy_sessions_landing_remains_distinct_from_history() {
+    fn supported_landing_pages_keep_their_destinations() {
         assert_eq!(Destination::from(LandingPage::Projects), Destination::Home);
-        assert_eq!(
-            Destination::from(LandingPage::Sessions),
-            Destination::Sessions
-        );
+        assert_eq!(Destination::from(LandingPage::Home), Destination::Home);
         assert_eq!(
             Destination::from(LandingPage::History),
             Destination::History

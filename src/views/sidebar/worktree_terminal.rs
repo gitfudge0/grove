@@ -157,8 +157,6 @@ impl Sidebar {
         if self.is_zen()
             || (self.mode == ViewMode::Grid && !self.dashboard_open)
             || self.project_panel.is_some()
-            || self.project_setup.is_some()
-            || self.pending_new_worktree.is_some()
             || self
                 .settings_panel
                 .as_ref()

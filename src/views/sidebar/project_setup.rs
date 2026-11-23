@@ -7,9 +7,7 @@ use crate::{
     settings::SettingsState,
     theme as c,
     views::{
-        components::{
-            content_header, content_header_title, form_action, form_actions, project_form_field,
-        },
+        components::{form_action, form_actions, project_form_field},
         motion, rpx,
         tokens::*,
     },
@@ -29,7 +27,6 @@ use grove_core::storage::identity::{ProjectAppearance, ProjectIdentity, COLOR_CO
 const ICON_CHOICE_SIZE: f32 = 28.;
 const COLOR_SWATCH_SIZE: f32 = 12.;
 
-const HEADER_H: f32 = 36.;
 const SUGGESTION_PATH_MAX_W: f32 = 210.;
 const SUGGESTION_H: f32 = 38.;
 const MAX_SUGGESTIONS: usize = 8;
@@ -63,7 +60,7 @@ pub(in crate::views) struct ProjectSetup {
     suggestions_dismissed: bool,
     focus: FocusHandle,
     busy: bool,
-    settings_compact: Option<bool>,
+    settings_compact: bool,
     appearance: Option<ProjectAppearance>,
     appearance_focus: Vec<FocusHandle>,
     _subscriptions: Vec<Subscription>,
@@ -79,18 +76,13 @@ impl Focusable for ProjectSetup {
     }
 }
 impl ProjectSetup {
-    pub(in crate::views) fn in_settings(mut self, compact: bool) -> Self {
-        self.settings_compact = Some(compact);
-        self
-    }
-
     pub(in crate::views) fn update_settings_layout(
         &mut self,
         compact: bool,
         cx: &mut Context<Self>,
     ) {
-        if self.settings_compact != Some(compact) {
-            self.settings_compact = Some(compact);
+        if self.settings_compact != compact {
+            self.settings_compact = compact;
             cx.notify();
         }
     }
@@ -120,6 +112,7 @@ impl ProjectSetup {
         cx: &mut Context<Self>,
         workspace: u64,
         service: Entity<ProjectService>,
+        compact: bool,
     ) -> Self {
         let mut state = add_project::opened();
         state.path.clear();
@@ -181,7 +174,7 @@ impl ProjectSetup {
             suggestions_dismissed: false,
             focus: cx.focus_handle(),
             busy: false,
-            settings_compact: None,
+            settings_compact: compact,
             appearance: None,
             appearance_focus: (0..SYMBOLS.len() + usize::from(COLOR_COUNT))
                 .map(|_| cx.focus_handle())
@@ -892,14 +885,6 @@ impl Render for ProjectSetup {
                     cx.notify();
                 }
             }))
-            .when(self.settings_compact.is_none(), |root| root.child(
-                content_header()
-                    .h(rpx(HEADER_H))
-                    .px(rpx(SPACE_3XL))
-                    .border_b_1()
-                    .border_color(c::BORDER_SOFT())
-                    .child(content_header_title(body_heading)),
-            ))
             .child(
                 div()
                     .id("project-setup-scroll")
@@ -923,7 +908,11 @@ impl Render for ProjectSetup {
                                     .mb(rpx(FORM_HEADING_MARGIN))
                                     .child(
                                         div()
-                                            .text_size(rpx(self.settings_compact.map_or(CONTROL_H, crate::views::settings_panel::settings_page_title_size)))
+                                            .text_size(rpx(
+                                                crate::views::settings_panel::settings_page_title_size(
+                                                    self.settings_compact,
+                                                ),
+                                            ))
                                             .font_weight(FontWeight::SEMIBOLD)
                                             .child(body_heading),
                                     )
@@ -952,7 +941,7 @@ impl Render for ProjectSetup {
                     .child(
                         form_actions()
                             .max_w(rpx(FORM_CONTENT_MAX_W))
-                            .when(self.settings_compact == Some(true), gpui::Styled::justify_start)
+                            .when(self.settings_compact, gpui::Styled::justify_start)
                             .child(secondary)
                             .child(primary),
                     ),
@@ -1070,7 +1059,7 @@ mod tests {
         cx.add_window_view(|window, cx| {
             let runtime = cx.new(crate::runtime::Runtime::new);
             let service = runtime.read(cx).projects.clone();
-            ProjectSetup::new(window, cx, 1, service)
+            ProjectSetup::new(window, cx, 1, service, false)
         })
     }
     #[gpui::test]

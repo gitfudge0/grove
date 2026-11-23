@@ -20,7 +20,7 @@ use crate::{
     theme as c,
     views::{
         components::{
-            dense_action_with_colors, form_action, form_field, header_control_with_label_tooltip,
+            dense_action_with_colors, form_action, header_control_with_label_tooltip,
             project_field_well,
         },
         motion, rpx,
@@ -28,7 +28,7 @@ use crate::{
         tokens::*,
     },
 };
-use gpui::{div, prelude::*, AnyElement, Context, Focusable, FontWeight, Window};
+use gpui::{div, prelude::*, AnyElement, Context, FontWeight, Window};
 use gpui_component::Disableable;
 use grove_core::agent::Agent;
 
@@ -331,104 +331,10 @@ impl Sidebar {
             return;
         };
         if let Some(settings) = &self.settings_panel {
-            if let Some(source) = self.worktree_return_focus.take() {
-                source.focus(window, cx);
-            }
             settings.update(cx, |settings, cx| {
                 settings.open_project_creation_shortcut(Some(&path), window, cx);
             });
-            return;
         }
-        if let Err(reason) = crate::project_service::worktree_prerequisite(&path) {
-            self.worktree_return_focus = None;
-            self.content_error = Some(reason.into());
-            cx.notify();
-            return;
-        }
-        if self.worktree_return_focus.is_none() {
-            self.worktree_return_focus = window.focused(cx);
-        }
-        self.worktree_branch_edited = false;
-        self.pending_new_worktree = Some(idx);
-        self.content_error = None;
-        self.worktree_errors = [None, None, None];
-        self.worktree_name.update(cx, |input, cx| {
-            input.set_value("", window, cx);
-            input.focus(window, cx);
-        });
-        self.worktree_branch
-            .update(cx, |input, cx| input.set_value("", window, cx));
-        self.worktree_base
-            .update(cx, |input, cx| input.set_value("HEAD", window, cx));
-        self.refresh_worktree_source(cx);
-        cx.notify();
-    }
-    pub(super) fn submit_worktree(&mut self, cx: &mut Context<Self>) {
-        if self.worktree_creating {
-            return;
-        }
-        let Some(idx) = self.pending_new_worktree else {
-            return;
-        };
-        let Some(project) = cx
-            .global::<SettingsState>()
-            .store
-            .projects
-            .get(idx)
-            .cloned()
-        else {
-            return;
-        };
-        let name = self.worktree_name.read(cx).value().trim().to_string();
-        let branch = self.worktree_branch.read(cx).value().trim().to_string();
-        let base = self.worktree_base.read(cx).value().trim().to_string();
-        self.worktree_errors = validate_worktree_fields(&name, &branch, &base);
-        if self.worktree_errors.iter().any(Option::is_some) {
-            cx.notify();
-            return;
-        }
-        let service = self.runtime.read(cx).projects.clone();
-        self.worktree_creating = true;
-        let creation = service.update(cx, |service, cx| {
-            service.create_worktree_with_branch(&project, &name, &branch, Some(&base), cx)
-        });
-        cx.spawn(async move |this, cx| {
-            let result = creation.await;
-            let _ = this.update(cx, |this, cx| {
-                this.worktree_creating = false;
-                // A successful create remains discoverable through ProjectEvent
-                // even when the form was dismissed while the checkout ran.
-                if this.pending_new_worktree != Some(idx) {
-                    cx.notify();
-                    return;
-                }
-                match result {
-                    Ok(path) => {
-                        this.pending_new_worktree = None;
-                        this.content_error = None;
-                        if this.dashboard_open {
-                            if let Some(d) = &this.dashboard {
-                                d.tray.update(cx, |t, cx| {
-                                    t.path.clone_from(&path);
-                                    cx.notify();
-                                });
-                            }
-                            this.force_refresh_dashboard_worktrees(cx);
-                            this.refresh_dashboard_catalog(cx);
-                        } else {
-                            this.select(Selection::Worktree(idx, path.clone()), cx);
-                        }
-                    }
-                    Err(error) => {
-                        let field = worktree_error_field(&error);
-                        this.worktree_errors[field] = Some(error);
-                    }
-                }
-                cx.notify();
-            });
-        })
-        .detach();
-        cx.notify();
     }
 
     pub(super) fn add_project(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -436,51 +342,9 @@ impl Sidebar {
             settings.update(cx, |settings, cx| {
                 settings.open_project_creation_shortcut(None, window, cx);
             });
-            return;
         }
-        self.pending_new_worktree = None;
-        self.project_return_path = None;
-        self.project_return_navigation = None;
-        self.project_return_focus = window.focused(cx);
-        self.project_panel = None;
-        self.project_decision = false;
-        self.mode = ViewMode::Project;
-        let workspace = cx.global::<SettingsState>().store.workspaces.active;
-        let service = self.runtime.read(cx).projects.clone();
-        let setup =
-            cx.new(|cx| super::project_setup::ProjectSetup::new(window, cx, workspace, service));
-        self.observers.push(
-            cx.subscribe_in(&setup, window, |this, _, event, window, cx| {
-                match event {
-                    super::project_setup::ProjectSetupEvent::Completed { path, workspace } => {
-                        SettingsState::update(cx, |store| {
-                            store.workspaces.select(*workspace);
-                        });
-                        this.project_setup = None;
-                        if let Some(index) = cx
-                            .global::<SettingsState>()
-                            .store
-                            .projects
-                            .iter()
-                            .position(|p| p.path == *path)
-                        {
-                            this.open_dashboard_for_project(index, path, window, cx);
-                        }
-                    }
-                    super::project_setup::ProjectSetupEvent::Cancelled => {
-                        this.project_setup = None;
-                        if let Some(f) = this.project_return_focus.take() {
-                            f.focus(window, cx);
-                        }
-                    }
-                }
-                cx.notify();
-            }),
-        );
-        setup.focus_handle(cx).focus(window, cx);
-        self.project_setup = Some(setup);
-        cx.notify();
     }
+
     pub(super) fn project_path_is_active(&self, path: &str, cx: &gpui::App) -> bool {
         let store = &cx.global::<SettingsState>().store;
         store.projects.iter().any(|p| p.path == path && !p.archived)
@@ -538,7 +402,6 @@ impl Sidebar {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.pending_new_worktree = None;
         self.project_return_navigation = Some((self.mode, self.selection.clone()));
         self.project_return_path = match &page {
             super::projects::Page::Edit(path)
@@ -551,7 +414,6 @@ impl Sidebar {
         };
         self.project_return_focus = self.menu_return_focus.take().or_else(|| window.focused(cx));
         self.menu = None;
-        self.project_setup = None;
         self.mode = ViewMode::Project;
         let runtime = self.runtime.read(cx);
         let (service, registry) = (runtime.projects.clone(), runtime.registry.clone());
@@ -769,13 +631,6 @@ impl Sidebar {
                 );
             }
         }
-        if let Some(setup) = &self.project_setup {
-            return motion::slow(
-                div().size_full().child(setup.clone()),
-                "project-setup-enter",
-                cx,
-            );
-        }
         if let Some(panel) = &self.project_panel {
             return motion::slow(
                 div().size_full().child(panel.clone()),
@@ -791,102 +646,6 @@ impl Sidebar {
         if self.description_is_open(cx) {
             return self.render_description(window, cx);
         }
-        if self.pending_new_worktree.is_some() {
-            let errors = validate_worktree_fields(
-                self.worktree_name.read(cx).value().as_ref(),
-                self.worktree_branch.read(cx).value().as_ref(),
-                self.worktree_base.read(cx).value().as_ref(),
-            );
-            let enabled = errors.iter().all(Option::is_none);
-            let editor = div()
-                .id("worktree-editor-scroll")
-                .size_full()
-                .min_w_0()
-                .min_h_0()
-                .overflow_y_scroll()
-                .p(rpx(SPACE_3XL))
-                .child(
-                    div().w_full().min_w_0().flex().justify_center().child(
-                        div()
-                            .w_full()
-                            .max_w(rpx(MODAL_W_SM))
-                            .min_w_0()
-                            .flex()
-                            .flex_col()
-                            .gap(rpx(SPACE_LG))
-                            .child(
-                                div()
-                                    .text_size(rpx(TEXT_DISPLAY))
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .child("New worktree"),
-                            )
-                            .child(
-                                div()
-                                    .text_color(c::FG_DIM())
-                                    .child("Create a branch and isolated working directory."),
-                            )
-                            .child(form_field(
-                                "worktree-name-field",
-                                "Worktree name",
-                                &self.worktree_name,
-                                self.worktree_errors[0].as_deref(),
-                                window,
-                                cx,
-                            ))
-                            .child(form_field(
-                                "worktree-branch-field",
-                                "Branch name",
-                                &self.worktree_branch,
-                                self.worktree_errors[1].as_deref(),
-                                window,
-                                cx,
-                            ))
-                            .child(form_field(
-                                "worktree-base-field",
-                                "Base branch or revision",
-                                &self.worktree_base,
-                                self.worktree_errors[2].as_deref(),
-                                window,
-                                cx,
-                            ))
-                            .child(self.render_worktree_summary(cx))
-                            .child(
-                                crate::views::components::form_actions()
-                                    .child(
-                                        form_action("cancel-worktree", "Cancel", false, window, cx)
-                                            .icon(
-                                                gpui_component::Icon::default()
-                                                    .path("icons/close.svg"),
-                                            )
-                                            .on_click(cx.listener(|this, _, window, cx| {
-                                                this.act(super::Action::Cancel, window, cx);
-                                            })),
-                                    )
-                                    .child(
-                                        form_action(
-                                            "create-worktree",
-                                            if self.worktree_creating {
-                                                "Creating worktree…"
-                                            } else {
-                                                "Create worktree"
-                                            },
-                                            true,
-                                            window,
-                                            cx,
-                                        )
-                                        .icon(
-                                            gpui_component::Icon::default().path("icons/plus.svg"),
-                                        )
-                                        .disabled(!enabled || self.worktree_creating)
-                                        .on_click(
-                                            cx.listener(|this, _, _, cx| this.submit_worktree(cx)),
-                                        ),
-                                    ),
-                            ),
-                    ),
-                );
-            return motion::base(editor, "worktree-editor-enter", cx);
-        }
         if self.destination == super::global_navigation::Destination::History
             && self.session_history_selected.is_some()
         {
@@ -901,17 +660,6 @@ impl Sidebar {
             } else {
                 self.destination
             };
-        if canvas_destination == super::global_navigation::Destination::Sessions
-            && self.selection.is_none()
-        {
-            return div()
-                .id("legacy-session-list")
-                .size_full()
-                .overflow_y_scroll()
-                .p(rpx(SPACE_3XL))
-                .child(self.list(window, cx))
-                .into_any_element();
-        }
         if self.is_zen() {
             match self.selection.clone() {
                 Some(Selection::Session(id)) => {
@@ -1310,20 +1058,6 @@ fn valid_branch_name(branch: &str) -> bool {
         && branch
             .split('/')
             .all(|part| !part.is_empty() && !part.starts_with('.') && !part.ends_with(".lock"))
-}
-fn worktree_error_field(error: &str) -> usize {
-    let error = error.to_lowercase();
-    if error.contains("rev-parse")
-        || error.contains("base")
-        || error.contains("invalid reference")
-        || error.contains("path")
-    {
-        2
-    } else if error.contains("worktree name") {
-        0
-    } else {
-        usize::from(error.contains("branch"))
-    }
 }
 #[cfg(test)]
 mod tests;

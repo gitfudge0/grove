@@ -413,8 +413,9 @@ impl Sidebar {
                     return;
                 };
                 self.menu = None;
-                self.worktree_return_focus =
-                    self.menu_return_focus.take().or_else(|| window.focused(cx));
+                if let Some(focus) = self.menu_return_focus.take() {
+                    focus.focus(window, cx);
+                }
                 self.begin_worktree(i, window, cx);
             }
             Action::InitializeGit(path) => {
@@ -1051,13 +1052,6 @@ impl Sidebar {
                     return;
                 }
                 self.canvas_close_anchor = None;
-                if self.pending_new_worktree.take().is_some() {
-                    self.content_error = None;
-                    self.worktree_errors = [None, None, None];
-                    if let Some(focus) = self.worktree_return_focus.take() {
-                        focus.focus(window, cx);
-                    }
-                }
                 if self.menu.is_some() {
                     self.close_menu(window, cx);
                 }

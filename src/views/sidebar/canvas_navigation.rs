@@ -288,7 +288,6 @@ impl Sidebar {
             }
         }
         self.selection = Some(selection);
-        self.pending_new_worktree = None;
         cx.notify();
     }
 
@@ -378,8 +377,6 @@ impl Sidebar {
             || self.history.is_some()
             || self.diff_viewer.is_some()
             || self.project_panel.is_some()
-            || self.project_setup.is_some()
-            || self.pending_new_worktree.is_some()
             || self.project_flyout.is_some()
     }
 
@@ -393,8 +390,6 @@ impl Sidebar {
             && self.history.is_none()
             && self.diff_viewer.is_none()
             && self.project_panel.is_none()
-            && self.project_setup.is_none()
-            && self.pending_new_worktree.is_none()
             && self.menu.is_none()
     }
 

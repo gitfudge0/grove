@@ -39,8 +39,6 @@ impl Sidebar {
             || self.confirmation_open()
             || self.menu.is_some()
             || self.project_panel.is_some()
-            || self.project_setup.is_some()
-            || self.pending_new_worktree.is_some()
             || self
                 .settings_panel
                 .as_ref()
@@ -182,7 +180,6 @@ impl Sidebar {
             || self.confirmation_open()
             || self.menu.is_some()
             || self.project_panel.is_some()
-            || self.project_setup.is_some()
             || self
                 .settings_panel
                 .as_ref()

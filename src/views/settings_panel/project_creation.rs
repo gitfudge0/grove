@@ -75,7 +75,7 @@ impl SettingsPanel {
         } else {
             let workspace = cx.global::<SettingsState>().store.workspaces.active;
             let panel =
-                cx.new(|cx| ProjectSetup::new(window, cx, workspace, service).in_settings(compact));
+                cx.new(|cx| ProjectSetup::new(window, cx, workspace, service, compact));
             self.creation_subscription =
                 Some(
                     cx.subscribe_in(&panel, window, |this, _, event, window, cx| match event {

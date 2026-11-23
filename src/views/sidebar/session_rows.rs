@@ -11,7 +11,7 @@ use super::{
 };
 use crate::views::tokens::{
     CHROME_CONTROL_H, CONTROL_H, ICON_LG, ICON_MD, ICON_SM, ICON_XS, MOTION_FAST_MS, RADIUS_GROUP,
-    SIDEBAR_CONTENT_INSET, SIDEBAR_ICON_SLOT, SPACE_2XL, SPACE_3XL, SPACE_LG, SPACE_MD, SPACE_SM,
+    SIDEBAR_CONTENT_INSET, SIDEBAR_ICON_SLOT, SPACE_3XL, SPACE_LG, SPACE_MD, SPACE_SM,
     SPACE_XS, TEXT_MICRO, TEXT_SMALL, TEXT_TITLE,
 };
 use gpui::prelude::{FluentBuilder, InteractiveElement, IntoElement, ParentElement, Styled};
@@ -585,6 +585,7 @@ impl Sidebar {
         result.into_any_element()
     }
 
+    #[cfg(test)]
     pub(super) fn list(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
         let groups = self.list_session_groups(cx);
         let mut body = div().flex().flex_col().gap(rpx(SPACE_SM));
@@ -614,7 +615,7 @@ impl Sidebar {
         if number == 0 {
             body = body.child(
                 div()
-                    .p(rpx(SPACE_2XL))
+                    .p(rpx(crate::views::tokens::SPACE_2XL))
                     .text_color(c::FG_DIM())
                     .child("No sessions yet. Start one with +."),
             );

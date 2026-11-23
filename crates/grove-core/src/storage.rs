@@ -454,9 +454,9 @@ pub struct ModelFavorite {
 pub enum LandingPage {
     NewSession,
     #[default]
+    #[serde(alias = "sessions")]
     Home,
     Projects,
-    Sessions,
     History,
 }
 impl LandingPage {
@@ -466,7 +466,6 @@ impl LandingPage {
             Self::NewSession => "New Session",
             Self::Home => "Home",
             Self::Projects => "Projects",
-            Self::Sessions => "Sessions",
             Self::History => "History",
         }
     }
@@ -976,7 +975,7 @@ pub(crate) mod tests {
         let legacy: Store = serde_json::from_str(r#"{"projects":[]}"#).unwrap();
         assert_eq!(legacy.default_landing_page, LandingPage::Home);
         let prior: Store = serde_json::from_str(r#"{"default_landing_page":"sessions"}"#).unwrap();
-        assert_eq!(prior.default_landing_page, LandingPage::Sessions);
+        assert_eq!(prior.default_landing_page, LandingPage::Home);
         for page in LandingPage::ALL {
             let store = Store {
                 default_landing_page: page,

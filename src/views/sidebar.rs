@@ -145,6 +145,7 @@ fn sidebar_worktree_name(name: &str, is_main: bool) -> &str {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) enum Selection {
     Project(usize),
+    #[cfg_attr(not(test), allow(dead_code))] // Retained checkout navigation fixtures construct this.
     Worktree(usize, String),
     Session(SessionId),
     Home(SessionId),
@@ -332,9 +333,6 @@ fn effective_rail_width(preferred: f32, logical_width: f32) -> f32 {
 type SessionGroups = Vec<(&'static str, Vec<SessionId>)>;
 
 pub struct Sidebar {
-    worktree_branch_edited: bool,
-    worktree_source_generation: u64,
-    worktree_source: String,
     checkout_panel: checkout_panel::CheckoutPanel,
     contributions: contributions::Contributions,
     context_panel: context_panel::ContextPanel,
@@ -350,7 +348,6 @@ pub struct Sidebar {
     )>,
     action_source_bounds: std::rc::Rc<std::cell::Cell<gpui::Bounds<gpui::Pixels>>>,
     project_panel: Option<Entity<projects::ProjectPanel>>,
-    project_setup: Option<Entity<project_setup::ProjectSetup>>,
     settings_panel: Option<Entity<super::settings_panel::SettingsPanel>>,
     project_decision: bool,
     project_return_focus: Option<FocusHandle>,
@@ -418,13 +415,6 @@ pub struct Sidebar {
     #[cfg(test)]
     worktree_delete_focus: HashMap<String, FocusHandle>,
     worktree_removal_return_focus: Option<FocusHandle>,
-    pending_new_worktree: Option<usize>,
-    pub(super) worktree_creating: bool,
-    worktree_name: Entity<InputState>,
-    worktree_errors: [Option<String>; 3],
-    worktree_return_focus: Option<FocusHandle>,
-    worktree_branch: Entity<InputState>,
-    worktree_base: Entity<InputState>,
     content_error: Option<String>,
     git_init_pending: Option<String>,
     worktree_readiness: HashMap<String, (Instant, Option<WorktreeReadiness>)>,
@@ -584,13 +574,9 @@ impl Sidebar {
             rt.shell_environment.clone(),
             rt.upgrade.clone(),
         );
-        let worktree_name = cx.new(|cx| InputState::new(window, cx).placeholder("billing-retry"));
-        let worktree_branch =
-            cx.new(|cx| InputState::new(window, cx).placeholder("feat/billing-retry"));
-        let worktree_base = cx.new(|cx| InputState::new(window, cx).placeholder("main"));
         let history_search =
             cx.new(|cx| InputState::new(window, cx).placeholder("Search sessions and transcripts"));
-        let mut observers = vec![
+        let observers = vec![
             cx.observe(&runtime, |this, _, cx| {
                 this.sync_dirty = true;
                 this.list_groups_cache.borrow_mut().take();
@@ -632,26 +618,7 @@ impl Sidebar {
                 }
             }),
         ];
-        for (index, input) in [&worktree_name, &worktree_branch, &worktree_base]
-            .into_iter()
-            .enumerate()
-        {
-            observers.push(
-                cx.subscribe_in(input, window, move |this, _, event, window, cx| {
-                    if matches!(event, gpui_component::input::InputEvent::PressEnter { .. }) {
-                        this.submit_worktree(cx);
-                    } else if matches!(event, gpui_component::input::InputEvent::Change) {
-                        this.worktree_errors[index] = None;
-                        this.worktree_field_changed(index, window, cx);
-                        cx.notify();
-                    }
-                }),
-            );
-        }
         Self {
-            worktree_branch_edited: false,
-            worktree_source_generation: 0,
-            worktree_source: String::new(),
             checkout_panel: checkout_panel::CheckoutPanel::default(),
             contributions: contributions::Contributions::default(),
             context_panel: context_panel::ContextPanel::default(),
@@ -663,7 +630,6 @@ impl Sidebar {
             standalone_files: None,
             action_source_bounds: std::rc::Rc::default(),
             project_panel: None,
-            project_setup: None,
             settings_panel: None,
             project_decision: false,
             project_return_focus: None,
@@ -729,13 +695,6 @@ impl Sidebar {
             #[cfg(test)]
             worktree_delete_focus: HashMap::new(),
             worktree_removal_return_focus: None,
-            pending_new_worktree: None,
-            worktree_creating: false,
-            worktree_name,
-            worktree_errors: [None, None, None],
-            worktree_return_focus: None,
-            worktree_branch,
-            worktree_base,
             content_error: None,
             git_init_pending: None,
             worktree_readiness: HashMap::new(),

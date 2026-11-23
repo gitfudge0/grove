@@ -14,7 +14,7 @@ fn sessions_list_polls_real_git_changes_and_swaps_worktree_diff_for_launchers(
     cx.update(|cx| {
         gpui_component::init(cx);
         cx.set_global(SettingsState::new(grove_core::storage::Store {
-            default_landing_page: grove_core::storage::LandingPage::Sessions,
+            default_landing_page: grove_core::storage::LandingPage::Home,
             projects: vec![grove_core::storage::Project {
                 name: "poll demo".into(),
                 path: path.clone(),
@@ -239,17 +239,6 @@ fn worktree_launch_controls_route_opencode_and_ignore_missing_backends(
     assert!(cx.debug_bounds("start-terminal").is_some());
     assert!(cx.debug_bounds("project-initialize-git").is_some());
     assert!(cx.debug_bounds("project-new-worktree").is_none());
-    cx.update(|window, cx| {
-        sidebar.update(cx, |sidebar, cx| {
-            sidebar.act(Action::NewWorktree(project_path.into()), window, cx);
-            assert!(sidebar.pending_new_worktree.is_none());
-            assert!(sidebar
-                .content_error
-                .as_deref()
-                .unwrap()
-                .contains("Initialize Git"));
-        });
-    });
     for id in launch_ids {
         assert!(cx.debug_bounds(id).is_some());
     }
@@ -276,19 +265,16 @@ fn worktree_launch_controls_route_opencode_and_ignore_missing_backends(
     cx.update(|window, cx| {
         sidebar.update(cx, |sidebar, cx| {
             assert_eq!(sidebar.runtime.read(cx).registry.read(cx).len(), 0);
-            sidebar.pending_new_worktree = Some(0);
             sidebar.act(
                 Action::Launch(0, worktree_path.clone(), Agent::OpenCode),
                 window,
                 cx,
             );
-            assert_eq!(sidebar.pending_new_worktree, Some(0));
             assert_eq!(sidebar.runtime.read(cx).registry.read(cx).len(), 0);
             assert!(sidebar.content_error.as_deref().unwrap().contains("PATH"));
             let toast = sidebar.runtime.read(cx).toast.read(cx).current().unwrap();
             assert_eq!(toast.kind, crate::entities::toast::ToastKind::Error);
             assert_eq!(Some(&toast.message), sidebar.content_error.as_ref());
-            sidebar.pending_new_worktree = None;
             sidebar.available[2] = true;
             cx.notify();
         });

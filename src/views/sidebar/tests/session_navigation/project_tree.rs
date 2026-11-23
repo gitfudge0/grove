@@ -864,13 +864,9 @@ fn project_popup_preserves_rows_and_restores_focus_on_dismiss(cx: &mut gpui::Tes
             sidebar.sync(window, cx);
             assert!(sidebar.project_panel.is_none());
             assert!(sidebar.project_return_focus.is_none());
-            assert!(!sidebar.dashboard_open);
-            assert_eq!(
-                sidebar.destination,
-                global_navigation::Destination::Projects
-            );
+            assert!(sidebar.dashboard_open);
+            assert_eq!(sidebar.destination, global_navigation::Destination::Home);
             assert!(sidebar.selection.is_none());
-            assert_eq!(window.focused(cx), Some(sidebar.focus.clone()));
             sidebar.act(Action::EditProject(one_path.clone()), window, cx);
             assert!(
                 sidebar.project_panel.is_none(),
@@ -960,16 +956,6 @@ fn project_popup_preserves_rows_and_restores_focus_on_dismiss(cx: &mut gpui::Tes
     assert!(cx.debug_bounds("project-panel").is_some());
     cx.simulate_keystrokes("escape");
     draw(cx);
-    cx.update(|window, cx| {
-        sidebar.update(cx, |sidebar, cx| {
-            sidebar.act(Action::AddProject, window, cx);
-        });
-    });
-    draw(cx);
-    assert!(sidebar.read_with(cx, |sidebar, _| sidebar.project_setup.is_some()));
-    cx.simulate_keystrokes("escape");
-    draw(cx);
-    assert!(sidebar.read_with(cx, |sidebar, _| sidebar.project_setup.is_none()));
     let before = cx.debug_bounds("project-1").unwrap();
     cx.update(|window, cx| {
         sidebar.update(cx, |sidebar, cx| sidebar.act(Action::Menu(0), window, cx));
@@ -1043,16 +1029,4 @@ fn project_popup_preserves_rows_and_restores_focus_on_dismiss(cx: &mut gpui::Tes
         cx.update(|window, _| window.viewport_size())
     );
     assert!(popup.top() >= gpui::px(0.0) && popup.bottom() <= gpui::px(200.0));
-    cx.simulate_keystrokes("down down enter");
-    draw(cx);
-    assert!(sidebar.read_with(cx, |sidebar, _| sidebar.pending_new_worktree == Some(0)));
-    assert!(
-        cx.debug_bounds("project-0").is_none(),
-        "narrow editor must receive full canvas"
-    );
-    cx.simulate_keystrokes("escape");
-    draw(cx);
-    assert!(sidebar.read_with(cx, |sidebar, _| sidebar.pending_new_worktree.is_none()));
-    assert!(cx.debug_bounds("project-0").is_some());
-    cx.update(|window, cx| assert!(sidebar.read(cx).project_menu_focus[&0].is_focused(window)));
 }

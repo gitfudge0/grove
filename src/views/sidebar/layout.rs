@@ -301,9 +301,7 @@ impl Render for Sidebar {
                     cx.stop_propagation();
                 } else if event.keystroke.key == "escape"
                     && !this.project_decision
-                    && (this.confirmation_open()
-                        || this.menu.is_some()
-                        || this.pending_new_worktree.is_some())
+                    && (this.confirmation_open() || this.menu.is_some())
                 {
                     if this.checkout_confirmation_open() {
                         this.checkout_cancel_confirmation(window, cx);

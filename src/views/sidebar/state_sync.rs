@@ -93,9 +93,6 @@ impl Sidebar {
             }
             self.menu = self.menu.and_then(|i| mapping.get(&i).copied());
             self.pending_remove = self.pending_remove.and_then(|i| mapping.get(&i).copied());
-            self.pending_new_worktree = self
-                .pending_new_worktree
-                .and_then(|i| mapping.get(&i).copied());
             self.project_paths = paths;
         }
         self.collapsed_projects
@@ -160,7 +157,6 @@ impl Sidebar {
             self.grid_drag = None;
             self.grid_session_drag = None;
             self.pending_remove = None;
-            self.pending_new_worktree = None;
             self.content_error = None;
             self.pending_canvas_focus = None;
             self.pending_grid_workspace_focus = None;
