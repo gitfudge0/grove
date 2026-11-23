@@ -91,6 +91,22 @@ fn activity_triage_shows_mixed_session_facts_and_routes_the_pending_request(
         cx.update(|window, cx| {
             let _ = window.draw(cx);
         });
+        let activity = cx.debug_bounds("dashboard-recent").unwrap();
+        let headings = [
+            "dashboard-section-Needs you",
+            "dashboard-section-Review",
+            "dashboard-section-Working",
+            "dashboard-section-Ready",
+        ]
+        .map(|selector| cx.debug_bounds(selector).expect("Activity heading is visible"));
+        for bounds in headings {
+            assert!(bounds.left() >= activity.left() && bounds.right() <= activity.right());
+        }
+        for pair in headings.windows(2) {
+            assert_eq!(pair[0].right(), pair[1].right());
+            assert!(pair[0].bottom() < pair[1].top());
+        }
+        assert!(cx.debug_bounds("summary-disclosure").is_none(), "short reviews are static");
         for selector in [
             format!("dashboard-review-request-{}", request.raw()),
             format!("dashboard-review-summary-{}-link-0", deliverable.raw()),
@@ -102,7 +118,6 @@ fn activity_triage_shows_mixed_session_facts_and_routes_the_pending_request(
             let bounds = cx
                 .debug_bounds(Box::leak(selector.into_boxed_str()))
                 .expect("Activity fixture control is visible");
-            let activity = cx.debug_bounds("dashboard-recent").unwrap();
             assert!(
                 bounds.left() >= activity.left() && bounds.right() <= activity.right(),
                 "{bounds:?} escapes {activity:?}"

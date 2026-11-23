@@ -2724,6 +2724,12 @@ because its CLI reported that it was signed out.
 
 ## Activity insights and direct actions
 
+The follow-up Dashboard section styling and review disclosure passed focused
+Linux GPUI fixtures at normal and narrow widths, including rem zoom. Codex
+and Claude were exercised through fixture snapshots. A matched native visual
+comparison remains unverified because the Dashboard snapshot harness has no
+Linux headless renderer. Live Codex and Claude flows were not rerun.
+
 The Linux GPUI fixture exercised a request, two reviews, a working session,
 and a Ready session at 1100px and 560px with increased rem and reduced motion.
 It verified the visible verification caveat and current action, the direct

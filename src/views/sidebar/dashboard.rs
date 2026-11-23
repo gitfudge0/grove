@@ -1047,17 +1047,46 @@ impl Sidebar {
                             this.hover_review_category(workspace, *hovered, cx);
                         }))
                     });
+                // Group headings use stationary catalog marks. A row's own status
+                // still reflects its current state while its group move settles.
+                let group_status = super::super::status::session_kind(section);
                 category = category.child(
                     div()
                         .id(gpui::SharedString::from(format!(
                             "dashboard-section-{section}"
                         )))
                         .debug_selector(move || format!("dashboard-section-{section}"))
-                        .when(group_index > 0, |heading| heading.pt(rpx(SPACE_2XL)))
+                        .when(group_index > 0, |heading| heading.pt(rpx(SPACE_3XL)))
                         .pb(rpx(SPACE_SM))
+                        .flex()
+                        .items_center()
+                        .gap(rpx(SPACE_LG))
                         .text_size(rpx(TEXT_SMALL))
-                        .text_color(c::FG_DIM())
-                        .child(format!("{section} · {}", indices.len())),
+                        .child(
+                            div()
+                                .w(rpx(ICON_LG))
+                                .flex_shrink_0()
+                                .flex()
+                                .justify_center()
+                                .child(icon(
+                                    group_status.icon_name(),
+                                    ICON_SM,
+                                    group_status.color(),
+                                )),
+                        )
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .font_weight(gpui::FontWeight::MEDIUM)
+                                .child(section),
+                        )
+                        .child(
+                            div()
+                                .flex_shrink_0()
+                                .text_color(c::FG_DIM())
+                                .child(indices.len().to_string()),
+                        ),
                 );
                 for index in indices {
                     let (meta, status, title, since) = sessions[index].clone();

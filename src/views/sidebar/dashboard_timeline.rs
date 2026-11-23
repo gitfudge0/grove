@@ -114,6 +114,7 @@ fn render_metadata(metadata: &RowMetadata, window: &Window) -> AnyElement {
             metadata.model_label(),
             window,
         ))
+        .child(div().flex_shrink_0().child(metadata.age.clone()))
         .into_any_element()
 }
 type Scope = (u64, SessionId);
@@ -474,7 +475,6 @@ impl Sidebar {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let status = metadata.status;
-        let age = &metadata.age;
         let key = (self.active_workspace, id);
         let scroll = self.dashboard_timelines.scroll.clone();
         let anchor = self
@@ -715,6 +715,8 @@ impl Sidebar {
                                     .min_w_0()
                                     .whitespace_normal()
                                     .text_size(rpx(TEXT_BODY))
+                                    .text_color(c::FG())
+                                    .font_weight(gpui::FontWeight::MEDIUM)
                                     .child(self.session_title_label(
                                         id,
                                         title,
@@ -722,14 +724,7 @@ impl Sidebar {
                                         cx,
                                     )),
                             )
-                            .child(status_slot)
-                            .child(
-                                div()
-                                    .flex_shrink_0()
-                                    .text_size(rpx(TEXT_SMALL))
-                                    .text_color(c::FG_DIM())
-                                    .child(age.to_owned()),
-                            ),
+                            .child(status_slot),
                     )
                     .child(render_metadata(metadata, window)),
             );

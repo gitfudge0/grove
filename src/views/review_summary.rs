@@ -406,8 +406,26 @@ impl ReviewSummary {
                 el.child(
                     div()
                         .debug_selector(move || id.clone())
-                        .whitespace_normal()
-                        .child(verification),
+                        .flex()
+                        .flex_wrap()
+                        .gap_x(rpx(SPACE_MD))
+                        .text_size(rpx(TEXT_SMALL))
+                        .line_height(rpx(TEXT_SMALL + SPACE_SM))
+                        .child(
+                            div()
+                                .flex_shrink_0()
+                                .font_weight(gpui::FontWeight::MEDIUM)
+                                .text_color(c::STATUS_WARNING())
+                                .child("Verification"),
+                        )
+                        .child(
+                            div()
+                                .min_w_0()
+                                .max_w_full()
+                                .text_color(c::FG_DIM())
+                                .whitespace_normal()
+                                .child(verification),
+                        ),
                 )
             })
             .when_some(primary, gpui::ParentElement::child)
@@ -560,56 +578,60 @@ impl gpui::Render for SummaryDisclosure {
             body.when(self.measured > 0., |el| el.max_h(gpui::px(target)))
                 .into_any_element()
         };
-        inline_disclosure(
-            "summary-disclosure",
-            if self.expanded {
-                "Collapse review summary"
-            } else {
-                "Expand review summary"
-            },
-        )
-        .debug_selector(|| "summary-disclosure".to_owned())
-        .track_focus(&self.focus)
-        .tab_index(0)
-        .tab_stop(true)
-        .aria_expanded(self.expanded)
-        .focus_visible(|style| style.bg(c::BG_HOVER()))
-        .w_full()
-        .h_auto()
-        .min_w_0()
-        .justify_start()
-        .text_color(c::FG())
-        .items_start()
-        .gap(rpx(SPACE_SM))
-        .child(
-            div()
-                .h(rpx(TEXT_BODY + SPACE_LG))
-                .flex_shrink_0()
-                .flex()
-                .items_center()
-                .child(crate::icons::icon(
-                    if self.expanded {
-                        "chev-down"
-                    } else {
-                        "chev-right"
-                    },
-                    ICON_SM,
-                    c::FG_DIM(),
-                )),
-        )
-        .child(div().flex_1().min_w_0().child(body))
-        .on_click(cx.listener(|this, _, window, cx| {
-            cx.stop_propagation();
-            this.focus.focus(window, cx);
-            this.toggle(cx);
-        }))
-        .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
-            if !event.is_held && matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                window.prevent_default();
-                cx.stop_propagation();
-                this.toggle(cx);
-            }
-        }))
+        div()
+            .w_full()
+            .min_w_0()
+            .flex()
+            .flex_col()
+            .items_start()
+            .child(body)
+            .when(self.expanded || self.measured > collapsed + 0.5, |el| {
+                let label = if self.expanded {
+                    "Show less"
+                } else {
+                    "Show full summary"
+                };
+                el.child(
+                    inline_disclosure("summary-disclosure", label)
+                        .debug_selector(|| "summary-disclosure".to_owned())
+                        .track_focus(&self.focus)
+                        .tab_index(0)
+                        .tab_stop(true)
+                        .aria_expanded(self.expanded)
+                        .focus_visible(|style| style.bg(c::BG_HOVER()))
+                        .w_auto()
+                        .h_auto()
+                        .justify_start()
+                        .gap(rpx(SPACE_SM))
+                        .text_size(rpx(TEXT_SMALL))
+                        .child(icon(
+                            if self.expanded {
+                                "chev-down"
+                            } else {
+                                "chev-right"
+                            },
+                            ICON_SM,
+                            c::FG_DIM(),
+                        ))
+                        .child(label)
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            cx.stop_propagation();
+                            this.focus.focus(window, cx);
+                            this.toggle(cx);
+                        }))
+                        .on_key_down(cx.listener(
+                            |this, event: &gpui::KeyDownEvent, window, cx| {
+                                if !event.is_held
+                                    && matches!(event.keystroke.key.as_str(), "enter" | "space")
+                                {
+                                    window.prevent_default();
+                                    cx.stop_propagation();
+                                    this.toggle(cx);
+                                }
+                            },
+                        )),
+                )
+            })
     }
 }
 
@@ -732,7 +754,7 @@ mod tests {
     ) {
         cx.update(gpui_component::init);
         let (view, cx) = cx.add_window_view(|_, _| Probe {
-            summary: ReviewSummary::from_brief("Added a review summary.\nVerification: Windows is untested.\nDeliverable: [View the long mock artifact label](https://example.com/mock%20file.html)\n\n[Read notes](https://example.com/notes)", Path::new("/checkout")),
+            summary: ReviewSummary::from_brief("Added a review summary that keeps the latest outcome visible near the session title. The dashboard shows the outcome alongside links to the relevant output and preserves each link when the session is opened again. An explicit disclosure lets the reader expand the full result at narrow widths or increased application zoom.\nVerification: Windows is untested.\nDeliverable: [View the long mock artifact label](https://example.com/mock%20file.html)\n\n[Read notes](https://example.com/notes)", Path::new("/checkout")),
             focus: HashMap::new(),
             disclosure: None,
         });
@@ -775,19 +797,13 @@ mod tests {
             }
             let summary_bounds = cx.debug_bounds("summary-disclosure").unwrap();
             cx.simulate_click(summary_bounds.center(), gpui::Modifiers::default());
-            assert!(view.read_with(cx, |view, cx| view
-                .disclosure
-                .as_ref()
-                .unwrap()
-                .read(cx)
-                .expanded));
+            assert!(view.read_with(cx, |view, cx| {
+                view.disclosure.as_ref().unwrap().read(cx).expanded
+            }));
             cx.simulate_keystrokes("space");
-            assert!(!view.read_with(cx, |view, cx| view
-                .disclosure
-                .as_ref()
-                .unwrap()
-                .read(cx)
-                .expanded));
+            assert!(!view.read_with(cx, |view, cx| {
+                view.disclosure.as_ref().unwrap().read(cx).expanded
+            }));
             // Explicit focus of the first artifact exercises its own key route.
             cx.update(|window, cx| {
                 view.update(cx, |view, cx| {
@@ -809,9 +825,9 @@ fn only_a_single_labeled_deliverable_is_promoted() {
     let dir = tempfile::tempdir().unwrap();
     fs_err::write(dir.path().join("demo.mp4"), "").unwrap();
     let brief = ReviewSummary::from_brief(
-            "Recorded a demo.\nVerification: macOS playback is untested.\nDeliverable: [Open demo](demo.mp4)",
-            dir.path(),
-        );
+        "Recorded a demo.\nVerification: macOS playback is untested.\nDeliverable: [Open demo](demo.mp4)",
+        dir.path(),
+    );
     assert_eq!(brief.text, "Recorded a demo.");
     assert_eq!(
         brief.verification.as_deref(),
