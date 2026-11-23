@@ -2760,6 +2760,26 @@ Live Claude remains unverified because its CLI is signed out. The shared
 request and review fixtures include Claude snapshot coverage. Participant
 testing and native macOS and Windows validation remain unverified.
 
+## Desktop session notifications
+
+Linux Grove tests covered visible-request suppression, separate request
+identities, stale clicks, recovery alerts and opening a session in another
+workspace. Shared Codex and Claude fixtures covered request and review state.
+The review receipt check covered a live completion and a restored result.
+
+The Linux adapter exercised delivery, click routing, markup escaping, daemon
+replacement and dismissal against an isolated freedesktop D-Bus service.
+The Windows adapter passed MSVC-target compilation and Clippy in isolation,
+and the WiX shortcut identity matches the toast sender. Native banners and
+window activation still need end-to-end checks on Linux, Windows and macOS.
+The macOS Rust bridge compiled to metadata on Linux. Its Objective-C bridge
+still needs an Apple SDK build and a bundled notification-permission check.
+
+The live Codex permission smoke observed and declined an actual approval and
+confirmed that the request cleared. This exercised the provider transport.
+Claude's CLI was signed out, so live Claude notification triggers remain
+unverified.
+
 ## Cross-worktree session scope line (November 2026)
 
 Multi-checkout sidebar cards show a scope line (repository set, then the shared

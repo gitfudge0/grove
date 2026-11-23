@@ -31,6 +31,9 @@ use crate::entities::session_registry::{SessionId, SessionRegistry};
 use crate::entities::workspace_state::WorkspaceState;
 use crate::platform::dock;
 
+mod notifications;
+use notifications::{Alert, SessionNotifications};
+
 /// A period, not a tick multiple. See the module docs.
 pub const CLASSIFY_PERIOD: Duration = Duration::from_millis(480);
 
@@ -154,6 +157,7 @@ impl NativeAttention {
 
 pub struct ActivityStore {
     trackers: HashMap<SessionId, Tracker>,
+    notifications: Option<SessionNotifications>,
     hook_states: HashMap<std::path::PathBuf, Option<attention::Observation>>,
     native_attention: HashMap<SessionId, NativeAttention>,
     terminal_reviews: HashMap<SessionId, Instant>,
@@ -188,6 +192,7 @@ impl ActivityStore {
     pub fn new() -> Self {
         Self {
             trackers: HashMap::new(),
+            notifications: None,
             hook_states: HashMap::new(),
             native_attention: HashMap::new(),
             terminal_reviews: HashMap::new(),
@@ -215,6 +220,7 @@ impl ActivityStore {
         });
         Self {
             trackers: HashMap::new(),
+            notifications: None,
             hook_states: HashMap::new(),
             native_attention: HashMap::new(),
             terminal_reviews: HashMap::new(),
@@ -227,6 +233,27 @@ impl ActivityStore {
             task: Self::spawn_pass(cx),
             _observers: vec![observer, registry_observer],
         }
+    }
+
+    pub(crate) fn enable_desktop_notifications(
+        &mut self,
+        window_focused: bool,
+    ) -> futures::channel::mpsc::UnboundedReceiver<u64> {
+        let (activated, clicks) = futures::channel::mpsc::unbounded();
+        self.window_focused = window_focused;
+        self.notifications = Some(SessionNotifications::new(activated));
+        clicks
+    }
+
+    pub(crate) fn notification_target(
+        &mut self,
+        id: u64,
+        cx: &mut Context<Self>,
+    ) -> Option<SessionId> {
+        // The provider can resolve a request between polling passes and the
+        // user's click. Reconcile with the current session before navigating.
+        self.pass(cx);
+        self.notifications.as_mut()?.take_target(id)
     }
 
     /// Unknown sessions render `Idle`, same as the iced build before its first classification tick (`update/mod.rs:710-716`).
@@ -457,9 +484,15 @@ impl ActivityStore {
         let mut changed = false;
 
         for (id, agent, wt_path, state_file) in &sessions {
+            let focused = active_session == Some(*id) && window_focused;
             let Some(entity) = entities.get(id) else {
                 if let Some(session) = registry.read(cx).codex(*id) {
                     let snapshot = &session.read(cx).state;
+                    if let (Some(notifications), Some(meta)) =
+                        (&mut self.notifications, registry.read(cx).meta(*id))
+                    {
+                        notifications.observe(meta, Alert::structured(snapshot), focused);
+                    }
                     let next = self.native_attention.entry(*id).or_default().classify(
                         if snapshot.review_completion().is_some() {
                             grove_core::codex::Status::Done
@@ -474,7 +507,7 @@ impl ActivityStore {
                                 .review_completion()
                                 .unwrap_or(snapshot.saved.work_periods.len()),
                         },
-                        active_session == Some(*id) && window_focused,
+                        focused,
                     );
                     let tracker = self.trackers.entry(*id).or_default();
                     if next == ActivityState::Working {
@@ -491,7 +524,6 @@ impl ActivityStore {
                 }
                 continue;
             };
-            let focused = active_session == Some(*id) && window_focused;
 
             let (alive, bells, output_age, title, scroll_age, input_age, root_pid) =
                 entity.update(cx, |s, _| {
@@ -577,6 +609,22 @@ impl ActivityStore {
                 // Unconditional, so a session that stays Working every tick keeps advancing last-active, not just on entry.
                 tracker.last_active = Instant::now();
             }
+            if let Some(notifications) = &mut self.notifications {
+                let mut alerts = Vec::new();
+                if new_state == ActivityState::WaitingForInput
+                    && (matches!(native, Some(NativeStatus::Waiting))
+                        || crate::activity::matches_waiting(*agent, &scrape()))
+                {
+                    alerts.push(Alert::TerminalPrompt);
+                } else if matches!(new_state, ActivityState::Done | ActivityState::Idle) {
+                    if let Some(completion) = self.terminal_reviews.get(id) {
+                        alerts.push(Alert::TerminalReview(*completion));
+                    }
+                }
+                if let Some(meta) = registry.read(cx).meta(*id) {
+                    notifications.observe(meta, alerts, focused);
+                }
+            }
             if !alive {
                 tracker.was_working = false;
                 tracker.bell_pending = false;
@@ -625,6 +673,9 @@ impl ActivityStore {
             .retain(|id, _| sessions.iter().any(|(live, ..)| live == id));
         self.terminal_reviews
             .retain(|id, _| sessions.iter().any(|(live, ..)| live == id));
+        if let Some(notifications) = &mut self.notifications {
+            notifications.retain(|id| registry.read(cx).meta(id).is_some());
+        }
 
         // Tree order, not HashMap order (`update/mod.rs:728-740`); before the first rail paint it's empty, so fall back.
         let order = state.read(cx).visible_session_order().to_vec();

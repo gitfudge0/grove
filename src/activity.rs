@@ -269,7 +269,7 @@ fn matches_working(agent: Agent, tail: &str) -> bool {
 /// text* too, so a bare phrase match would false-positive (spurious dock
 /// bounces). Each phrase must co-occur with menu structure — a selection
 /// caret or numbered options — which response prose doesn't have.
-fn matches_waiting(agent: Agent, tail: &str) -> bool {
+pub(crate) fn matches_waiting(agent: Agent, tail: &str) -> bool {
     match agent {
         Agent::Claude => {
             tail.contains("❯ 1.")

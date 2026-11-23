@@ -322,6 +322,8 @@ pub struct Snapshot {
     pub status: Status,
     pub turn_id: Option<String>,
     pub work_started: Option<Instant>,
+    /// Only receipts created by this live actor can produce desktop notifications.
+    live_review: Option<usize>,
     pub approvals: Vec<Value>,
     pub interaction_owners: HashMap<String, crate::interaction::InteractionOwner>,
     pub interaction_epoch: u64,
@@ -513,6 +515,11 @@ impl Snapshot {
                 .is_some_and(|end| end <= self.saved.items.len()))
         .then_some(receipt.id)
     }
+
+    pub fn live_review_completion(&self) -> Option<usize> {
+        self.review_completion()
+            .filter(|id| Some(*id) == self.live_review)
+    }
     pub fn mark_reviewed(&mut self, work_period: usize) -> Result<(), String> {
         if self.plan_ready() {
             return Err("Review the proposed plan before marking this result reviewed".into());
@@ -555,6 +562,7 @@ impl Snapshot {
         }
         self.saved.session_review.last_completed_period = Some(period);
         self.saved.session_review.sequence = self.saved.session_review.sequence.saturating_add(1);
+        self.live_review = Some(self.saved.session_review.sequence);
         self.saved.session_review.pending = Some(ReviewCompletion {
             id: self.saved.session_review.sequence,
             period,
@@ -1210,6 +1218,7 @@ impl Snapshot {
             status: Status::Starting,
             turn_id: None,
             work_started: None,
+            live_review: None,
             approvals: Vec::new(),
             interaction_owners: HashMap::new(),
             interaction_epoch: next_interaction_epoch(),
@@ -1271,6 +1280,7 @@ impl Snapshot {
             return;
         }
         self.work_started = Some(Instant::now());
+        self.live_review = None;
         self.saved.session_review.pending = None;
         self.saved.work_periods.push(WorkPeriod {
             start_item: self.saved.items.len(),

@@ -19,6 +19,7 @@ fn main() {
     }
 
     println!("cargo:rerun-if-changed=src/platform/inline_html.m");
+    println!("cargo:rerun-if-changed=src/platform/desktop_notifications/macos.m");
     println!("cargo:rerun-if-changed=src/platform/inline_html_keyboard.inc");
     println!("cargo:rerun-if-changed=src/platform/inline_html_accessibility.inc");
     println!("cargo:rerun-if-changed=src/platform/inline_html_linux.c");
@@ -56,8 +57,14 @@ fn main() {
             .flag("-fobjc-arc")
             .flag("-fblocks")
             .compile("grove_inline_html");
+        cc::Build::new()
+            .file("src/platform/desktop_notifications/macos.m")
+            .flag("-fobjc-arc")
+            .flag("-fblocks")
+            .compile("grove_desktop_notifications");
         println!("cargo:rustc-link-lib=framework=WebKit");
         println!("cargo:rustc-link-lib=framework=AppKit");
         println!("cargo:rustc-link-lib=framework=QuartzCore");
+        println!("cargo:rustc-link-lib=framework=UserNotifications");
     }
 }

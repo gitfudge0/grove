@@ -1,5 +1,26 @@
 # Feature behavior
 
+## Desktop notifications
+
+Grove sends a desktop alert when a live background session gets an actionable
+approval, question, input request, native plan, confirmed terminal prompt, or
+blocking failure with a recovery path. New results awaiting review can also
+notify. An alert observed in the focused conversation stays quiet. Routine
+working, retrying and idle states, terminal bells alone, and results restored
+from disk do not trigger desktop alerts.
+
+Each alert belongs to its live request or result. Grove retires it when that
+state resolves or the session closes. Where the desktop supports notification
+actions, clicking a current alert opens its session in the owning workspace.
+Answers, approvals and retries stay in the conversation. Alerts use a short
+status, provider and project name. Request text, paths, commands and answers
+stay in Grove.
+
+Bundled macOS builds use Notification Center permission, the Windows MSI
+registers Grove's toast identity, and Linux uses the desktop's freedesktop
+notification service when available. System notification settings control
+delivery. In-app attention indicators remain available on all three systems.
+
 Read the relevant section when changing file categories, plans or HTML reports.
 
 ## Change categories

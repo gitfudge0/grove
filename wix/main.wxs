@@ -60,7 +60,9 @@
           Name="Grove (Alpha)"
           Description="A worktree launchpad for AI coding agents"
           Target="[APPLICATIONFOLDER]grove.exe"
-          WorkingDirectory="APPLICATIONFOLDER" />
+          WorkingDirectory="APPLICATIONFOLDER">
+          <ShortcutProperty Key="System.AppUserModel.ID" Value="dev.grove.Grove" />
+        </Shortcut>
         <RemoveFolder Id="ApplicationProgramsFolder" On="uninstall" />
         <RegistryValue
           Root="HKCU"

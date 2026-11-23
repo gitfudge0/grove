@@ -10,3 +10,5 @@ pub mod inline_html;
 pub mod text_preferences;
 
 pub mod visual_capture;
+
+pub mod desktop_notifications;

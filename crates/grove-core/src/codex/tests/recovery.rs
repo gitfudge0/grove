@@ -164,11 +164,13 @@ fn session_review_receipts_survive_restore_and_reject_stale_turn_actions() {
         snapshot.apply(&json!({"method":"turn/completed","params":{"threadId":"thread-1","turn":{"id":"first","status":"completed"}}}));
         assert_eq!(snapshot.session_status(), "Review");
         let first = snapshot.review_completion().unwrap();
+        assert_eq!(snapshot.live_review_completion(), Some(first));
         let mut restored = Snapshot::new(
             serde_json::from_value(serde_json::to_value(&snapshot.saved).unwrap()).unwrap(),
         );
         restored.status = Status::Idle;
         assert_eq!(restored.review_completion(), Some(first));
+        assert_eq!(restored.live_review_completion(), None);
         restored.mark_reviewed(first).unwrap();
         restored.completed_for_review();
         assert_eq!(
@@ -186,6 +188,8 @@ fn session_review_receipts_survive_restore_and_reject_stale_turn_actions() {
         assert_ne!(first, second);
         assert!(restored.mark_reviewed(first).is_err());
         assert_eq!(restored.review_completion(), Some(second));
+        restored.status = Status::Idle;
+        assert_eq!(restored.live_review_completion(), Some(second));
         let mut fresh = Snapshot::new(restored.saved.fresh_conversation());
         fresh.status = Status::Idle;
         assert_eq!(fresh.review_completion(), None);

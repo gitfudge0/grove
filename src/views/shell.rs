@@ -1,6 +1,8 @@
 //! Grove's app-owned header and the empty canvas for the UI rebuild.
 mod switcher;
 
+use futures::StreamExt as _;
+
 use super::components::{form_action, header_control_with_label_tooltip};
 use super::motion;
 use super::settings_panel::{SettingsPanel, SettingsPanelEvent};
@@ -138,6 +140,25 @@ impl Shell {
         let runtime = cx.new(Runtime::new);
         #[cfg(not(test))]
         runtime.update(cx, Runtime::discover_tmux_sessions);
+        if !cfg!(test) {
+            let activity = runtime.read(cx).activity.clone();
+            let mut clicks = activity.update(cx, |activity, _| {
+                activity.enable_desktop_notifications(window.is_window_active())
+            });
+            cx.spawn_in(window, async move |this, cx| {
+                while let Some(id) = clicks.next().await {
+                    if this
+                        .update_in(cx, |this, window, cx| {
+                            this.open_notification_session(id, window, cx);
+                        })
+                        .is_err()
+                    {
+                        break;
+                    }
+                }
+            })
+            .detach();
+        }
         let workspaces = cx.new(|cx| super::workspace_manager::WorkspaceManager::new(window, cx));
         let switcher_input =
             cx.new(|cx| InputState::new(window, cx).placeholder("Find a workspace or session"));
@@ -737,6 +758,61 @@ impl Shell {
         })
         .detach();
     }
+
+    fn open_notification_session(
+        &mut self,
+        banner: u64,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let activity = self.runtime.read(cx).activity.clone();
+        let Some(id) = activity.update(cx, |activity, cx| activity.notification_target(banner, cx))
+        else {
+            return;
+        };
+        window.activate_window();
+        self.navigate_to_notification_session(id, window, cx);
+    }
+
+    fn navigate_to_notification_session(
+        &mut self,
+        id: SessionId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.shortcut_blocked_in(window, cx) || !self.sidebar.read(cx).navigation_available() {
+            return;
+        }
+
+        let store = &cx.global::<crate::settings::SettingsState>().store;
+        let registry = self.runtime.read(cx).registry.read(cx);
+        let Some(meta) = registry.meta(id) else {
+            return;
+        };
+        let current = store.workspaces.active;
+        let workspace = if meta.project.is_empty() {
+            current
+        } else if let Some((_, project)) = store
+            .active_projects()
+            .find(|(_, p)| p.name == meta.project)
+        {
+            store.project_workspace_id(&project.path)
+        } else {
+            return;
+        };
+        if workspace != current {
+            let ((), saved) =
+                crate::settings::SettingsState::update_and_flush_checked(cx, |store| {
+                    store.workspaces.select(workspace);
+                });
+            if saved.is_err() {
+                return;
+            }
+        }
+        self.sidebar
+            .update(cx, |sidebar, cx| sidebar.select_session_id(id, window, cx));
+    }
+
     fn activate_palette_command(
         &mut self,
         row: PaletteRow,

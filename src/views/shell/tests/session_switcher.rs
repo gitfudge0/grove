@@ -3,6 +3,51 @@
 use super::*;
 
 #[gpui::test]
+fn desktop_notification_opens_the_session_in_its_owning_workspace(cx: &mut gpui::TestAppContext) {
+    cx.update(init);
+    let (shell, cx) = cx.add_window_view(Shell::new);
+    let target = cx.update(|_, cx| {
+        let store = &mut cx.global_mut::<crate::settings::SettingsState>().store;
+        store.workspaces.create("Other").unwrap();
+        let other = store.workspaces.active;
+        store
+            .project_workspaces
+            .insert("/grove-shell-navigation-test".into(), other);
+        store.workspaces.select(1);
+        let registry = shell.read(cx).runtime.read(cx).registry.clone();
+        registry.update(cx, |registry, cx| {
+            let target = registry.insert_meta(
+                "navigation".into(),
+                "/grove-shell-navigation-test".into(),
+                Agent::Terminal,
+            );
+            cx.notify();
+            target
+        })
+    });
+    draw(cx);
+    cx.update(|window, cx| {
+        shell.update(cx, |shell, cx| {
+            assert!(!shell
+                .sidebar
+                .read(cx)
+                .visible_session_targets(cx)
+                .iter()
+                .any(|(id, _)| *id == target));
+            shell.navigate_to_notification_session(target, window, cx);
+            assert_eq!(shell.sidebar.read(cx).selected_session(), Some(target));
+            assert_eq!(
+                cx.global::<crate::settings::SettingsState>()
+                    .store
+                    .workspaces
+                    .active,
+                2
+            );
+        });
+    });
+}
+
+#[gpui::test]
 fn switch_session_shows_scoped_picker_and_escape_restores_focus(cx: &mut gpui::TestAppContext) {
     cx.update(init);
     let (shell, cx) = cx.add_window_view(Shell::new);
