@@ -1084,7 +1084,7 @@ impl Sidebar {
     }
 
     #[cfg(target_os = "macos")]
-    pub(crate) fn menu_state(&self, window: &Window, cx: &App) -> crate::app_menus::MenuState {
+    pub(crate) fn menu_state(&self, window: &Window, cx: &gpui::App) -> crate::app_menus::MenuState {
         crate::app_menus::MenuState {
             window: true,
             fullscreen: window.is_fullscreen(),
