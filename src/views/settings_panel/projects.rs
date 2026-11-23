@@ -895,6 +895,38 @@ fn worktree_name(path: &str) -> String {
 }
 
 #[cfg(test)]
+fn fixture_git_project(repo: &Path, worktrees: &[(&str, &Path)]) {
+    fs_err::create_dir_all(repo).unwrap();
+    let git = |args: &[&str]| {
+        let output = std::process::Command::new("git")
+            .current_dir(repo)
+            .args([
+                "-c",
+                "commit.gpgsign=false",
+                "-c",
+                "core.hooksPath=/dev/null",
+                "-c",
+                "user.name=Grove QA",
+                "-c",
+                "user.email=qa@example.invalid",
+            ])
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    };
+    git(&["init", "-b", "main"]);
+    git(&["commit", "--allow-empty", "-m", "Fixture"]);
+    for (branch, path) in worktrees {
+        git(&["worktree", "add", "-b", branch, path.to_str().unwrap()]);
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::{runtime::Runtime, theme::ThemeState, zoom::ZoomState};
@@ -955,7 +987,7 @@ mod tests {
                     );
                     cx.notify();
                 });
-            })
+            });
         });
 
         let draw = |cx: &mut gpui::VisualTestContext| {
@@ -1032,38 +1064,6 @@ mod tests {
             let target = ProjectMenuTarget::worktree(repo, linked);
             assert!(panel.project_menu_focus[&target].is_focused(window));
         });
-    }
-}
-
-#[cfg(test)]
-fn fixture_git_project(repo: &Path, worktrees: &[(&str, &Path)]) {
-    std::fs::create_dir_all(repo).unwrap();
-    let git = |args: &[&str]| {
-        let output = std::process::Command::new("git")
-            .current_dir(repo)
-            .args([
-                "-c",
-                "commit.gpgsign=false",
-                "-c",
-                "core.hooksPath=/dev/null",
-                "-c",
-                "user.name=Grove QA",
-                "-c",
-                "user.email=qa@example.invalid",
-            ])
-            .args(args)
-            .output()
-            .unwrap();
-        assert!(
-            output.status.success(),
-            "git {args:?}: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-    };
-    git(&["init", "-b", "main"]);
-    git(&["commit", "--allow-empty", "-m", "Fixture"]);
-    for (branch, path) in worktrees {
-        git(&["worktree", "add", "-b", branch, path.to_str().unwrap()]);
     }
 }
 

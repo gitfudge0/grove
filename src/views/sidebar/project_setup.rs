@@ -153,11 +153,7 @@ impl ProjectSetup {
         result.refresh_suggestions();
         result
     }
-    fn render_icon_choices(&self, _window: &Window, cx: &mut Context<Self>) -> gpui::Div {
-        let current = self
-            .appearance
-            .expect("details appearance initialized")
-            .current();
+    fn render_icon_choices(&self, current: ProjectIdentity, cx: &mut Context<Self>) -> gpui::Div {
         let mut section = div()
             .w_full()
             .min_w_0()
@@ -646,19 +642,22 @@ impl Render for ProjectSetup {
                 );
             }
         } else {
-            if self.appearance.is_none() {
-                let store = &cx.global::<SettingsState>().store;
-                let occupied = store
-                    .projects
-                    .iter()
-                    .filter(|p| store.project_workspace_id(&p.path) == self.workspace)
-                    .map(|p| store.project_appearance(&p.path).current())
-                    .collect::<Vec<_>>();
-                self.appearance = Some(ProjectAppearance {
-                    automatic: ProjectIdentity::assign(&self.state.path, &occupied),
-                    custom: None,
-                });
-            }
+            let appearance = self
+                .appearance
+                .get_or_insert_with(|| {
+                    let store = &cx.global::<SettingsState>().store;
+                    let occupied = store
+                        .projects
+                        .iter()
+                        .filter(|p| store.project_workspace_id(&p.path) == self.workspace)
+                        .map(|p| store.project_appearance(&p.path).current())
+                        .collect::<Vec<_>>();
+                    ProjectAppearance {
+                        automatic: ProjectIdentity::assign(&self.state.path, &occupied),
+                        custom: None,
+                    }
+                })
+                .current();
             fields = fields
                 .child(project_form_field(
                     "setup-name",
@@ -668,7 +667,7 @@ impl Render for ProjectSetup {
                     window,
                     cx,
                 ))
-                .child(self.render_icon_choices(window, cx));
+                .child(self.render_icon_choices(appearance, cx));
             fields = fields.child(
                 div()
                     .w_full()

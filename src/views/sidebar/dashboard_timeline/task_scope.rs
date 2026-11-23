@@ -237,6 +237,7 @@ impl Sidebar {
 mod tests {
     use super::*;
     use serde_json::json;
+    use std::sync::Arc;
 
     struct ScopeProbe {
         sidebar: Entity<Sidebar>,
