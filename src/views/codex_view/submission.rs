@@ -1,6 +1,10 @@
 //! Composer submission, Dashboard launch and turn interruption.
 
-use super::*;
+use super::{
+    active_turn_redirect_available, codex, Action, BubbleEntrance, CodexView, CodexViewEvent,
+    StopConfirmation, SubmissionMode, STOP_CONFIRMATION_TIMEOUT,
+};
+use gpui::{Context, Entity, Window};
 
 impl CodexView {
     pub(crate) fn attach_dashboard_tray(

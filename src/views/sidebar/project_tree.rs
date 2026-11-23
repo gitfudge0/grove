@@ -1,6 +1,30 @@
 //! Project and worktree tree rows and project menu presentation.
 
-use super::*;
+use super::Sidebar;
+#[cfg(test)]
+use super::{
+    c, icon, motion, rpx, sidebar_worktree_name, Action, Agent, Selection, SettingsState, ViewMode,
+    WorktreeReadiness, HIERARCHY_GAP, HIERARCHY_ICON_SLOT, HIERARCHY_INSET, HIERARCHY_META_TEXT,
+    HIERARCHY_TRAILING_W, PROJECT_ROW_H, PROJECT_TITLE_LINE_H, ROW_H, SESSION_FIRST_GAP,
+    SESSION_LAUNCHER_SIZE, SESSION_LEADING_INSET, SIDEBAR_W, WORKTREE_GROUP_GAP,
+    WORKTREE_LAUNCH_AGENTS, WORKTREE_LEADING_INSET,
+};
+#[cfg(test)]
+use crate::views::tokens::{
+    CHROME_CONTROL_H, CONTROL_H, ICON_MD, ICON_SM, OPACITY_DISABLED, RADIUS_CHROME, SPACE_2XL,
+    SPACE_LG, SPACE_MD, SPACE_SM, SPACE_XS, TEXT_BODY, TEXT_MICRO, TEXT_SMALL, TEXT_TITLE,
+};
+#[cfg(test)]
+use gpui::prelude::InteractiveElement;
+#[cfg(test)]
+use gpui::prelude::{
+    FluentBuilder, IntoElement, ParentElement, StatefulInteractiveElement, Styled,
+};
+#[cfg(test)]
+use gpui::{div, AnyElement, MouseButton, SharedString};
+use gpui::{Context, Window};
+#[cfg(test)]
+use gpui_component::ElementExt as _;
 
 #[cfg(test)]
 const HIERARCHY_ICON: f32 = 15.0;

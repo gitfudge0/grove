@@ -21,8 +21,8 @@ use crate::{
     theme as c,
 };
 use gpui::{
-    div, prelude::*, AnyElement, App, Bounds, Context, ElementId, Entity, EntityId, FocusHandle,
-    GlobalElementId, LayoutId, Pixels, Point, ScrollHandle, SharedString, WeakEntity, Window,
+    div, prelude::*, AnyElement, App, Bounds, Context, Entity, EntityId, FocusHandle,
+    GlobalElementId, LayoutId, Pixels, Point, ScrollHandle, WeakEntity, Window,
 };
 use gpui_component::{
     text::{markdown_ast, MarkdownExtensions, MarkdownNode, MarkdownParseContext, TextView},

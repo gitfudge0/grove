@@ -1,6 +1,13 @@
 //! Sidebar frame, canvas composition and overlays.
 
-use super::*;
+use super::{
+    branch_history, c, rpx, Action, Agent, HashSet, Sidebar, ViewMode, WorktreeRemovalStage,
+};
+use crate::views::tokens::{APPBAR_TOTAL_H, RADIUS_PANEL, SPACE_LG, TEXT_BODY};
+use gpui::prelude::{
+    FluentBuilder, InteractiveElement, IntoElement, ParentElement, Render, Styled,
+};
+use gpui::{div, Context, FocusHandle, MouseButton, MouseMoveEvent, Window};
 
 impl Render for Sidebar {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {

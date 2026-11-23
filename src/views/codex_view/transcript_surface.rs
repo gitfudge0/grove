@@ -1,6 +1,20 @@
 //! History and message layout shared by editable conversations and read-only previews.
 
-use super::*;
+use super::{
+    c, codex, compaction_divider, history, is_tool_item, measured_slot, measured_tool, rpx, tasks,
+    tool_activity_label, tool_expansion_key, tool_is_running, CodexView, HashSet, Rc,
+    TranscriptRenderCache, WorkIndex, CHAT_MAX_W,
+};
+use crate::views::tokens::{
+    CHROME_CONTROL_H, ICON_SM, MODAL_W_LG, SPACE_20, SPACE_2XL, SPACE_3XL, SPACE_LG, SPACE_SM,
+    SPACE_XS, TEXT_SMALL,
+};
+use gpui::prelude::{
+    FluentBuilder, InteractiveElement, IntoElement, ParentElement, StatefulInteractiveElement,
+    Styled,
+};
+use gpui::{div, Context, Focusable, Window};
+use gpui_component::WindowExt as _;
 
 pub(super) enum TranscriptSurface {
     ReadOnly(gpui::AnyElement),

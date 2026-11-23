@@ -1,6 +1,28 @@
 //! Transcript message, tool and work header row composition.
 
-use super::*;
+#[cfg(test)]
+use super::measured_tool;
+use super::{
+    action_key, attachment_preview, c, codex, copy_control, header_control_frame,
+    header_control_with_label_tooltip, image_from_url, is_tool_item, markdown_style, measured_slot,
+    reference_prompt_copy, reference_prompt_markdown, relative_message_time, rpx, shimmer_label,
+    snippet_shell_supported, snippets, tool_activity_icon, tool_activity_summary, tool_detail,
+    tool_expansion_key, tool_failed, tool_is_running, tool_summary, tooltip, transcript_action,
+    truncation_safe_label_width, Action, CodexView, PreparedItem, Rc, TextView, TextViewState,
+    CHAT_MAX_W, TOOL_DETAIL_MAX_H, USER_BUBBLE_MAX_W,
+};
+use crate::views::tokens::{
+    CHROME_CONTROL_H, ICON_MD, ICON_SM, MOTION_SLOW_MS, RADIUS_CONTROL, RADIUS_PANEL, SPACE_2XL,
+    SPACE_3XL, SPACE_LG, SPACE_MD, SPACE_SM, SPACE_XS, TEXT_BODY, TEXT_SMALL, TEXT_TITLE,
+};
+use gpui::prelude::{
+    FluentBuilder, InteractiveElement, IntoElement, ParentElement, StatefulInteractiveElement,
+    Styled,
+};
+use gpui::AnimationExt as _;
+use gpui::AppContext as _;
+use gpui::{div, Context, FocusHandle, Window};
+use gpui_component::WindowExt as _;
 
 impl CodexView {
     pub(super) fn render_work_header(

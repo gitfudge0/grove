@@ -1,6 +1,12 @@
 //! Checkout launch, project navigation entry points and script actions.
 
-use super::*;
+#[cfg(test)]
+use super::SessionId;
+use super::{
+    checkout_panel, Action, Agent, Selection, SettingsState, Sidebar, ViewMode,
+    WorktreeRemovalStage, WORKTREE_LAUNCH_AGENTS,
+};
+use gpui::{App, Context, Focusable, Window};
 
 impl Sidebar {
     pub(super) fn launch_target(

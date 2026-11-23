@@ -18,11 +18,12 @@ use super::{
     tokens::*,
 };
 use crate::{entities::codex_session::CodexSession, theme as c};
-use base64::{engine::general_purpose::STANDARD, Engine as _};
-use gpui::{
-    div, prelude::*, AnimationExt as _, App, Context, Entity, FocusHandle, Focusable, Subscription,
-    Window,
-};
+use base64::engine::general_purpose::STANDARD;
+#[cfg(test)]
+use base64::Engine as _;
+use gpui::{div, prelude::*, App, Context, Entity, FocusHandle, Focusable, Subscription, Window};
+#[cfg(test)]
+use gpui_component::WindowExt as _;
 use gpui_component::{
     input::{
         IndentInline, Input, InputEvent, InputState, MoveDown, MoveLeft, MoveRight, MoveUp,
@@ -30,7 +31,7 @@ use gpui_component::{
     },
     menu::{PopupMenu, PopupMenuItem},
     text::{TextSelectionSnapshot, TextView, TextViewState, TextViewStyle},
-    Disableable, WindowExt as _,
+    Disableable,
 };
 use grove_core::codex::{self, Action, SubmissionMode};
 use grove_core::elicitation::{ElicitationKind, ElicitationMode, ElicitationRequest};

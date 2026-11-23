@@ -61,9 +61,11 @@ use crate::{
     theme as c,
 };
 use action_dispatch::Action;
+#[cfg(test)]
+use gpui::MouseMoveEvent;
 use gpui::{
     div, prelude::*, AnyElement, App, Context, CursorStyle, Div, Entity, EventEmitter, FocusHandle,
-    Focusable, MouseButton, MouseMoveEvent, ScrollHandle, SharedString, Stateful, Window,
+    Focusable, MouseButton, ScrollHandle, SharedString, Window,
 };
 use gpui_component::{input::InputState, ElementExt};
 use grove_core::agent::Agent;

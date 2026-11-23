@@ -1,6 +1,11 @@
 //! Checkout-scoped Git refresh, mutations, and generated commit jobs.
 
-use super::*;
+use super::{
+    checkout_git, commit_agent, diff, Agent, CheckoutGitState, CheckoutPanel, CheckoutRecovery,
+    CommitControl, CommitEvent, CommitPhase, CommitUi, Duration, GitAction, Instant, Path,
+    Selection, SettingsState, Sidebar, REMOTE_REFRESH_INTERVAL, STATUS_REFRESH_INTERVAL,
+};
+use gpui::{App, Context, Window};
 
 const COMMIT_POLL_INTERVAL: Duration = Duration::from_millis(80);
 const COMMIT_SUCCESS_FEEDBACK: Duration = Duration::from_secs(2);

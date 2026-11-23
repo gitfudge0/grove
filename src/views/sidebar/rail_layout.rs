@@ -1,6 +1,11 @@
 //! Sidebar rail geometry and resize gestures.
 
-use super::*;
+use super::{
+    effective_rail_width, SettingsState, Sidebar, SidebarDrag, SIDEBAR_COLLAPSED_W,
+    SIDEBAR_DRAG_EPSILON, SIDEBAR_W,
+};
+use crate::views::tokens::MODAL_W_LG;
+use gpui::{App, Context, MouseMoveEvent, Window};
 
 impl Sidebar {
     pub(super) fn logical_window_width(window: &Window) -> f32 {

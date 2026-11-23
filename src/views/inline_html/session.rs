@@ -1,6 +1,21 @@
 //! Session-scoped HTML ownership, Markdown links, and automatic opening.
 
-use super::*;
+use super::{
+    c, expanded, inline_card, local_html_path, markdown_ast, parse, rpx, source_view, AutoOpen,
+    DocumentBlock, HashMap, HtmlArtifact, HtmlSession, HtmlUi, MarkdownExtensions, NativeDocument,
+    OpenLocalFile, Path, PathBuf, Rc,
+};
+use crate::views::tokens::{ICON_SM, SPACE_SM, TEXT_SMALL};
+use gpui::prelude::{
+    FluentBuilder, InteractiveElement, IntoElement, ParentElement, StatefulInteractiveElement,
+    Styled,
+};
+use gpui::AppContext as _;
+use gpui::{div, AnyElement, App, Context, ScrollHandle, SharedString, Window};
+#[cfg(test)]
+use gpui::{Entity, EntityId};
+#[cfg(test)]
+use std::collections::HashSet;
 
 impl HtmlSession {
     #[cfg(test)]

@@ -1,6 +1,15 @@
 //! Provider management, release status and actions.
 
-use super::*;
+use super::{
+    agent_display_label, c, components, rpx, status, Agent, Disableable, SettingsPanel, StatusKind,
+};
+use crate::views::tokens::{
+    FIELD_LABEL_COL_W, ICON_SM, SPACE_2XL, SPACE_LG, SPACE_SM, SPACE_XS, TEXT_BODY, TEXT_SMALL,
+};
+use gpui::prelude::{
+    FluentBuilder, InteractiveElement, ParentElement, StatefulInteractiveElement, Styled,
+};
+use gpui::{div, Context, FontWeight, Window};
 
 impl SettingsPanel {
     pub(super) fn toggle_provider_details(&mut self, agent: Agent, cx: &mut Context<Self>) {

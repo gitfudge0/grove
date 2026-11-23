@@ -1,6 +1,21 @@
 //! Active session view, canvas header, and session event routing.
 
-use super::*;
+use super::{
+    agent_name, c, canvas_state, form_action, icon, motion, rpx, session_display_title,
+    session_signature, sidebar_worktree_name, Action, ActivityState, CanvasState, Selection,
+    SettingsState, Sidebar, TerminalView, ViewMode, HEADER_PREFIX_FRACTION,
+    HEADER_STATUS_LABEL_MIN_W, SESSION_HEADER_H, SESSION_ICON_SLOT,
+};
+use crate::views::tokens::{
+    APPBAR_H, CHROME_CONTROL_H, ICON_LG, ICON_SM, MODAL_W_XL, MOTION_FAST_MS, RADIUS_CONTROL,
+    RADIUS_PANEL, SPACE_3XL, SPACE_LG, SPACE_MD, SPACE_SM, TEXT_BODY, TEXT_MICRO, TEXT_SMALL,
+};
+use gpui::prelude::{
+    FluentBuilder, InteractiveElement, IntoElement, ParentElement, StatefulInteractiveElement,
+    Styled,
+};
+use gpui::AppContext as _;
+use gpui::{div, AnyElement, Context, Focusable, Window};
 
 impl Sidebar {
     /// Both a freshly constructed session view and a Home composer adopted as a

@@ -1,6 +1,19 @@
 //! MCP elicitation drafts and cards.
 
-use super::*;
+use super::{
+    activity_request, attached_validation, c, codex, form_action, literal_notice_text,
+    permission_heading, project_field_well, question_choice, rpx, status, Action, CodexView,
+    Disableable, ElicitationChoice, ElicitationDraft, ElicitationFieldDraft, ElicitationKind,
+    ElicitationMode, ElicitationRequest, HashMap, HashSet, Input, InputState, StatusKind,
+};
+use crate::views::tokens::{
+    ICON_SM, OPACITY_DISABLED, RADIUS_PANEL, SPACE_2XL, SPACE_3XL, SPACE_LG, SPACE_SM, TEXT_SMALL,
+};
+use gpui::prelude::{
+    FluentBuilder, InteractiveElement, ParentElement, StatefulInteractiveElement, Styled,
+};
+use gpui::AppContext as _;
+use gpui::{div, App, Context, Focusable, Window};
 
 impl CodexView {
     pub(super) fn elicitation_key(request: &ElicitationRequest, epoch: u64) -> String {

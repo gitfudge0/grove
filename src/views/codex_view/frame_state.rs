@@ -1,6 +1,11 @@
 //! Snapshot synchronization, draft acknowledgements, and transcript follow state.
 
-use super::*;
+use super::{
+    codex, composer_markdown_decorations, composer_markdown_replacements, composer_scope, rpx,
+    CodexView, Rc, TranscriptRenderCache, TurnHistory,
+};
+use crate::views::tokens::{MOTION_FAST_MS, SPACE_20};
+use gpui::{Context, Focusable, Window};
 
 pub(super) struct TranscriptFollow {
     pub(super) near_bottom: bool,

@@ -1,6 +1,12 @@
 //! Native plan decisions and composer draft handoff.
 
-use super::*;
+use super::{
+    c, codex, rpx, transcript_action, CodexView, Disableable, HashSet, PlanAnswerComposer,
+};
+use crate::views::tokens::{ICON_SM, SPACE_LG, TEXT_SMALL};
+use gpui::prelude::{InteractiveElement, IntoElement, ParentElement, Styled};
+use gpui::AppContext as _;
+use gpui::{div, App, Context, Entity, Focusable, Window};
 
 impl CodexView {
     pub(super) fn sync_native_plans(&mut self, window: &mut Window, cx: &mut Context<Self>) {

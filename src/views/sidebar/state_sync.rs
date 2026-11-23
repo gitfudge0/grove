@@ -1,6 +1,10 @@
 //! Workspace snapshots, readiness polling and title and age subscriptions.
 
-use super::*;
+use super::{
+    branch_history, remap_selection, Duration, HashMap, HashSet, Instant, Navigation, Selection,
+    SettingsState, Sidebar, SidebarContext, ViewMode,
+};
+use gpui::{App, Context, Window};
 
 pub(super) const SESSION_AGE_REFRESH: Duration = Duration::from_secs(1);
 const WORKTREE_READINESS_REFRESH: Duration = Duration::from_secs(5);

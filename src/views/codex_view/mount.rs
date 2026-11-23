@@ -1,6 +1,11 @@
 //! Construction and subscriptions for editable and read-only conversations.
 
-use super::*;
+use super::{
+    composer_placeholder, image_from_url, Action, Cell, CodexSession, CodexView, CodexViewEvent,
+    ComposerMenu, HashMap, HashSet, InputEvent, InputState, Rc, TurnHistory,
+};
+use gpui::AppContext as _;
+use gpui::{Context, Entity, Window};
 
 impl CodexView {
     pub(in crate::views) fn child_preview(

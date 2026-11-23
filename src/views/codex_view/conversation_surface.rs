@@ -1,6 +1,19 @@
 //! Conversation focus and keyboard routing, empty state, and turn status.
 
-use super::*;
+use super::{
+    c, codex, compacting, live_activity, rpx, shimmer_label, trailing_trigger, CodexView,
+    ComposerFrame, ComposerMenu, ComposerPlacement, IndentInline, InteractiveTranscript, MoveDown,
+    MoveLeft, MoveRight, MoveUp, StatusKind, CHAT_MAX_W,
+};
+use crate::views::tokens::{
+    CHROME_CONTROL_H, ICON_SM, SPACE_3XL, SPACE_LG, SPACE_MD, SPACE_SM, TEXT_BODY, TEXT_DISPLAY,
+    TEXT_SMALL,
+};
+use gpui::prelude::{
+    FluentBuilder, InteractiveElement, IntoElement, ParentElement, StatefulInteractiveElement,
+    Styled,
+};
+use gpui::{div, Context, Focusable, Window};
 
 impl CodexView {
     pub(super) fn render_conversation(

@@ -1,6 +1,20 @@
 //! Transcript selection, detailed draft previews, and canonical reference prompts.
 
-use super::*;
+use super::{
+    action_key, c, codex, header_control_with_label_tooltip, rpx, transcript_action, Action,
+    CodexView, TextSelectionSnapshot, REFERENCE_EXPANDED_H, REFERENCE_PREVIEW_CHARS,
+    REFERENCE_PREVIEW_H,
+};
+use crate::views::tokens::{
+    CHROME_CONTROL_H, ICON_MD, ICON_SM, RADIUS_PANEL, SPACE_2XL, SPACE_LG, SPACE_SM, TEXT_BODY,
+    TEXT_MICRO,
+};
+use gpui::prelude::{
+    FluentBuilder, InteractiveElement, IntoElement, ParentElement, StatefulInteractiveElement,
+    Styled,
+};
+use gpui::{div, Context, Focusable, Window};
+use gpui_component::WindowExt as _;
 
 /// Decode only complete canonical reference prompts. All other user text stays literal.
 pub(super) fn reference_prompt(text: &str) -> Option<(codex::ReferenceDraft, &str)> {

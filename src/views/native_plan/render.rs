@@ -1,6 +1,18 @@
 //! Native plan body, controls, and focus routing.
 
-use super::*;
+use super::{
+    all_decisions, c, decision_answered, entries, measured, resolved_answer, response_answers,
+    review_locked, rpx, status, string, transcript_action, Disableable, HashSet, NativePlan,
+    StatusKind, Value, PLAN_READING_WIDTH,
+};
+use crate::views::tokens::{
+    ICON_SM, SPACE_3XL, SPACE_LG, SPACE_SM, TEXT_BODY, TEXT_SMALL, TEXT_TITLE,
+};
+use gpui::prelude::{
+    FluentBuilder, InteractiveElement, IntoElement, ParentElement, Render,
+    StatefulInteractiveElement, Styled,
+};
+use gpui::{div, Context, Window};
 
 impl Render for NativePlan {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {

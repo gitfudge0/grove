@@ -1,6 +1,21 @@
 //! Message focus, copy, fork, expansion and stale control cleanup.
 
-use super::*;
+#[cfg(test)]
+use super::measured_slot;
+use super::{
+    action_key, c, codex, description_conversation_text, header_control_frame,
+    header_control_with_label_tooltip, relative_message_time, rpx, tooltip, CodexView,
+    CodexViewEvent, HashMap, HashSet, ResponseGroup, TranscriptRenderCache, CHAT_MAX_W,
+    CODE_COPY_FEEDBACK_MS,
+};
+use crate::views::tokens::{
+    CHROME_CONTROL_H, ICON_MD, MOTION_SLOW_MS, SPACE_LG, SPACE_MD, SPACE_SM, TEXT_SMALL,
+};
+use gpui::prelude::{
+    FluentBuilder, InteractiveElement, IntoElement, ParentElement, StatefulInteractiveElement,
+    Styled,
+};
+use gpui::{div, App, Context, FocusHandle, Window};
 
 impl CodexView {
     pub(super) fn prune_transcript_controls(&mut self, transcript: &TranscriptRenderCache) {

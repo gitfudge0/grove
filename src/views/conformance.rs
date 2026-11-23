@@ -778,12 +778,20 @@ fn source_guards_detect_regressions_without_borrowing_neighbor_contracts() {
 
 #[test]
 fn subagents_stay_in_session_right_panel_and_preview_is_read_only() {
+    let entry = source("src/views/codex_view.rs");
+    let shell = source("src/views/codex_view/conversation_surface.rs");
     let mount = source("src/views/codex_view/mount.rs");
     let transcript = source("src/views/codex_view/transcript_surface.rs");
     let rows = source("src/views/codex_view/message_rows.rs");
-    for source in [&mount, &transcript, &rows] {
-        assert!(!source.contains("subagent_summary("));
-        assert!(!source.contains("subagent_row("));
+    for (path, text) in [
+        ("conversation entry point", &entry),
+        ("conversation shell", &shell),
+        ("conversation mount", &mount),
+        ("transcript surface", &transcript),
+        ("message rows", &rows),
+    ] {
+        assert!(!text.contains("subagent_summary("), "{path}");
+        assert!(!text.contains("subagent_row("), "{path}");
     }
     let panel = source("src/views/sidebar/checkout_panel.rs");
     assert!(panel.contains("selected_session_has_agents"));

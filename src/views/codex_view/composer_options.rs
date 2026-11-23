@@ -1,6 +1,24 @@
 //! Composer model, effort, speed and option controls.
 
-use super::*;
+use super::{
+    action_key, c, codex, composer_model_name, composer_placeholder, composer_scope,
+    effective_model, effort_fraction, effort_key_index, effort_label, effort_stop,
+    full_model_label, header_control_frame, model_picker, preference_choices, rpx,
+    session_has_yolo_access, settings_control, speed_disabled_explanation,
+    truncation_safe_label_width, Action, ClosingComposerPopup, CodexView, ComposerMenu, EffortDrag,
+    EffortVisual, PopupMenu, PopupMenuItem, COMPOSER_MENU_W, MODEL_EFFORT_CARD_W,
+};
+use crate::views::tokens::{
+    CHROME_CONTROL_H, CONTROL_H, ICON_BTN_W, ICON_MD, ICON_SM, ICON_XS, MOTION_BASE_MS,
+    MOTION_FAST_MS, OPACITY_DISABLED, RADIUS_FULL, RADIUS_PANEL, SPACE_2XL, SPACE_3XL, SPACE_LG,
+    SPACE_MD, SPACE_SM, SPACE_XL, SPACE_XS, TEXT_BODY, TEXT_MICRO, TEXT_SMALL, TEXT_TITLE,
+};
+use gpui::prelude::{
+    FluentBuilder, InteractiveElement, IntoElement, ParentElement, StatefulInteractiveElement,
+    Styled,
+};
+use gpui::AppContext as _;
+use gpui::{div, App, Context, Focusable, Window};
 
 impl CodexView {
     fn retain_popup_exit(&mut self, cx: &mut Context<Self>) {

@@ -1,6 +1,18 @@
 //! Checkout Scripts section and its row interactions.
 
-use super::*;
+use super::{
+    c, checkout_action, icon, project_field_well, rpx, script_tooltip_content, Action, Disableable,
+    Sidebar, CARD_WIDTH, CHECKOUT_LABEL_INSET,
+};
+use crate::views::tokens::{
+    CHROME_CONTROL_H, CONTROL_H, ICON_LG, ICON_MD, ICON_SM, RADIUS_CONTROL, SPACE_2XL, SPACE_LG,
+    SPACE_SM, TEXT_SMALL,
+};
+use gpui::prelude::{
+    FluentBuilder, InteractiveElement, IntoElement, ParentElement, StatefulInteractiveElement,
+    Styled,
+};
+use gpui::{div, Context, SharedString, Window};
 
 const SCRIPT_VISIBLE_ROWS: usize = 5;
 const SCRIPT_DETAILS_MAX_H: f32 = 160.;

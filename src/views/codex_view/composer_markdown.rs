@@ -1,6 +1,6 @@
 //! Native composer styling that preserves the original Markdown source.
 
-use super::*;
+use super::{c, TextDecoration, TextReplacement};
 
 /// Paint Markdown source without replacing text or changing editor mode. Leaf
 /// spans are ordered and disjoint, so nested emphasis composes correctly with

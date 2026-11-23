@@ -1,6 +1,12 @@
 //! Session selection, canvas focus and navigation mode transitions.
 
-use super::*;
+use super::{
+    branch_history, global_navigation, grid, zen_target, Action, HashSet, Selection, SessionId,
+    SettingsState, Sidebar, ViewMode,
+};
+#[cfg(test)]
+use gpui::FocusHandle;
+use gpui::{App, Context, Focusable, Window};
 
 impl Sidebar {
     pub(crate) fn active_canvas_sessions(&self, cx: &App) -> Vec<(SessionId, bool)> {

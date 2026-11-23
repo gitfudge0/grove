@@ -1,6 +1,17 @@
 //! Composer completion and selected token tracking.
 
-use super::*;
+use super::{
+    c, codex, composer_tray, header_control_frame, rpx, Action, CodexView, ComposerToken,
+    TextDecoration, COMPOSER_TOKEN_UNDERLINE, QUEUED_PROMPTS_MAX_H,
+};
+use crate::views::tokens::{
+    CONTROL_H, ICON_SM, SPACE_LG, SPACE_SM, SPACE_XS, TEXT_BODY, TEXT_SMALL,
+};
+use gpui::prelude::{
+    FluentBuilder, InteractiveElement, IntoElement, ParentElement, StatefulInteractiveElement,
+    Styled,
+};
+use gpui::{div, App, Context, Focusable, Window};
 
 impl CodexView {
     pub(super) fn suggestion_choices(

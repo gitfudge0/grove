@@ -1,6 +1,13 @@
 //! Tool grouping, work periods, compaction, and live turn activity.
 
-use super::*;
+use super::{c, codex, rpx, shimmer_label, CHAT_MAX_W};
+use crate::views::tokens::{SPACE_2XL, TEXT_SMALL};
+use gpui::prelude::{
+    InteractiveElement, IntoElement, ParentElement, StatefulInteractiveElement, Styled,
+};
+use gpui::{div, App};
+#[cfg(test)]
+use grove_core::tasks;
 
 /// During a turn only its latest activity is visible, including between calls.
 /// Completion restores the work disclosure's full history.

@@ -1,6 +1,22 @@
 //! Question cards, review and answer delivery.
 
-use super::*;
+use super::{
+    activity_request, attached_validation, c, codex, project_field_well, question_answer_summary,
+    question_choice, question_has_answer, question_key, rpx, status, transcript_action, Action,
+    CodexView, Disableable, HashMap, HashSet, Input, InputEvent, InputState, QuestionDraft,
+    QuestionGroupDraft, QuestionReceipt, StatusKind, CHAT_MAX_W,
+};
+use crate::views::tokens::{
+    ICON_SM, OPACITY_DISABLED, RADIUS_GROUP, SPACE_2XL, SPACE_3XL, SPACE_LG, SPACE_SM, SPACE_XS,
+    TEXT_BODY, TEXT_SMALL,
+};
+use gpui::prelude::{
+    FluentBuilder, InteractiveElement, IntoElement, ParentElement, StatefulInteractiveElement,
+    Styled,
+};
+use gpui::AppContext as _;
+use gpui::{div, App, Context, Focusable, Window};
+use std::fmt::Write as _;
 
 impl CodexView {
     pub(super) fn sync_questions(

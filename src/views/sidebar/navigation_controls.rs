@@ -1,6 +1,25 @@
 //! Shared sidebar row controls and project or list header controls.
 
-use super::*;
+#[cfg(test)]
+use super::motion;
+use super::{c, rpx, Action, Selection, Sidebar, ViewMode, ROW_H};
+#[cfg(test)]
+use crate::icons::icon;
+use crate::views::tokens::{
+    CHROME_CONTROL_H, OPACITY_DISABLED, RADIUS_CHROME, RADIUS_CONTROL, SPACE_MD, SPACE_SM,
+};
+#[cfg(test)]
+use crate::views::tokens::{ICON_MD, ICON_SM, MOTION_FAST_MS, SPACE_LG, TEXT_MICRO, TEXT_SMALL};
+#[cfg(test)]
+use gpui::prelude::IntoElement;
+use gpui::prelude::{
+    FluentBuilder, InteractiveElement, ParentElement, StatefulInteractiveElement, Styled,
+};
+use gpui::{div, Context, Div, MouseButton, SharedString, Stateful};
+#[cfg(test)]
+use gpui::{AnyElement, Window};
+#[cfg(test)]
+use std::time::Duration;
 
 impl Sidebar {
     #[cfg(test)]

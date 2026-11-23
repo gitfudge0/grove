@@ -1,6 +1,20 @@
 //! Checkout-specific launch and first-run panel.
 
-use super::*;
+use super::{
+    c, dense_action_with_colors, form_action, icon, rpx, Action, Agent, Disableable, SettingsState,
+    Sidebar, WorktreeReadiness, PROJECT_START_ICON_SIZE, PROJECT_START_ROW_H,
+    WORKTREE_LAUNCH_AGENTS,
+};
+use crate::views::tokens::{
+    CONTROL_H, FORM_VALUE_SIZE, ICON_SM, MODAL_W_SM, RADIUS_CONTROL, RADIUS_GROUP, SPACE_20,
+    SPACE_2XL, SPACE_LG, SPACE_MD, SPACE_SM, SPACE_XS, TEXT_BODY, TEXT_DISPLAY, TEXT_SMALL,
+    TEXT_TITLE,
+};
+use gpui::prelude::{
+    FluentBuilder, InteractiveElement, IntoElement, ParentElement, StatefulInteractiveElement,
+    Styled,
+};
+use gpui::{div, AnyElement, Context, FontWeight, Window};
 
 impl Sidebar {
     pub(super) fn render_start_panel(

@@ -1,6 +1,9 @@
 //! Responsive panel placement, visibility, and transition geometry.
 
-use super::*;
+use super::{motion, rpx, Duration, Instant, Selection, Sidebar, CARD_WIDTH};
+use crate::views::tokens::{APPBAR_H, MODAL_W_LG, MOTION_BASE_MS, SPACE_20, SPACE_3XL};
+use gpui::prelude::{InteractiveElement, IntoElement, ParentElement, Styled};
+use gpui::{div, AnyElement, App, Context, Window};
 
 impl Sidebar {
     pub(in crate::views::sidebar) fn toggle_session_panel(

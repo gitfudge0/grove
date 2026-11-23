@@ -1,6 +1,20 @@
 //! Transcript navigation rail, source excerpts, and cached scene.
 
-use super::*;
+#[cfg(test)]
+use super::measured_slot;
+use super::{
+    action_key, c, codex, header_control_with_tooltip, rpx, tooltip_content, CodexView,
+    PreparedItem, PreparedTranscript, Rc, MINIMAP_PREVIEW_W,
+};
+use crate::views::tokens::{CHROME_CONTROL_H, SPACE_20, SPACE_3XL, SPACE_LG, SPACE_SM, SPACE_XS};
+use gpui::prelude::{
+    FluentBuilder, InteractiveElement, IntoElement, ParentElement, Render,
+    StatefulInteractiveElement, Styled,
+};
+use gpui::AppContext as _;
+use gpui::{div, Context, Window};
+#[cfg(test)]
+use std::cell::Cell;
 
 /// The minimap has a definite pane-sized host, so unchanged scenes can be replayed
 /// independently of transcript animation and scroll frames.

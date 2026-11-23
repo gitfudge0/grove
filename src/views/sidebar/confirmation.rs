@@ -1,6 +1,15 @@
 //! Sidebar and canvas confirmation surfaces and their input gates.
 
-use super::*;
+use super::{c, icon, motion, rpx, Action, SessionId, Sidebar, SIDEBAR_W};
+use crate::views::tokens::{
+    CONTROL_H, ICON_XS, MODAL_W_SM, RADIUS_GROUP, SESSION_CLOSE_W, SPACE_2XL, SPACE_3XL, SPACE_LG,
+    SPACE_MD, SPACE_SM, TEXT_BODY, TEXT_SMALL, TEXT_TITLE,
+};
+use gpui::prelude::{
+    FluentBuilder, InteractiveElement, IntoElement, ParentElement, StatefulInteractiveElement,
+    Styled,
+};
+use gpui::{div, AnyElement, App, Context, Window};
 
 impl Sidebar {
     pub(in crate::views) fn canvas_confirmation(

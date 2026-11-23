@@ -1,6 +1,21 @@
 //! Session and home terminal rows, status, and list presentation.
 
-use super::*;
+use super::{
+    c, icon, managed_session_status, motion, multi_project, rpx, session_age_label,
+    session_diff_status, session_display_title, session_root_inventory, session_scope,
+    session_status_icon, session_status_icon_sized, single_line_session_title,
+    structured_session_status, task_glance, Action, ActivityState, Duration, Instant, Selection,
+    SessionId, SessionMeta, Sidebar, HEAD_H, HIERARCHY_INSET, ROW_H, SESSION_LAUNCHER_SIZE,
+    SESSION_LEADING_INSET, SESSION_LIST_CARD_H, SESSION_LIST_FOOTER_H, SESSION_LIST_HEADER_H,
+    SESSION_LIST_TITLE_H, SESSION_META_LINE_H, SESSION_TITLE_LINE_H, SESSION_TREE_ROW_H,
+};
+use crate::views::tokens::{
+    CHROME_CONTROL_H, CONTROL_H, ICON_LG, ICON_MD, ICON_SM, ICON_XS, MOTION_FAST_MS, RADIUS_GROUP,
+    SIDEBAR_CONTENT_INSET, SIDEBAR_ICON_SLOT, SPACE_2XL, SPACE_3XL, SPACE_LG, SPACE_MD, SPACE_SM,
+    SPACE_XS, TEXT_MICRO, TEXT_SMALL, TEXT_TITLE,
+};
+use gpui::prelude::{FluentBuilder, InteractiveElement, IntoElement, ParentElement, Styled};
+use gpui::{div, AnyElement, App, Context, Window};
 
 const SESSION_ROW_H: f32 = 43.0;
 const SESSION_ROW_RADIUS: f32 = 7.0;

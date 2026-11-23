@@ -1,6 +1,19 @@
 //! Destination picker controls, popup lifecycle, and scope selection.
 
-use super::*;
+use super::{
+    c, icon, motion, rpx, DestinationEvent, DestinationTray, PopupMenu, PopupMenuItem, ScopePicker,
+    ScopePickerEvent, SettingsState, WorktreeDiscovery, NO_PROJECT,
+};
+use crate::views::tokens::{
+    COMPOSER_CONTEXT_WIDTH_FRACTION, ICON_20, ICON_SM, MODAL_W_MD, MODAL_W_SM, RADIUS_PANEL,
+    SPACE_2XL, SPACE_LG, SPACE_SM,
+};
+use gpui::prelude::{
+    FluentBuilder, InteractiveElement, IntoElement, ParentElement, Render,
+    StatefulInteractiveElement, Styled,
+};
+use gpui::AppContext as _;
+use gpui::{div, Context, EventEmitter, Focusable, Window};
 
 impl EventEmitter<DestinationEvent> for DestinationTray {}
 impl DestinationTray {

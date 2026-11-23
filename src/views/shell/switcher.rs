@@ -1,6 +1,18 @@
 //! Session switcher presentation, filtering and focus routing.
 
-use super::*;
+use super::{
+    c, icon, motion, rpx, switcher_default_index, switcher_matches, ActivityState, Agent, Input,
+    Shell, SwitchTarget, SwitcherRow, SWITCHER_MAX_H, SWITCHER_MIN_H, SWITCHER_TOP,
+};
+use crate::views::tokens::{
+    APPBAR_H, ICON_MD, ICON_SM, MODAL_W_LG, MOTION_FAST_MS, RADIUS_GROUP, RADIUS_PANEL, ROW_PX,
+    ROW_PY, SPACE_2XL, SPACE_3XL, SPACE_LG, SPACE_SM, SPACE_XS, TEXT_BODY, TEXT_SMALL, TEXT_TITLE,
+};
+use gpui::prelude::{
+    FluentBuilder, InteractiveElement, IntoElement, ParentElement, StatefulInteractiveElement,
+    Styled,
+};
+use gpui::{div, App, Context, Focusable, FontWeight, MouseButton, Window};
 
 impl Shell {
     pub(super) fn switcher_rows(&self, cx: &App) -> Vec<SwitcherRow> {

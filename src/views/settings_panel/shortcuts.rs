@@ -1,6 +1,11 @@
 //! Settings shortcut reference and its navigation entry point.
 
-use super::*;
+use super::{c, handled_shortcuts, keymap, rpx, Page, Scope, SettingsPanel, SHORTCUT_KEY_W};
+use crate::views::tokens::{
+    FIELD_LABEL_COL_W, SPACE_LG, SPACE_SM, TEXT_BODY, TEXT_MICRO, TEXT_SMALL,
+};
+use gpui::prelude::{InteractiveElement, ParentElement, Styled};
+use gpui::{div, Context, Window};
 
 impl SettingsPanel {
     pub fn open_shortcuts(&mut self, window: &mut Window, cx: &mut Context<Self>) {

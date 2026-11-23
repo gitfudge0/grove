@@ -1,6 +1,10 @@
 //! Session destination selection and focus routing from the Sidebar.
 
-use super::*;
+use super::{
+    group_sessions_for_list, session_display_title, step_session, ActivityState, HashSet, Instant,
+    Selection, SessionId, SessionListEntry, Sidebar, ViewMode,
+};
+use gpui::{App, Context, Focusable, Window};
 
 impl Sidebar {
     pub(super) fn list_session_groups(&self, cx: &App) -> Vec<(&'static str, Vec<SessionId>)> {

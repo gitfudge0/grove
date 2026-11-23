@@ -1,6 +1,13 @@
 //! Dispatch sidebar actions with the current navigation and modal gates.
 
-use super::*;
+use super::{
+    branch_history, change_mode, global_navigation, projects, session_history, Agent,
+    BranchHistoryState, DiffViewerState, Instant, PendingWorktreeRemoval, Runtime, Selection,
+    SessionId, SettingsState, Sidebar, SidebarContext, SidebarEvent, ViewMode,
+    WorktreeRemovalStage, SIDEBAR_COLLAPSED_W,
+};
+use gpui::AppContext as _;
+use gpui::{Context, Focusable, Window};
 
 #[derive(Clone)]
 pub(super) enum Action {

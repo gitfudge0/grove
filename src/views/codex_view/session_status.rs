@@ -1,6 +1,18 @@
 //! Connection recovery, context usage, review summary, and provider notices.
 
-use super::*;
+use super::{
+    action_key, c, codex, composer_tray, form_action, literal_notice_text, question_key, rpx,
+    status, Action, CodexView, CodexViewEvent, HashSet, StatusKind, CHAT_MAX_W, TASK_LABEL_INSET,
+    TASK_MARK_INSET, TASK_STRIP_HEAD_H, TOOL_DETAIL_MAX_H,
+};
+use crate::views::tokens::{
+    CHROME_CONTROL_H, CONTROL_H, ICON_MD, ICON_SM, SPACE_LG, SPACE_MD, SPACE_SM, TEXT_SMALL,
+};
+use gpui::prelude::{
+    FluentBuilder, InteractiveElement, IntoElement, ParentElement, StatefulInteractiveElement,
+    Styled,
+};
+use gpui::{div, Context, Focusable, Window};
 
 /// Context share, in whole percent, at which the meter switches to the warning colour.
 const CONTEXT_WARN_PERCENT: u32 = 80;

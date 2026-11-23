@@ -1,6 +1,8 @@
 //! Locally submitted messages and their reconciliation with provider items.
 
-use super::*;
+use super::{codex, Cell, CodexView, HashSet, Rc};
+use crate::views::tokens::MOTION_SLOW_MS;
+use gpui::Context;
 
 /// Pending inputs keep their submission position while provider events stream.
 /// This is only a render projection; saved items and their work ranges stay intact.

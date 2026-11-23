@@ -1,6 +1,19 @@
 //! Approval drafts, policy controls and responses.
 
-use super::*;
+use super::{
+    activity_request, c, codex, literal_notice_text, permission_code, permission_heading,
+    project_field_well, question_choice, rpx, status, transcript_action, Action, ApprovalDraft,
+    CodexView, Disableable, HashSet, Input, InputState, StatusKind,
+};
+use crate::views::tokens::{
+    ICON_SM, OPACITY_DISABLED, RADIUS_CONTROL, RADIUS_PANEL, SPACE_2XL, SPACE_3XL, SPACE_LG,
+    TEXT_SMALL,
+};
+use gpui::prelude::{
+    FluentBuilder, InteractiveElement, ParentElement, StatefulInteractiveElement, Styled,
+};
+use gpui::AppContext as _;
+use gpui::{div, Context, Focusable, Window};
 
 impl CodexView {
     pub(super) fn sync_approvals(

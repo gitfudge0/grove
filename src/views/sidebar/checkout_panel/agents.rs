@@ -1,6 +1,16 @@
 //! Observed subagent activity and the checkout section that displays it.
 
-use super::*;
+use super::{
+    c, checkout_action, checkout_row, icon, rpx, status_icon_sized, Agent, Selection, Sidebar,
+};
+use crate::views::tokens::{
+    ICON_MD, ICON_SM, SPACE_2XL, SPACE_LG, SPACE_SM, TEXT_BODY, TEXT_MICRO, TEXT_SMALL,
+};
+use gpui::prelude::{
+    FluentBuilder, InteractiveElement, IntoElement, ParentElement, StatefulInteractiveElement,
+    Styled,
+};
+use gpui::{div, AnyElement, App, Context, SharedString, Window};
 
 pub(super) const AGENT_STATUS_W: f32 = ICON_MD;
 pub(super) const AGENT_LINE_H: f32 = 18.;

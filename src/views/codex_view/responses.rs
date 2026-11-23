@@ -1,6 +1,6 @@
 //! Prepared response boundaries and transcript change identity.
 
-use super::*;
+use super::{codex, prepared_item_text, transcript_item_text, Hash, Hasher, PreparedItem, Rc};
 
 /// Process-local change identity. TranscriptItems invalidates its revision before
 /// every mutable borrow, including equal-length edits to opaque image payloads.

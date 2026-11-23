@@ -1,6 +1,17 @@
 //! Project script registration, editing and lifecycle controls.
 
-use super::*;
+use super::{
+    c, icon, project_action, project_form_field, register_heading, rpx, script_field,
+    script_preview, InputState, Page, ProjectActionStyle, ProjectPanel, ScriptEditor,
+    ScriptRowDetails, SettingsState, LIFECYCLE_LABEL_W, LIFECYCLE_ROW_MIN_H, SCRIPT_ROW_MIN_H,
+};
+use crate::views::tokens::{ICON_MD, ICON_SM, SPACE_2XL, SPACE_LG, SPACE_SM, SPACE_XS, TEXT_SMALL};
+use gpui::prelude::{
+    FluentBuilder, InteractiveElement, ParentElement, StatefulInteractiveElement, Styled,
+};
+use gpui::AppContext as _;
+use gpui::{div, Context, FocusHandle, Focusable, Window};
+use gpui_component::ElementExt as _;
 
 impl ProjectPanel {
     pub(super) fn toggle_script(&mut self, editor: ScriptEditor, cx: &mut Context<Self>) {

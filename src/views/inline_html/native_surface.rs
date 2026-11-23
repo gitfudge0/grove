@@ -1,6 +1,20 @@
 //! Native HTML card rendering and platform surface lifetime.
 
-use super::*;
+use super::{
+    c, document_preferences_script, expanded, merge_exclusions, oversized_card, recovery_path, rpx,
+    source_view, status, transcript_action, Cell, Disableable, GlobalElementId, HtmlArtifact,
+    HtmlUi, LayoutId, LoadStatus, PathBuf, Rc, Selectable, StatusKind, Surface, SurfaceLease,
+    ARTIFACT_IDENTITY_BASIS, INLINE_HEIGHT, REPORT_MAX_HEIGHT,
+};
+use crate::views::tokens::{
+    CONTROL_H, ICON_MD, ICON_SM, RADIUS_GROUP, SPACE_2XL, SPACE_LG, SPACE_SM, TEXT_MICRO,
+    TEXT_SMALL,
+};
+use gpui::prelude::{
+    FluentBuilder, InteractiveElement, IntoElement, ParentElement, Render,
+    StatefulInteractiveElement, Styled,
+};
+use gpui::{div, App, Bounds, Context, ElementId, EntityId, Pixels, Window};
 
 pub(super) fn recovery_action(
     id: &'static str,

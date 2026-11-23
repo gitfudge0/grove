@@ -1,6 +1,20 @@
 //! Read-only transcript checklist, completion summary, and task markers.
 
-use super::*;
+use super::{
+    action_key, c, codex, composer_tray, hash_transcript_value, rpx, task_mark, task_meter, tasks,
+    tooltip, CodexView, Hash, Hasher, StatusKind, TaskList, TaskPhase, TaskStatus,
+    COMPOSER_MENU_MAX_H,
+};
+use crate::views::tokens::{
+    CONTROL_H, ICON_BTN_W, ICON_MD, ICON_SM, MOTION_SLOW_MS, RADIUS_CONTROL, RADIUS_GROUP,
+    SPACE_2XL, SPACE_LG, SPACE_SM, TEXT_MICRO, TEXT_SMALL,
+};
+use gpui::prelude::{
+    FluentBuilder, InteractiveElement, IntoElement, ParentElement, StatefulInteractiveElement,
+    Styled,
+};
+use gpui::AnimationExt as _;
+use gpui::{div, App, Context, Window};
 
 /// The task strip header uses the compact control height.
 pub(super) const TASK_STRIP_HEAD_H: f32 = CONTROL_H;

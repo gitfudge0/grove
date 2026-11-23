@@ -1,6 +1,11 @@
 //! Optional suggested-reply generation, keyboard navigation, and draft insertion.
 
-use super::*;
+use super::{c, codex, header_control, Action, CodexView};
+use crate::views::tokens::ICON_SM;
+use gpui::prelude::{
+    InteractiveElement, IntoElement, ParentElement, StatefulInteractiveElement, Styled,
+};
+use gpui::{App, Context, Focusable, Window};
 
 impl CodexView {
     fn next_reply_mode_eligible(&self, state: &codex::Snapshot) -> bool {

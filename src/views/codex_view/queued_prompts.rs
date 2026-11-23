@@ -1,6 +1,21 @@
 //! Queued prompt controls, draft restoration and row transitions.
 
-use super::*;
+use super::{
+    action_key, active_turn_redirect_available, c, codex, collapsed_draft_preview, composer_tray,
+    form_action, header_control_with_label_tooltip, image_from_url, reference_prompt,
+    reference_prompt_copy, rpx, Action, CodexView, HashSet, QueueEditor, QueueMotionRow,
+    QUEUED_PROMPTS_MAX_H, STEER_DESCRIPTION, STEER_LABEL,
+};
+use crate::views::tokens::{
+    CHROME_CONTROL_H, ICON_MD, ICON_SM, MOTION_BASE_MS, RADIUS_CONTROL, SPACE_LG, SPACE_SM,
+    TEXT_MICRO, TEXT_SMALL,
+};
+use gpui::prelude::{
+    FluentBuilder, InteractiveElement, IntoElement, ParentElement, StatefulInteractiveElement,
+    Styled,
+};
+use gpui::AnimationExt as _;
+use gpui::{div, Context, Focusable, Window};
 
 impl CodexView {
     pub(super) fn queue_action(&mut self, action: Action, cx: &mut Context<Self>) -> bool {

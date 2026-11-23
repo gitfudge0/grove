@@ -1,6 +1,23 @@
 //! Composer panels, draft editor, attachments, submission actions, and layout.
 
-use super::*;
+use super::{
+    action_key, active_turn_redirect_available, attachment_preview, c, codex,
+    collapsed_draft_preview, composer_icon, composer_placeholder, composer_tray,
+    composer_tray_inset, context_meter, form_action, rpx, transcript_action, Action, Cell,
+    CodexView, ComposerMenu, ComposerPlacement, Disableable, Input, Rc, StatusKind, TaskList,
+    APPROVAL_TRAY_VIEWPORT_SHARE, CHAT_MAX_W, COMPOSER_MIN_H, DASHBOARD_COMPOSER_MIN_H,
+    NEXT_REPLY_POSITION_W, QUESTION_PANEL_MAX_H, STEER_DESCRIPTION,
+};
+use crate::views::tokens::{
+    CHROME_CONTROL_H, ICON_MD, ICON_SM, MOTION_BASE_MS, OPACITY_DISABLED, RADIUS_GROUP,
+    RADIUS_PANEL, SPACE_2XL, SPACE_3XL, SPACE_LG, SPACE_MD, SPACE_SM, TEXT_MICRO, TEXT_SMALL,
+};
+use gpui::prelude::{
+    FluentBuilder, InteractiveElement, IntoElement, ParentElement, StatefulInteractiveElement,
+    Styled,
+};
+use gpui::AnimationExt as _;
+use gpui::{div, Context, Window};
 
 pub(super) struct ComposerFrame {
     pub(super) placement: ComposerPlacement,

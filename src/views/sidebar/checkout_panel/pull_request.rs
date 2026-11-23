@@ -1,6 +1,16 @@
 //! Checkout pull request refresh, display and actions.
 
-use super::*;
+use super::{
+    c, checkout_cycle_row, checkout_divider, checkout_gate, checkout_pr, checkout_row, icon,
+    pr_compact_summary, pr_status_kind, prepare_resolution_draft, rpx, Agent, CheckoutGitState,
+    Disableable, Instant, Path, PullRequest, Selection, SettingsState, Sidebar,
+    CHECKOUT_LABEL_INSET,
+};
+use crate::views::tokens::{CONTROL_H, ICON_SM, SPACE_2XL, SPACE_SM, TEXT_SMALL};
+use gpui::prelude::{
+    InteractiveElement, IntoElement, ParentElement, StatefulInteractiveElement, Styled,
+};
+use gpui::{div, AnyElement, Context, Window};
 
 impl Sidebar {
     pub(super) fn checkout_load_pr(

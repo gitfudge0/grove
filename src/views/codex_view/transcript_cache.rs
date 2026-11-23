@@ -1,6 +1,11 @@
 //! Snapshot and item projections reused across transcript frames.
 
-use super::*;
+use super::{
+    active_work_start, codex, hash_transcript_value, is_tool_item, message_minimap_entries_from,
+    project_pending_bubbles, response_groups_from, snippets, task_cache_key, tasks, tool_detail,
+    transcript_content_signature, transcript_item_text, work_duration_label, Hash, HashMap,
+    HashSet, Hasher, MessageMinimapEntry, Rc, ResponseGroup,
+};
 
 /// Immutable preparation shared by scroll/animation frames. Session notifications
 /// replace the source snapshot; local mutations fork it synchronously.

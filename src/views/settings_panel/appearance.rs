@@ -1,6 +1,17 @@
 //! Theme selection and appearance settings.
 
-use super::*;
+use super::{
+    app_theme, c, rpx, zoom, Input, SettingsPanel, ThemeKind, ThemeState, ZoomState, THEME_KIND_W,
+    THEME_ROW_H, THEME_SWATCH_RADIUS, ZOOM_DEFAULT,
+};
+use crate::views::tokens::{
+    FORM_VALUE_SIZE, ICON_MD, ICON_SM, ICON_XS, RADIUS_PANEL, SPACE_20, SPACE_LG, SPACE_XS,
+};
+use gpui::prelude::{
+    BorrowAppContext, FluentBuilder, InteractiveElement, ParentElement, StatefulInteractiveElement,
+    Styled,
+};
+use gpui::{div, Context, Window};
 
 impl SettingsPanel {
     pub(super) fn select_theme(

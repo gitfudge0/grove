@@ -19,7 +19,7 @@ use gpui::{
     div, prelude::*, App, Context, Entity, EventEmitter, FocusHandle, Focusable, Subscription,
     Window,
 };
-use gpui_component::{input::InputState, scroll::ScrollableElement, Disableable, ElementExt as _};
+use gpui_component::{input::InputState, scroll::ScrollableElement, Disableable};
 use grove_core::storage::{ProjectAction, ProjectActionKind, ProjectScripts};
 
 mod appearance;

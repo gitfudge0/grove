@@ -1,6 +1,11 @@
 //! Composer attachment loading and image token synchronization.
 
-use super::*;
+use super::{
+    c, rpx, Action, Arc, CodexView, ComposerToken, TextDecoration, COMPOSER_TOKEN_UNDERLINE,
+    STANDARD,
+};
+use base64::Engine as _;
+use gpui::{Context, Focusable, Window};
 
 impl CodexView {
     pub(super) fn attach_files(&mut self, window: &mut Window, cx: &mut Context<Self>) {

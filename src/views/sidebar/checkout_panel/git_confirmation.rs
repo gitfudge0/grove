@@ -1,6 +1,18 @@
 //! Checkout Git action menus, confirmation cards, and failure messages.
 
-use super::*;
+use super::{
+    c, checkout_action, checkout_cycle_row, form_action, rpx, Action, CheckoutRecovery,
+    Disableable, GitAction, PopupMenu, PopupMenuItem, PullRequest, SettingsState, Sidebar,
+};
+use crate::views::tokens::{
+    ICON_LG, ICON_SM, MODAL_SCROLL_MAX_H, MODAL_W_SM, RADIUS_PANEL, SPACE_2XL, SPACE_3XL, SPACE_SM,
+    TEXT_DISPLAY, TEXT_SMALL,
+};
+use gpui::prelude::{
+    FluentBuilder, InteractiveElement, IntoElement, ParentElement, StatefulInteractiveElement,
+    Styled,
+};
+use gpui::{div, AnyElement, App, Context, Entity, Focusable, Window};
 
 /// A handoff populates a fresh session's composer and never submits a turn.
 pub(super) fn prepare_resolution_draft(

@@ -1,6 +1,10 @@
 //! Worktree picker rows, filtering and selection.
 
-use super::*;
+use super::{
+    launcher, preferred_agent, worktree_name, Agent, HashSet, PaletteMode, PaletteRow,
+    PaletteScope, SettingsState, WorktreeLauncher,
+};
+use gpui::{App, Context};
 
 impl WorktreeLauncher {
     pub(super) fn update_query(&mut self, query: String, cx: &mut Context<Self>) {
