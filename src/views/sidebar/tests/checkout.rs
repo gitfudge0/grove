@@ -1,7 +1,7 @@
 use super::*;
 
 #[gpui::test]
-fn saved_project_without_sessions_opens_contextual_checkouts(cx: &mut gpui::TestAppContext) {
+fn saved_project_without_sessions_opens_project_start_canvas(cx: &mut gpui::TestAppContext) {
     cx.update(|cx| {
         gpui_component::init(cx);
         cx.set_global(SettingsState::new(grove_core::storage::Store {
@@ -32,7 +32,8 @@ fn saved_project_without_sessions_opens_contextual_checkouts(cx: &mut gpui::Test
         sidebar.read_with(cx, |sidebar, _| sidebar.selection.clone()),
         Some(Selection::Project(0))
     );
-    assert!(cx.debug_bounds("checkout-management").is_some());
+    assert!(cx.debug_bounds("project-start-scroll").is_some());
+    assert!(cx.debug_bounds("checkout-management").is_none());
     assert!(cx.debug_bounds("projects-destination").is_none());
 }
 

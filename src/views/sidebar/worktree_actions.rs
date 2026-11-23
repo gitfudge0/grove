@@ -116,7 +116,6 @@ impl Sidebar {
         &mut self,
         root: &str,
         path: &str,
-        create: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -130,30 +129,7 @@ impl Sidebar {
             if self.settings_navigation_blocked(cx) {
                 return;
             }
-            if self.open_dashboard_for_checkout(index, root, path, window, cx) && create {
-                self.begin_worktree(index, window, cx);
-            }
-        }
-    }
-
-    pub(crate) fn manage_project_checkouts(
-        &mut self,
-        path: &str,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let index = cx
-            .global::<SettingsState>()
-            .store
-            .workspace_projects(self.active_workspace)
-            .find(|(_, project)| project.path == path)
-            .map(|(index, _)| index);
-        if let Some(index) = index {
-            if !self.close_settings_for_session_navigation(window, cx) {
-                return;
-            }
-            self.select(Selection::Project(index), cx);
-            self.focus.focus(window, cx);
+            self.open_dashboard_for_checkout(index, root, path, window, cx);
         }
     }
 

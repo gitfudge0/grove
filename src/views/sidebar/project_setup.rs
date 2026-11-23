@@ -48,11 +48,11 @@ pub(super) fn browse_action(window: &Window, cx: &App) -> gpui_component::button
     .icon(gpui_component::Icon::default().path("icons/folder.svg"))
 }
 
-pub(super) enum ProjectSetupEvent {
+pub(in crate::views) enum ProjectSetupEvent {
     Completed { path: String, workspace: u64 },
     Cancelled,
 }
-pub(super) struct ProjectSetup {
+pub(in crate::views) struct ProjectSetup {
     workspace: u64,
     service: Entity<ProjectService>,
     state: AddProjectState,
@@ -63,6 +63,7 @@ pub(super) struct ProjectSetup {
     suggestions_dismissed: bool,
     focus: FocusHandle,
     busy: bool,
+    settings_compact: Option<bool>,
     appearance: Option<ProjectAppearance>,
     appearance_focus: Vec<FocusHandle>,
     _subscriptions: Vec<Subscription>,
@@ -78,7 +79,43 @@ impl Focusable for ProjectSetup {
     }
 }
 impl ProjectSetup {
-    pub(super) fn new(
+    pub(in crate::views) fn in_settings(mut self, compact: bool) -> Self {
+        self.settings_compact = Some(compact);
+        self
+    }
+
+    pub(in crate::views) fn update_settings_layout(
+        &mut self,
+        compact: bool,
+        cx: &mut Context<Self>,
+    ) {
+        if self.settings_compact != Some(compact) {
+            self.settings_compact = Some(compact);
+            cx.notify();
+        }
+    }
+
+    pub(in crate::views) fn owns_settings_key(
+        &self,
+        stroke: &gpui::Keystroke,
+        window: &Window,
+        cx: &App,
+    ) -> bool {
+        self.focus.contains_focused(window, cx)
+            && (stroke.key == "escape"
+                || stroke.key == "tab"
+                    && !stroke.modifiers.shift
+                    && self.state.step == AddProjectStep::PickSource
+                    && self.path_input.focus_handle(cx).is_focused(window)
+                    && !self.suggestions_dismissed
+                    && !self.suggestions.is_empty())
+    }
+
+    pub(in crate::views) fn is_pending(&self) -> bool {
+        self.busy
+    }
+
+    pub(in crate::views) fn new(
         window: &mut Window,
         cx: &mut Context<Self>,
         workspace: u64,
@@ -144,6 +181,7 @@ impl ProjectSetup {
             suggestions_dismissed: false,
             focus: cx.focus_handle(),
             busy: false,
+            settings_compact: None,
             appearance: None,
             appearance_focus: (0..SYMBOLS.len() + usize::from(COLOR_COUNT))
                 .map(|_| cx.focus_handle())
@@ -854,14 +892,14 @@ impl Render for ProjectSetup {
                     cx.notify();
                 }
             }))
-            .child(
+            .when(self.settings_compact.is_none(), |root| root.child(
                 content_header()
                     .h(rpx(HEADER_H))
                     .px(rpx(SPACE_3XL))
                     .border_b_1()
                     .border_color(c::BORDER_SOFT())
                     .child(content_header_title(body_heading)),
-            )
+            ))
             .child(
                 div()
                     .id("project-setup-scroll")
@@ -885,7 +923,7 @@ impl Render for ProjectSetup {
                                     .mb(rpx(FORM_HEADING_MARGIN))
                                     .child(
                                         div()
-                                            .text_size(rpx(CONTROL_H))
+                                            .text_size(rpx(self.settings_compact.map_or(CONTROL_H, crate::views::settings_panel::settings_page_title_size)))
                                             .font_weight(FontWeight::SEMIBOLD)
                                             .child(body_heading),
                                     )
@@ -914,6 +952,7 @@ impl Render for ProjectSetup {
                     .child(
                         form_actions()
                             .max_w(rpx(FORM_CONTENT_MAX_W))
+                            .when(self.settings_compact == Some(true), gpui::Styled::justify_start)
                             .child(secondary)
                             .child(primary),
                     ),

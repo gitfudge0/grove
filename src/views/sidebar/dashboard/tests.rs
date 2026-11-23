@@ -536,12 +536,14 @@ fn project_picker_destination_preserves_codex_and_claude_composer(cx: &mut gpui:
                 sidebar.open_project_checkout_from_settings(
                     "/tmp/picker-second",
                     "/tmp/picker-second",
-                    false,
                     window,
                     cx,
                 );
                 assert!(!settings.read(cx).is_open());
-                sidebar.manage_project_checkouts("/tmp/picker-second", window, cx);
+                settings.update(cx, |settings, cx| {
+                    settings.open_project_worktrees(Some("/tmp/picker-second"), window, cx);
+                });
+                assert!(settings.read(cx).is_open());
                 sidebar.open_destination(
                     super::super::global_navigation::Destination::Home,
                     window,

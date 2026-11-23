@@ -330,16 +330,20 @@ impl DestinationTray {
                         }),
                 );
                 menu = menu.item(
-                    PopupMenuItem::new("Manage checkouts")
-                        .icon(
-                            gpui_component::Icon::default()
-                                .path("icons/git-branch.svg")
-                                .size(rpx(ICON_SM)),
-                        )
-                        .on_click(move |_, _, cx| {
-                            let _ = owner
-                                .update(cx, |_, cx| cx.emit(DestinationEvent::ManageCheckouts));
-                        }),
+                    PopupMenuItem::element(|_, _| {
+                        div()
+                            .debug_selector(|| "dashboard-manage-worktrees".into())
+                            .child("Manage worktrees")
+                    })
+                    .icon(
+                        gpui_component::Icon::default()
+                            .path("icons/git-branch.svg")
+                            .size(rpx(ICON_SM)),
+                    )
+                    .on_click(move |_, _, cx| {
+                        let _ =
+                            owner.update(cx, |_, cx| cx.emit(DestinationEvent::ManageWorktrees));
+                    }),
                 );
             }
             menu

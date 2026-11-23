@@ -50,6 +50,7 @@ const DESTINATION_ROW_H: f32 = 44.;
 #[derive(Clone)]
 pub(in crate::views) enum ProjectPanelEvent {
     Closed,
+    Saved(String),
     Selected(String),
     Decision(bool),
     Archived,
@@ -210,7 +211,7 @@ impl ProjectPanel {
             .map(|(id, _, _, _)| (id.clone(), cx.focus_handle()))
             .collect();
         let scroll = gpui::ScrollHandle::new();
-        let panel = Self {
+        let mut panel = Self {
             scripts_anchor: gpui::ScrollAnchor::for_handle(scroll.clone()),
             draft_anchor: gpui::ScrollAnchor::for_handle(scroll.clone()),
             scroll,
@@ -250,7 +251,19 @@ impl ProjectPanel {
             settings_compact: None,
             observers,
         };
-        if let Page::Remove(path) = &panel.page {
+        panel.review_removal(cx);
+        panel.focus.focus(window, cx);
+        panel
+    }
+
+    fn review_removal(&mut self, cx: &mut Context<Self>) {
+        self.started = false;
+        self.error = None;
+        self.delete_worktrees = false;
+        self.reviewed_worktrees = None;
+        self.reviewed_worktree = None;
+        self.discovery_done = false;
+        if let Page::Remove(path) = &self.page {
             let path = path.clone();
             cx.spawn(async move |this, cx| {
                 let reviewed = cx
@@ -274,7 +287,7 @@ impl ProjectPanel {
             path,
             branch,
             ..
-        } = &panel.page
+        } = &self.page
         {
             let (project_path, path, branch) = (project_path.clone(), path.clone(), branch.clone());
             cx.spawn(async move |this, cx| {
@@ -298,9 +311,9 @@ impl ProjectPanel {
             })
             .detach();
         }
-        panel.focus.focus(window, cx);
-        panel
+        cx.notify();
     }
+
     pub(super) fn is_decision(&self) -> bool {
         self.decision.is_some()
             || matches!(self.page, Page::Remove(_) | Page::RemoveWorktree { .. }) && !self.started
@@ -435,7 +448,7 @@ impl ProjectPanel {
                 cx,
             )
         }) {
-            Ok(()) => cx.emit(ProjectPanelEvent::Closed),
+            Ok(()) => cx.emit(ProjectPanelEvent::Saved(values[0].clone())),
             Err(error) => self.error = Some(error),
         }
         cx.notify();
@@ -630,7 +643,7 @@ fn panel_section(label: &'static str) -> impl IntoElement {
         .text_color(c::FG_DIM())
         .child(label)
 }
-fn readonly_path(label: &'static str, path: String) -> impl IntoElement {
+pub(in crate::views) fn readonly_path(label: &'static str, path: String) -> impl IntoElement {
     project_field_well(false, false)
         .h_auto()
         .min_h(rpx(FIELD_H))
@@ -736,7 +749,7 @@ impl Render for ProjectPanel {
         let settings_removal =
             settings_origin && matches!(page, Page::Remove(_) | Page::RemoveWorktree { .. });
         let compact = self.settings_compact.unwrap_or_default();
-        let heading_size = if settings_removal {
+        let heading_size = if settings_origin {
             crate::views::settings_panel::settings_page_title_size(compact)
         } else if edit_page {
             TEXT_TITLE
@@ -760,7 +773,8 @@ impl Render for ProjectPanel {
             .when(!settings_removal, |footer| {
                 footer.max_w(rpx(FORM_CONTENT_MAX_W))
             })
-            .when(settings_removal && !compact, gpui::Styled::justify_end);
+            .when(settings_origin && !compact, gpui::Styled::justify_end)
+            .when(settings_origin && compact, gpui::Styled::justify_start);
         let mut heading = title.to_owned();
         let mut description: String = match page {
             Page::Edit(_) => {
@@ -1243,6 +1257,22 @@ impl Render for ProjectPanel {
                                     cx,
                                 ))
                             });
+                        if self.discovery_done
+                            && self.reviewed_worktrees.is_none()
+                            && self.error.is_some()
+                        {
+                            content = content.child(
+                                project_action(
+                                    "project-worktree-discovery-retry".into(),
+                                    "Retry discovery",
+                                    Some("icons/refresh.svg"),
+                                    ProjectActionStyle::Mini,
+                                    window,
+                                    cx,
+                                )
+                                .on_click(cx.listener(|this, _, _, cx| this.review_removal(cx))),
+                            );
+                        }
                         if let Some(worktrees) = self
                             .reviewed_worktrees
                             .as_ref()
@@ -1402,10 +1432,13 @@ impl Render for ProjectPanel {
                                         } else {
                                             crate::views::status::StatusKind::Working
                                         },
-                                        format!(
-                                            "{} of {} worktrees processed",
-                                            status.completed, status.total
-                                        ),
+                                        if status.finished && status.unregistered && status.errors.is_empty() {
+                                            "Project removed".into()
+                                        } else if status.total == 0 {
+                                            if status.finished { "Could not remove project".into() } else { "Closing sessions and removing the project registration…".into() }
+                                        } else {
+                                            format!("{} of {} worktrees processed", status.completed, status.total)
+                                        },
                                         ICON_SM,
                                         cx,
                                     )),
@@ -1473,12 +1506,27 @@ impl Render for ProjectPanel {
                                 )
                                 .on_click(cx.listener(|this, _, _, cx| this.close(cx))),
                             );
+                            if !status.unregistered {
+                                footer = footer.child(
+                                    project_action(
+                                        "project-removal-review-again".into(),
+                                        "Review again",
+                                        Some("icons/refresh.svg"),
+                                        ProjectActionStyle::Mini,
+                                        window,
+                                        cx,
+                                    )
+                                    .on_click(
+                                        cx.listener(|this, _, _, cx| this.review_removal(cx)),
+                                    ),
+                                );
+                            }
                         } else {
                             footer = footer.child(
                                 project_action(
                                     "project-removing".into(),
                                     "Removing…",
-                                    Some("icons/trash.svg"),
+                                    Some("icons/status-working.svg"),
                                     ProjectActionStyle::Primary,
                                     window,
                                     cx,
@@ -1585,12 +1633,27 @@ impl Render for ProjectPanel {
                                 )
                                 .on_click(cx.listener(|this, _, _, cx| this.close(cx))),
                             );
+                            if error.is_some() {
+                                footer = footer.child(
+                                    project_action(
+                                        "settings-worktree-removal-review-again".into(),
+                                        "Review again",
+                                        Some("icons/refresh.svg"),
+                                        ProjectActionStyle::Mini,
+                                        window,
+                                        cx,
+                                    )
+                                    .on_click(
+                                        cx.listener(|this, _, _, cx| this.review_removal(cx)),
+                                    ),
+                                );
+                            }
                         } else if stage == Some(WorktreeRemovalStage::RunningScript) {
                             footer = footer.child(
                                 project_action(
                                     "settings-worktree-removal-skip".into(),
-                                    "Skip script",
-                                    Some("icons/arrow-right.svg"),
+                                    "Stop teardown and continue",
+                                    Some("icons/close.svg"),
                                     ProjectActionStyle::Quiet,
                                     window,
                                     cx,
@@ -1849,7 +1912,7 @@ impl Render for ProjectPanel {
                     .px(rpx(SPACE_3XL))
                     .border_b_1()
                     .border_color(c::BORDER_SOFT())
-                    .when(settings_removal, |header| {
+                    .when(settings_origin, |header| {
                         header.h_auto().px_0().border_0().pt(rpx(if compact {
                             SPACE_20
                         } else {
@@ -1869,7 +1932,7 @@ impl Render for ProjectPanel {
                             .on_click(cx.listener(|this, _, _, cx| this.close(cx))),
                         )
                     })
-                    .when(!settings_removal, |header| {
+                    .when(!settings_origin, |header| {
                         header.child(crate::views::components::content_header_title(title))
                     }),
             )
@@ -1897,7 +1960,11 @@ impl Render for ProjectPanel {
                                 container
                                     .min_h_full()
                                     .max_w(rpx(FORM_CONTENT_MAX_W))
-                                    .py(rpx(FORM_PAGE_PADDING_Y))
+                                    .py(rpx(if settings_origin {
+                                        SPACE_LG
+                                    } else {
+                                        FORM_PAGE_PADDING_Y
+                                    }))
                             })
                             .when(settings_removal, |container| container.pt(rpx(SPACE_LG)))
                             .child(
@@ -1910,12 +1977,12 @@ impl Render for ProjectPanel {
                                     .child(
                                         div()
                                             .text_size(rpx(heading_size))
-                                            .font_weight(if settings_removal {
+                                            .font_weight(if settings_origin {
                                                 FontWeight::BOLD
                                             } else {
                                                 FontWeight::SEMIBOLD
                                             })
-                                            .when(settings_removal, |title| {
+                                            .when(settings_origin, |title| {
                                                 title.line_height(rpx(heading_size + SPACE_SM))
                                             })
                                             .child(heading),

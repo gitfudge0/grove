@@ -24,7 +24,7 @@ mod multi_project;
 mod navigation_controls;
 mod plan_preview;
 mod project_flyout;
-mod project_setup;
+pub(super) mod project_setup;
 mod project_tree;
 pub(super) mod projects;
 mod rail_layout;
@@ -42,7 +42,7 @@ mod task_glance;
 mod title_edit;
 mod usage;
 mod worktree_actions;
-mod worktree_form;
+pub(super) mod worktree_form;
 mod worktree_terminal;
 
 use super::{motion, rpx, terminal_view::TerminalView, tokens::*};
@@ -415,6 +415,7 @@ pub struct Sidebar {
     pending_remove: Option<usize>,
     pending_worktree_removal: Option<PendingWorktreeRemoval>,
     worktree_removal_focus: FocusHandle,
+    #[cfg(test)]
     worktree_delete_focus: HashMap<String, FocusHandle>,
     worktree_removal_return_focus: Option<FocusHandle>,
     pending_new_worktree: Option<usize>,
@@ -725,6 +726,7 @@ impl Sidebar {
             pending_remove: None,
             pending_worktree_removal: None,
             worktree_removal_focus: cx.focus_handle(),
+            #[cfg(test)]
             worktree_delete_focus: HashMap::new(),
             worktree_removal_return_focus: None,
             pending_new_worktree: None,

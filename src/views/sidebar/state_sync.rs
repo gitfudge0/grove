@@ -303,6 +303,7 @@ impl Sidebar {
                 self.worktree_focus.insert(path, handle);
             }
         }
+        #[cfg(test)]
         for path in self.snapshot.projects.iter().flat_map(|p| {
             p.worktrees
                 .iter()

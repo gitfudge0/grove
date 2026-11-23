@@ -6,6 +6,9 @@ use crate::{
     views::{rpx, tokens::*},
 };
 use gpui::{div, prelude::*, AnyElement, Context, Window};
+
+mod settings;
+pub(in crate::views) use settings::{WorktreeSetup, WorktreeSetupEvent};
 use std::process::Command;
 
 fn suggested_branch(name: &str) -> String {
@@ -23,7 +26,7 @@ fn suggested_branch(name: &str) -> String {
     }
 }
 
-fn resolve_source(project: &str, revision: &str) -> String {
+fn resolved_source(project: &str, revision: &str) -> Option<String> {
     let output = Command::new("git")
         .args([
             "-C",
@@ -34,15 +37,13 @@ fn resolve_source(project: &str, revision: &str) -> String {
             &format!("{revision}^{{commit}}"),
         ])
         .output();
-    let Some(sha) = output.ok().filter(|out| out.status.success()).map(|out| {
+    let sha = output.ok().filter(|out| out.status.success()).map(|out| {
         String::from_utf8_lossy(&out.stdout)
             .trim()
             .chars()
             .take(7)
             .collect::<String>()
-    }) else {
-        return "Could not resolve source. Enter an existing branch or revision.".into();
-    };
+    })?;
     let source = if revision == "HEAD" {
         Command::new("git")
             .args(["-C", project, "symbolic-ref", "--quiet", "--short", "HEAD"])
@@ -56,7 +57,14 @@ fn resolve_source(project: &str, revision: &str) -> String {
     } else {
         revision.to_owned()
     };
-    format!("Starts from {source} · {sha}")
+    Some(format!("{source} · {sha}"))
+}
+
+fn resolve_source(project: &str, revision: &str) -> String {
+    resolved_source(project, revision).map_or_else(
+        || "Could not resolve source. Enter an existing branch or revision.".into(),
+        |source| format!("Starts from {source}"),
+    )
 }
 
 impl Sidebar {

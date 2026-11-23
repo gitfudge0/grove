@@ -189,21 +189,7 @@ impl Shell {
                     SettingsPanelEvent::Closed => cx.notify(),
                     SettingsPanelEvent::UseCheckout { root, path } => {
                         this.sidebar.update(cx, |sidebar, cx| {
-                            sidebar
-                                .open_project_checkout_from_settings(root, path, false, window, cx);
-                        });
-                    }
-                    SettingsPanelEvent::NewWorktree(root) => {
-                        this.sidebar.update(cx, |sidebar, cx| {
-                            sidebar
-                                .open_project_checkout_from_settings(root, root, true, window, cx);
-                        });
-                    }
-                    SettingsPanelEvent::AddProject => {
-                        this.settings
-                            .update(cx, |panel, cx| panel.close(window, cx));
-                        this.sidebar.update(cx, |sidebar, cx| {
-                            sidebar.add_project_from_palette(window, cx);
+                            sidebar.open_project_checkout_from_settings(root, path, window, cx);
                         });
                     }
                     SettingsPanelEvent::ConnectionsChanged(provider) => this

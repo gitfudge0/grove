@@ -1,10 +1,11 @@
 //! Dispatch sidebar actions with the current navigation and modal gates.
 
+#[cfg(test)]
+use super::PendingWorktreeRemoval;
 use super::{
     branch_history, change_mode, global_navigation, projects, session_history, Agent,
-    BranchHistoryState, DiffViewerState, Instant, PendingWorktreeRemoval, Runtime, Selection,
-    SessionId, SettingsState, Sidebar, SidebarContext, SidebarEvent, ViewMode,
-    WorktreeRemovalStage, SIDEBAR_COLLAPSED_W,
+    BranchHistoryState, DiffViewerState, Instant, Runtime, Selection, SessionId, SettingsState,
+    Sidebar, SidebarContext, SidebarEvent, ViewMode, WorktreeRemovalStage, SIDEBAR_COLLAPSED_W,
 };
 use gpui::AppContext as _;
 use gpui::{Context, Focusable, Window};
@@ -34,6 +35,7 @@ pub(super) enum Action {
     RemoveProject(String),
     #[cfg(test)]
     ConfirmRemove(usize),
+    #[cfg(test)]
     RemoveWorktree(usize, String),
     ConfirmWorktreeRemoval,
     SkipWorktreeTeardown,
@@ -69,11 +71,6 @@ pub(super) enum Action {
     RefreshDiff,
     AddTerminal,
     OpenSettings,
-    DashboardCheckout {
-        project: usize,
-        root: String,
-        path: String,
-    },
     ToggleUsage,
     UpdateApp,
     #[cfg(test)]
@@ -104,6 +101,21 @@ impl Action {
             false
         }
     }
+    pub(super) fn records_source_bounds(&self) -> bool {
+        #[cfg(test)]
+        if matches!(self, Self::RemoveWorktree(..)) {
+            return true;
+        }
+        self.is_fixture_launch()
+            || matches!(
+                self,
+                Self::RunScript(..)
+                    | Self::RunNamedScript(..)
+                    | Self::HistoryFilterMenu(..)
+                    | Self::ToggleUsage
+            )
+    }
+
     pub(super) fn is_fixture_remove(&self) -> bool {
         #[cfg(test)]
         {
@@ -286,13 +298,6 @@ impl Sidebar {
             }
             Action::Destination(destination) => self.open_destination(destination, window, cx),
             Action::ToggleUsage => self.toggle_usage(window, cx),
-            Action::DashboardCheckout {
-                project,
-                root,
-                path,
-            } => {
-                self.open_dashboard_for_checkout(project, &root, &path, window, cx);
-            }
             Action::OpenSettings => {
                 if self.navigation_available() {
                     cx.emit(SidebarEvent::Settings);
@@ -398,12 +403,6 @@ impl Sidebar {
                 if !self.project_path_is_active(&path, cx) {
                     return;
                 }
-                if let Err(reason) = crate::project_service::worktree_prerequisite(&path) {
-                    self.menu = None;
-                    self.content_error = Some(reason.into());
-                    cx.notify();
-                    return;
-                }
                 let Some(i) = cx
                     .global::<SettingsState>()
                     .store
@@ -485,6 +484,7 @@ impl Sidebar {
                     .update(cx, |p, cx| p.remove_project(i, false, cx));
                 self.pending_remove = None;
             }
+            #[cfg(test)]
             Action::RemoveWorktree(idx, path) => {
                 let Some(project) = self.snapshot.projects.iter().find(|p| p.idx == idx) else {
                     return;
@@ -1084,7 +1084,11 @@ impl Sidebar {
     }
 
     #[cfg(target_os = "macos")]
-    pub(crate) fn menu_state(&self, window: &Window, cx: &gpui::App) -> crate::app_menus::MenuState {
+    pub(crate) fn menu_state(
+        &self,
+        window: &Window,
+        cx: &gpui::App,
+    ) -> crate::app_menus::MenuState {
         crate::app_menus::MenuState {
             window: true,
             fullscreen: window.is_fullscreen(),

@@ -7,9 +7,10 @@ use crate::{
 };
 use gpui::{
     div, prelude::*, App, Bounds, Context, DismissEvent, Div, FocusHandle, Focusable, FontWeight,
-    KeyDownEvent, Pixels, Point, Size, Stateful, Subscription, Window,
+    KeyDownEvent, Pixels, Point, Size, Stateful, Subscription, Task, Window,
 };
 use gpui_component::menu::{PopupMenu, PopupMenuItem};
+use gpui_component::ElementExt as _;
 use grove_core::{git::Worktree, storage::Project};
 use std::{
     cell::Cell,
@@ -98,7 +99,118 @@ impl RowAction {
     }
 }
 
+pub(super) struct ProjectReveal {
+    path: String,
+    anchor: gpui::ScrollAnchor,
+    pending: Rc<Cell<bool>>,
+}
+
+pub(super) enum WorktreeInventory {
+    Loading { _task: Task<()> },
+    Loaded(Result<Vec<Worktree>, String>),
+}
+
 impl SettingsPanel {
+    pub(super) fn project_receipt(&self, message: impl Into<String>, cx: &mut Context<Self>) {
+        self.runtime.read(cx).toast.clone().update(cx, |toast, cx| {
+            toast.set_toast(message, cx);
+        });
+    }
+
+    pub(crate) fn open_project_worktrees(
+        &mut self,
+        path: Option<&str>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.project_operation_pending(cx) {
+            return;
+        }
+        self.open_projects(None, window, cx);
+        self.projects_archived = false;
+        let store = &cx.global::<SettingsState>().store;
+        let project = path.and_then(|path| {
+            store
+                .workspace_projects(store.workspaces.active)
+                .find(|(_, project)| project.path == path)
+                .map(|(_, project)| project.path.clone())
+        });
+        if let Some(path) = project {
+            self.expanded_projects.insert(path.clone());
+            self.reveal_project(&path, window, cx);
+            if !self.project_inventory.contains_key(&path) {
+                self.discover_worktrees(path, cx);
+            }
+        } else {
+            self.error =
+                Some("The selected project is no longer available in this workspace.".into());
+        }
+        cx.notify();
+    }
+
+    fn reveal_project(&mut self, path: &str, window: &mut Window, cx: &mut Context<Self>) {
+        self.project_reveal = Some(ProjectReveal {
+            path: path.to_owned(),
+            anchor: gpui::ScrollAnchor::for_handle(self.scroll.clone()),
+            pending: Rc::new(Cell::new(true)),
+        });
+        self.project_disclosure_focus
+            .entry(path.to_owned())
+            .or_insert_with(|| cx.focus_handle().tab_stop(true))
+            .focus(window, cx);
+    }
+
+    fn discover_worktrees(&mut self, path: String, cx: &mut Context<Self>) {
+        let lookup = path.clone();
+        let work = cx.background_spawn(async move {
+            use grove_core::git;
+            if !Path::new(&lookup).is_dir() {
+                return Err("The project folder is unavailable.".to_string());
+            }
+            match git::list_worktrees_checked(&lookup) {
+                Err(git::GitError::Command { stderr, .. })
+                    if stderr.contains("not a git repository") =>
+                {
+                    Ok(vec![Worktree {
+                        path: lookup,
+                        branch: "—".into(),
+                        mtime: None,
+                        is_main: true,
+                    }])
+                }
+                result => result.map_err(|error| error.to_string()),
+            }
+        });
+        let key = path.clone();
+        let task = cx.spawn(async move |this, cx| {
+            let result = work.await;
+            let _ = this.update(cx, |this, cx| {
+                this.project_inventory
+                    .insert(key, WorktreeInventory::Loaded(result));
+                cx.notify();
+            });
+        });
+        self.project_inventory
+            .insert(path, WorktreeInventory::Loading { _task: task });
+        cx.notify();
+    }
+
+    pub(super) fn refresh_expanded_projects(&mut self, cx: &mut Context<Self>) {
+        self.project_inventory.clear();
+        if !self.open || self.category != Category::Projects {
+            return;
+        }
+        let store = &cx.global::<SettingsState>().store;
+        let paths: Vec<_> = store
+            .workspace_projects(store.workspaces.active)
+            .filter(|(_, project)| self.expanded_projects.contains(&project.path))
+            .map(|(_, project)| project.path.clone())
+            .collect();
+        for path in paths {
+            self.discover_worktrees(path, cx);
+        }
+    }
+
     pub(super) fn projects_body(
         &self,
         window: &Window,
@@ -134,11 +246,14 @@ impl SettingsPanel {
                 .child(choices)
                 .child(
                     self.button("settings-add-project", "Add project", false, true)
+                        .debug_selector(|| "settings-add-project".into())
+                        .track_focus(&self.add_project_focus)
                         .child(icon("plus", ICON_SM, c::FG_DIM()))
                         .child("Add project")
-                        .on_click(
-                            cx.listener(|_, _, _, cx| cx.emit(SettingsPanelEvent::AddProject)),
-                        ),
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.add_project_focus.focus(window, cx);
+                            this.start_project_creation(None, false, window, cx);
+                        })),
                 ),
         );
         if rows.is_empty() {
@@ -178,11 +293,30 @@ impl SettingsPanel {
                 ));
             list = list.child(
                 div()
+                    .id(("settings-project-group", visual_index))
                     .flex()
                     .flex_col()
                     .min_w_0()
                     .border_b_1()
                     .border_color(c::BORDER_SOFT())
+                    .when_some(
+                        self.project_reveal
+                            .as_ref()
+                            .filter(|reveal| reveal.path == project.path),
+                        |row, reveal| {
+                            let anchor = reveal.anchor.clone();
+                            let pending = reveal.pending.clone();
+                            row.anchor_scroll(Some(anchor.clone())).on_prepaint(
+                                move |_, window, cx| {
+                                    // The target must be measured in the Projects viewport before scrolling.
+                                    if pending.replace(false) {
+                                        anchor.scroll_to(window, cx);
+                                        window.request_animation_frame();
+                                    }
+                                },
+                            )
+                        },
+                    )
                     .child(row)
                     .when(expanded, |project_row| {
                         project_row.child(self.project_checkouts(
@@ -225,6 +359,14 @@ impl SettingsPanel {
 
     fn project_worktrees(&self, index: usize, cx: &App) -> Vec<Worktree> {
         let runtime = self.runtime.read(cx);
+        if let Some(project) = cx.global::<SettingsState>().store.projects.get(index) {
+            match self.project_inventory.get(&project.path) {
+                Some(WorktreeInventory::Loaded(Ok(worktrees))) => return worktrees.clone(),
+                Some(WorktreeInventory::Loaded(Err(_))) => return Vec::new(),
+                // Keep already known rows visible while rechecking them.
+                Some(WorktreeInventory::Loading { .. }) | None => {}
+            }
+        }
         let active = runtime.state.read(cx).proj_idx();
         runtime
             .tree
@@ -323,12 +465,18 @@ impl SettingsPanel {
         .focus_visible(|style| style.bg(c::BG_HOVER()).text_color(c::FG()))
         .tooltip(path_tooltip)
         .child(leading_glyph)
+        .child(components::project_symbol_for_path(
+            &project.path,
+            ICON_MD,
+            cx,
+        ))
         .child(label)
         .on_click(cx.listener(move |this, _, window, cx| {
             this.dismiss_projects_menu(window, cx);
             // Disclosure is immediate so the keyboard focus and the visible rows stay in sync.
             if !this.expanded_projects.remove(&path) {
                 this.expanded_projects.insert(path.clone());
+                this.discover_worktrees(path.clone(), cx);
             }
             if let Some(focus) = this.project_disclosure_focus.get(&path) {
                 focus.focus(window, cx);
@@ -362,12 +510,53 @@ impl SettingsPanel {
             .border_color(c::BORDER_SOFT());
         let worktrees = self.project_worktrees(store_index, cx);
         if worktrees.is_empty() {
+            use crate::views::status::{self, StatusKind};
+            let path = project.path.clone();
+            let (kind, detail) = match self.project_inventory.get(&path) {
+                Some(WorktreeInventory::Loading { .. }) => (StatusKind::Working, None),
+                Some(WorktreeInventory::Loaded(Err(error))) => {
+                    (StatusKind::Failed, Some(error.clone()))
+                }
+                _ => (StatusKind::Failed, None),
+            };
+            let working = kind == StatusKind::Working;
             list = list.child(
                 div()
                     .py(rpx(SPACE_LG))
                     .text_size(rpx(TEXT_SMALL))
-                    .text_color(c::FG_DIM())
-                    .child("No worktrees available. Check the project folder."),
+                    .flex()
+                    .flex_col()
+                    .gap(rpx(SPACE_SM))
+                    .child(status::label(
+                        format!("settings-worktrees-status-{visual_index}"),
+                        kind,
+                        if working {
+                            "Loading worktrees…"
+                        } else {
+                            "Worktrees are unavailable. Check the project folder."
+                        },
+                        ICON_SM,
+                        cx,
+                    ))
+                    .when_some(detail, |row, error| {
+                        row.child(div().text_color(c::FG_DIM()).child(error))
+                    })
+                    .when(!working, |row| {
+                        row.child(
+                            self.button(
+                                ("settings-worktrees-retry", visual_index),
+                                "Retry worktree discovery",
+                                false,
+                                true,
+                            )
+                            .self_start()
+                            .child(icon("refresh", ICON_SM, c::FG_DIM()))
+                            .child("Retry")
+                            .on_click(cx.listener(
+                                move |this, _, _, cx| this.discover_worktrees(path.clone(), cx),
+                            )),
+                        )
+                    }),
             );
         }
         for (row, worktree) in worktrees.into_iter().enumerate() {
@@ -841,11 +1030,22 @@ impl SettingsPanel {
                         service.restore_archived_by_path(&root, cx)
                     })
                     .err();
+                if self.error.is_none() {
+                    self.projects_archived = false;
+                    self.scroll.set_offset(gpui::Point::default());
+                    self.reveal_project(&root, window, cx);
+                    self.project_receipt(format!("Restored {}", project.name), cx);
+                }
                 cx.notify();
                 return;
             }
             RowAction::NewWorktree => {
-                cx.emit(SettingsPanelEvent::NewWorktree(root));
+                self.project_target_focus(&target).focus(window, cx);
+                self.project_action_return = Some(ProjectActionReturn {
+                    target,
+                    scroll_offset: self.scroll.offset(),
+                });
+                self.start_project_creation(Some(&root), false, window, cx);
                 return;
             }
             RowAction::UseMain | RowAction::UseWorktree => {
@@ -931,6 +1131,157 @@ mod tests {
     use super::*;
     use crate::{runtime::Runtime, theme::ThemeState, zoom::ZoomState};
     use grove_core::storage::{ProjectScripts, Store};
+
+    #[gpui::test]
+    fn contextual_worktrees_reveal_the_active_project_and_keep_creation_in_settings(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let fixture = tempfile::tempdir().unwrap();
+        let base = fixture.path().canonicalize().unwrap();
+        let repo = base.join("Atlas");
+        let linked = base.join("review-worktree");
+        fixture_git_project(&repo, &[("review", &linked)]);
+        let root = repo.to_str().unwrap();
+
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            let mut store = Store::default();
+            for (name, path, archived) in [
+                ("Drafts", base.join("Drafts"), false),
+                ("Atlas", repo.clone(), false),
+                ("Old", base.join("Old"), true),
+            ] {
+                store.projects.push(Project {
+                    name: name.into(),
+                    path: path.to_string_lossy().into_owned(),
+                    scripts: ProjectScripts::default(),
+                    archived,
+                    worktree_dir: None,
+                });
+            }
+            cx.set_global(SettingsState::new(store));
+            cx.set_global(ZoomState::new(1.0));
+            cx.set_global(crate::zoom::CurrentPtyDims::default());
+        });
+        let (panel, cx) = cx.add_window_view(|_, cx| {
+            let runtime = cx.new(Runtime::new);
+            SettingsPanel::new(runtime, cx)
+        });
+        cx.simulate_resize(gpui::size(gpui::px(900.), gpui::px(750.)));
+        cx.update(|window, cx| {
+            panel.update(cx, |panel, cx| {
+                panel.projects_archived = true;
+                panel.open_project_worktrees(Some(root), window, cx);
+                assert_eq!(panel.category, Category::Projects);
+                assert!(!panel.projects_archived);
+                assert!(panel.expanded_projects.contains(root));
+                assert!(panel.project_disclosure_focus[root].is_focused(window));
+                assert!(matches!(
+                    panel.project_inventory[root],
+                    WorktreeInventory::Loading { .. }
+                ));
+            });
+        });
+        let draw = |cx: &mut gpui::VisualTestContext| {
+            cx.run_until_parked();
+            cx.update(|window, cx| {
+                let _ = window.draw(cx);
+            });
+        };
+        draw(cx);
+        assert!(cx
+            .debug_bounds("settings-project-worktree-list-0")
+            .is_none());
+        assert!(cx
+            .debug_bounds("settings-project-worktree-list-1")
+            .is_some());
+        assert!(cx.debug_bounds("settings-worktree-menu-1-0").is_none());
+        assert!(cx.debug_bounds("settings-worktree-menu-1-1").is_some());
+
+        let trigger = ProjectMenuTarget::project(root);
+        cx.update(|window, cx| {
+            panel.update(cx, |panel, cx| {
+                panel.apply_project_row_action(trigger.clone(), RowAction::NewWorktree, window, cx);
+            });
+        });
+        draw(cx);
+        assert!(cx.debug_bounds("settings-worktree-setup").is_some());
+        assert!(cx.debug_bounds("worktree-name-field").is_some());
+        cx.simulate_keystrokes("escape");
+        draw(cx);
+        assert!(cx
+            .debug_bounds("settings-project-worktree-list-1")
+            .is_some());
+        cx.update(|window, cx| {
+            assert!(panel.read(cx).project_menu_focus[&trigger].is_focused(window));
+        });
+
+        let add = cx.debug_bounds("settings-add-project").unwrap();
+        cx.simulate_click(add.center(), gpui::Modifiers::default());
+        draw(cx);
+        assert!(cx.debug_bounds("project-setup-scroll").is_some());
+        cx.simulate_keystrokes("escape");
+        draw(cx);
+        cx.update(|window, cx| {
+            assert_eq!(panel.read(cx).page, Page::Settings);
+            assert!(panel.read(cx).add_project_focus.is_focused(window));
+            panel.update(cx, |panel, cx| {
+                panel.open_project_worktrees(Some("/stale-project"), window, cx);
+                assert!(panel
+                    .error
+                    .as_deref()
+                    .unwrap()
+                    .contains("no longer available"));
+            });
+        });
+        draw(cx);
+        assert!(cx.debug_bounds("settings-project-row-1").is_some());
+
+        let missing = base.join("Drafts");
+        cx.update(|window, cx| {
+            panel.update(cx, |panel, cx| {
+                panel.open_project_worktrees(missing.to_str(), window, cx);
+            });
+        });
+        draw(cx);
+        cx.update(|_, cx| {
+            let panel = panel.read(cx);
+            assert!(matches!(
+                panel.project_inventory[missing.to_str().unwrap()],
+                WorktreeInventory::Loaded(Err(_))
+            ));
+        });
+
+        cx.update(|window, cx| {
+            let store = &mut cx.global_mut::<SettingsState>().store;
+            store.projects.splice(
+                0..0,
+                (0..25).map(|index| Project {
+                    name: format!("Earlier project {index}"),
+                    path: base
+                        .join(format!("project-{index}"))
+                        .to_string_lossy()
+                        .into_owned(),
+                    scripts: ProjectScripts::default(),
+                    archived: false,
+                    worktree_dir: None,
+                }),
+            );
+            panel.update(cx, |panel, cx| {
+                panel.open_project_worktrees(Some(root), window, cx)
+            });
+        });
+        draw(cx);
+        cx.update(|window, cx| {
+            window.simulate_next_frame(cx);
+        });
+        draw(cx);
+        assert!(panel.read_with(cx, |panel, _| panel.scroll.offset().y < gpui::px(0.)));
+        let viewport = cx.debug_bounds("settings-scroll").unwrap();
+        let row = cx.debug_bounds("settings-project-row-26").unwrap();
+        assert!(row.top() >= viewport.top());
+        assert!(row.bottom() <= viewport.bottom());
+    }
 
     #[gpui::test]
     fn project_menu_keeps_worktree_identity_and_restores_focus_on_cancel(

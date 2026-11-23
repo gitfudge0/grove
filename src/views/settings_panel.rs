@@ -1,4 +1,5 @@
 //! App-wide settings and shortcut reference, mounted in the main canvas.
+mod project_creation;
 mod projects;
 
 mod shortcuts;
@@ -129,9 +130,7 @@ fn runs_agents_in_terminal(store: &Store) -> bool {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SettingsPanelEvent {
     Closed,
-    AddProject,
     UseCheckout { root: String, path: String },
-    NewWorktree(String),
     OpenHighlights { debug: bool },
     ConnectionsChanged(grove_core::provider::Provider),
 }
@@ -144,6 +143,7 @@ enum Page {
     Themes,
     Archived,
     Project,
+    ProjectCreation,
     Providers,
     Connections,
 }
@@ -191,11 +191,19 @@ pub struct SettingsPanel {
     standalone_shortcuts: bool,
     error: Option<String>,
     scroll: ScrollHandle,
+    creation_panel: Option<project_creation::CreationPanel>,
+    creation_subscription: Option<Subscription>,
+    creation_observer: Option<Subscription>,
+    creation_from_shortcut: bool,
     archived_panel: Option<Entity<super::sidebar::projects::ProjectPanel>>,
     archived_subscription: Option<Subscription>,
     archived_observer: Option<Subscription>,
     expanded_projects: HashSet<String>,
     project_disclosure_focus: std::collections::HashMap<String, FocusHandle>,
+    add_project_focus: FocusHandle,
+    project_reveal: Option<projects::ProjectReveal>,
+    project_inventory: std::collections::HashMap<String, projects::WorktreeInventory>,
+    _project_events: Subscription,
     project_menu: Option<projects::ProjectRowMenu>,
     project_menu_focus: std::collections::HashMap<projects::ProjectMenuTarget, FocusHandle>,
     project_action_return: Option<projects::ProjectActionReturn>,
@@ -309,6 +317,20 @@ impl SettingsPanel {
             show_theme_notices: false,
             expanded_projects: HashSet::new(),
             project_disclosure_focus: std::collections::HashMap::new(),
+            add_project_focus: cx.focus_handle().tab_stop(true),
+            project_reveal: None,
+            project_inventory: std::collections::HashMap::new(),
+            _project_events: {
+                use crate::project_service::ProjectEvent;
+                let service = runtime.read(cx).projects.clone();
+                cx.subscribe(&service, |this, _, event, cx| match event {
+                    ProjectEvent::TreeInvalidated
+                    | ProjectEvent::WorktreeAdded { .. }
+                    | ProjectEvent::WorktreeRemoved { .. }
+                    | ProjectEvent::ProjectRemoved { .. } => this.refresh_expanded_projects(cx),
+                    _ => {}
+                })
+            },
             project_menu: None,
             project_menu_focus: std::collections::HashMap::new(),
             project_action_return: None,
@@ -317,6 +339,10 @@ impl SettingsPanel {
                 cx.observe(&tree, |_, _, cx| cx.notify())
             },
             projects_archived: false,
+            creation_panel: None,
+            creation_subscription: None,
+            creation_observer: None,
+            creation_from_shortcut: false,
             archived_panel: None,
             archived_subscription: None,
             archived_observer: None,
@@ -391,10 +417,23 @@ impl SettingsPanel {
                 cx.subscribe_in(&panel, window, |this, _, event, window, cx| {
                     use super::sidebar::projects::ProjectPanelEvent;
                     match event {
-                        ProjectPanelEvent::Closed
-                        | ProjectPanelEvent::Selected(_)
-                        | ProjectPanelEvent::Archived
-                        | ProjectPanelEvent::Moved { .. } => this.back(window, cx),
+                        ProjectPanelEvent::Closed | ProjectPanelEvent::Selected(_) => {
+                            this.back(window, cx);
+                        }
+                        ProjectPanelEvent::Saved(name) => {
+                            this.back(window, cx);
+                            this.project_receipt(format!("Saved {name} settings"), cx);
+                        }
+                        ProjectPanelEvent::Archived => {
+                            this.back(window, cx);
+                            this.project_receipt("Archived project", cx);
+                        }
+                        ProjectPanelEvent::Moved {
+                            name, workspace, ..
+                        } => {
+                            this.back(window, cx);
+                            this.project_receipt(format!("Moved {name} to {workspace}"), cx);
+                        }
                         ProjectPanelEvent::Decision(_) => {}
                     }
                 }),
@@ -452,6 +491,9 @@ impl SettingsPanel {
         self.category_menu_subscription = None;
         self.project_action_return = None;
         self.open = false;
+        self.clear_creation();
+        self.project_reveal = None;
+        self.project_inventory.clear();
         self.archived_panel = None;
         self.archived_subscription = None;
         self.archived_observer = None;
@@ -528,6 +570,7 @@ impl SettingsPanel {
         if self.project_operation_pending(cx) {
             return;
         }
+        self.clear_creation();
         self.archived_panel = None;
         self.archived_subscription = None;
         self.archived_observer = None;
@@ -539,6 +582,9 @@ impl SettingsPanel {
         self.nested_return_focus = None;
         self.standalone_shortcuts = false;
         self.show(Page::Settings, cx);
+        if category == Category::Projects {
+            self.refresh_expanded_projects(cx);
+        }
     }
 
     fn open_nested(&mut self, page: Page, window: &mut Window, cx: &mut Context<Self>) {
@@ -613,6 +659,7 @@ impl SettingsPanel {
         if self.project_operation_pending(cx) {
             return;
         }
+        self.clear_creation();
         self.archived_panel = None;
         self.archived_subscription = None;
         self.archived_observer = None;
@@ -677,7 +724,15 @@ impl SettingsPanel {
             // Project editing owns its nested decisions and their cancellation.
             return;
         }
+        if matches!(
+            &self.creation_panel,
+            Some(project_creation::CreationPanel::Project(panel))
+                if panel.read(cx).owns_settings_key(&event.keystroke, window, cx)
+        ) {
+            return;
+        }
         match event.keystroke.key.as_str() {
+            "escape" if self.page == Page::ProjectCreation => self.cancel_creation(window, cx),
             "escape" if self.page == Page::Shortcuts && self.standalone_shortcuts => {
                 self.close(window, cx);
             }
@@ -1456,6 +1511,10 @@ impl SettingsPanel {
         self.archived_panel
             .as_ref()
             .is_some_and(|panel| panel.read(cx).is_pending(cx))
+            || self
+                .creation_panel
+                .as_ref()
+                .is_some_and(|panel| panel.is_pending(cx))
     }
 
     fn dismiss_category_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -1653,7 +1712,11 @@ impl SettingsPanel {
             Page::Themes => Some("Theme changes apply to the entire app."),
             Page::Shortcuts => Some("Commands for the current view"),
             Page::Providers => Some("Accounts and version maintenance for your agents"),
-            Page::Changelog | Page::Connections | Page::Archived | Page::Project => None,
+            Page::Changelog
+            | Page::Connections
+            | Page::Archived
+            | Page::Project
+            | Page::ProjectCreation => None,
         };
         description.map(SharedString::from)
     }
@@ -1698,6 +1761,9 @@ impl Render for SettingsPanel {
         }
 
         let compact = self.compact_layout(window);
+        if let Some(panel) = &self.creation_panel {
+            panel.update_layout(compact, cx);
+        }
         if let Some(panel) = &self.archived_panel {
             panel.update(cx, |panel, cx| panel.update_settings_layout(compact, cx));
         }
@@ -1776,7 +1842,29 @@ impl Render for SettingsPanel {
             .max_w(rpx(SETTINGS_PAGE_W))
             .min_w_0()
             .min_h_0();
-        let page = if matches!(self.page, Page::Archived | Page::Project) {
+        let page = if let Some(panel) = &self.creation_panel {
+            use project_creation::CreationPanel;
+            let panel = match panel {
+                CreationPanel::Project(panel) => gpui::AnyView::from(panel.clone()),
+                CreationPanel::Worktree(panel) => gpui::AnyView::from(panel.clone()),
+            };
+            page.child(
+                div().flex().flex_shrink_0().pt(rpx(SPACE_LG)).child(
+                    components::back_action("settings-project-creation-back", "Back", window, cx)
+                        .disabled(!enabled)
+                        .on_click(
+                            cx.listener(|this, _, window, cx| this.cancel_creation(window, cx)),
+                        ),
+                ),
+            )
+            .child(
+                div()
+                    .relative()
+                    .min_h_0()
+                    .flex_1()
+                    .child(div().absolute().inset_0().child(panel)),
+            )
+        } else if matches!(self.page, Page::Archived | Page::Project) {
             page.child(
                 div()
                     .id("settings-archived-page")
@@ -1801,7 +1889,7 @@ impl Render for SettingsPanel {
                 Page::Themes => ("Themes", self.themes_body(cx)),
                 Page::Providers => ("Providers", self.providers_body(window, cx)),
                 Page::Connections => ("Connections", div().child(self.connections.clone())),
-                Page::Archived | Page::Project => unreachable!(),
+                Page::Archived | Page::Project | Page::ProjectCreation => unreachable!(),
             };
             let description = self.page_description(cx);
             let title_size = settings_page_title_size(compact);

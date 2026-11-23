@@ -330,7 +330,17 @@ impl Sidebar {
         else {
             return;
         };
+        if let Some(settings) = &self.settings_panel {
+            if let Some(source) = self.worktree_return_focus.take() {
+                source.focus(window, cx);
+            }
+            settings.update(cx, |settings, cx| {
+                settings.open_project_creation_shortcut(Some(&path), window, cx);
+            });
+            return;
+        }
         if let Err(reason) = crate::project_service::worktree_prerequisite(&path) {
+            self.worktree_return_focus = None;
             self.content_error = Some(reason.into());
             cx.notify();
             return;
@@ -422,6 +432,12 @@ impl Sidebar {
     }
 
     pub(super) fn add_project(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(settings) = &self.settings_panel {
+            settings.update(cx, |settings, cx| {
+                settings.open_project_creation_shortcut(None, window, cx);
+            });
+            return;
+        }
         self.pending_new_worktree = None;
         self.project_return_path = None;
         self.project_return_navigation = None;
@@ -545,7 +561,8 @@ impl Sidebar {
         self.observers.push(
             cx.subscribe_in(&panel, window, |this, _, event, window, cx| {
                 match event {
-                    super::projects::ProjectPanelEvent::Closed => {
+                    super::projects::ProjectPanelEvent::Closed
+                    | super::projects::ProjectPanelEvent::Saved(_) => {
                         this.project_panel = None;
                         this.project_decision = false;
                         if let Some((mode, selection)) = this.project_return_navigation.take() {
@@ -884,13 +901,6 @@ impl Sidebar {
             } else {
                 self.destination
             };
-        if canvas_destination == super::global_navigation::Destination::Projects
-            && matches!(self.selection, Some(Selection::Project(_)))
-        {
-            if let Some(Selection::Project(index)) = self.selection {
-                return self.render_checkout_management(index, window, cx);
-            }
-        }
         if canvas_destination == super::global_navigation::Destination::Sessions
             && self.selection.is_none()
         {
@@ -1251,7 +1261,11 @@ fn canvas_section_header(title: String) -> impl gpui::IntoElement {
         .child(div().min_w_0().truncate().child(title))
 }
 
-fn validate_worktree_fields(name: &str, branch: &str, base: &str) -> [Option<String>; 3] {
+pub(super) fn validate_worktree_fields(
+    name: &str,
+    branch: &str,
+    base: &str,
+) -> [Option<String>; 3] {
     let name = name.trim();
     let branch = branch.trim();
     let base = base.trim();

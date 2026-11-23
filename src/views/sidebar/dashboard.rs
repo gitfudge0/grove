@@ -88,7 +88,7 @@ pub(crate) enum DestinationEvent {
     NewWorktree,
     NewProject,
     ManageProjects,
-    ManageCheckouts,
+    ManageWorktrees,
     Home,
     RefreshWorktrees,
     AcrossWorktrees,
@@ -385,15 +385,19 @@ impl Sidebar {
                                 dashboard.view.focus_handle(cx).focus(window, cx);
                             }
                         }
-                        DestinationEvent::NewProject => this.add_project(window, cx),
-                        DestinationEvent::ManageProjects => {
-                            if let Some(settings) = this.settings_panel.clone() {
-                                settings.update(cx, |settings, cx| {
-                                    settings.open_projects(None, window, cx);
-                                });
-                            }
+                        DestinationEvent::NewProject => {
+                            cx.defer_in(window, Self::add_project);
                         }
-                        DestinationEvent::ManageCheckouts => {
+                        DestinationEvent::ManageProjects => {
+                            cx.defer_in(window, |this, window, cx| {
+                                if let Some(settings) = &this.settings_panel {
+                                    settings.update(cx, |settings, cx| {
+                                        settings.open_projects(None, window, cx);
+                                    });
+                                }
+                            });
+                        }
+                        DestinationEvent::ManageWorktrees => {
                             let path = this.dashboard.as_ref().and_then(|d| {
                                 let tray = d.tray.read(cx);
                                 tray.projects
@@ -401,9 +405,17 @@ impl Sidebar {
                                     .find(|p| p.0 == tray.project)
                                     .map(|p| p.2.clone())
                             });
-                            if let Some(path) = path {
-                                this.manage_project_checkouts(&path, window, cx);
-                            }
+                            cx.defer_in(window, move |this, window, cx| {
+                                if let Some(settings) = &this.settings_panel {
+                                    settings.update(cx, |settings, cx| {
+                                        settings.open_project_worktrees(
+                                            path.as_deref(),
+                                            window,
+                                            cx,
+                                        );
+                                    });
+                                }
+                            });
                         }
                         DestinationEvent::Home => {
                             if let Some(d) = &this.dashboard {
@@ -455,9 +467,17 @@ impl Sidebar {
                             this.force_refresh_dashboard_worktrees(cx);
                         }
                         DestinationEvent::NewWorktree => {
-                            if let Some(d) = &this.dashboard {
-                                let idx = d.tray.read(cx).project;
-                                this.begin_worktree(idx, window, cx);
+                            let project = this.dashboard.as_ref().and_then(|dashboard| {
+                                let tray = dashboard.tray.read(cx);
+                                tray.projects
+                                    .iter()
+                                    .find(|entry| entry.0 == tray.project)
+                                    .map(|(_, _, path)| path.clone())
+                            });
+                            if let Some(path) = project {
+                                cx.defer_in(window, move |this, window, cx| {
+                                    this.act(super::Action::NewWorktree(path), window, cx);
+                                });
                             }
                         }
                     }

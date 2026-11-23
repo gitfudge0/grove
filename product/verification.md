@@ -2786,3 +2786,18 @@ Codex settled both turns with two user messages and two assistant messages, but
 the smoke did not observe the exact expected transcript. Claude failed after
 one reply with the second prompt still queued. Full live provider acceptance
 remains unverified for both. macOS and Windows were not exercised.
+
+## Unified Projects management
+
+Linux GPUI fixtures exercise the Home worktree menu opening the Projects page,
+path-scoped expansion and focus, stale and unavailable projects, protected main
+checkouts, and returning from both creation forms. Dashboard fixtures cover
+draft, model, and provider identity for Codex and Claude without starting their
+providers. The project service fixtures use local Git repositories to exercise
+reviewed deletion and its guards.
+
+Four broader Dashboard checks failed with matching assertions on the parent
+revision and on the implementation: two Fork message expectations and two
+composer geometry expectations. Native pixel comparison against the approved
+workflow board remains open because the X11 display was unavailable. Live
+Codex and Claude transport, macOS, and Windows were outside this local run.

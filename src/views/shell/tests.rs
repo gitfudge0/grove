@@ -129,7 +129,7 @@ fn zen_shows_one_terminal_and_restores_the_previous_view(cx: &mut gpui::TestAppC
     assert!(cx.debug_bounds("app-header").is_some());
     assert!(cx.debug_bounds("statusbar").is_none());
     assert!(cx.debug_bounds("sidebar-rail").is_none());
-    assert!(cx.debug_bounds("checkout-management").is_some());
+    assert!(cx.debug_bounds("canvas-overview").is_some());
     cx.update(|window, cx| window.dispatch_action(Box::new(k::ToggleZen), cx));
     draw(cx);
     assert!(cx.debug_bounds("app-header").is_some());
@@ -234,7 +234,7 @@ fn empty_grid_zen_shows_one_overview_and_returns_to_grid(cx: &mut gpui::TestAppC
     cx.update(|window, cx| window.dispatch_action(Box::new(k::ToggleZen), cx));
     draw(cx);
     assert!(cx.debug_bounds("app-header").is_some());
-    assert!(cx.debug_bounds("checkout-management").is_some());
+    assert!(cx.debug_bounds("canvas-overview").is_some());
     assert!(cx.debug_bounds("session-grid-layout").is_none());
     cx.update(|window, cx| window.dispatch_action(Box::new(k::ToggleZen), cx));
     draw(cx);
@@ -1269,6 +1269,59 @@ fn sidebar_workspace_control_traverses_and_activates(cx: &mut gpui::TestAppConte
 }
 
 #[gpui::test]
+fn adding_a_project_in_settings_selects_it_without_sending_the_home_draft(
+    cx: &mut gpui::TestAppContext,
+) {
+    let folder = tempfile::tempdir().unwrap();
+    let path = folder.path().canonicalize().unwrap();
+    let path = path.to_str().unwrap();
+    cx.update(init);
+    let (shell, cx) = cx.add_window_view(Shell::new);
+    draw(cx);
+    cx.simulate_input("Keep this draft for later");
+    draw(cx);
+    cx.update(|window, cx| {
+        assert_eq!(
+            shell.read(cx).sidebar.read(cx).dashboard_draft_for_test(cx),
+            Some("Keep this draft for later".into())
+        );
+        shell.read(cx).settings.clone().update(cx, |settings, cx| {
+            settings.open_projects(None, window, cx);
+        });
+    });
+    draw(cx);
+    let add = cx.debug_bounds("settings-add-project").unwrap();
+    cx.simulate_click(add.center(), gpui::Modifiers::default());
+    draw(cx);
+    cx.simulate_input(path);
+    cx.simulate_keystrokes("enter");
+    draw(cx);
+    cx.simulate_input("New fixture project");
+    cx.simulate_keystrokes("enter");
+    draw(cx);
+    cx.update(|_, cx| {
+        let shell = shell.read(cx);
+        let index = cx
+            .global::<crate::settings::SettingsState>()
+            .store
+            .projects
+            .iter()
+            .position(|project| project.path == path)
+            .expect("project was registered");
+        assert!(!shell.settings.read(cx).is_open());
+        assert_eq!(
+            shell.sidebar.read(cx).dashboard_destination_for_test(cx),
+            Some((index, path.into()))
+        );
+        assert_eq!(
+            shell.sidebar.read(cx).dashboard_draft_for_test(cx),
+            Some("Keep this draft for later".into())
+        );
+        assert!(shell.runtime.read(cx).registry.read(cx).is_empty());
+    });
+}
+
+#[gpui::test]
 fn worktree_inputs_tab_in_order_then_reach_cancel(cx: &mut gpui::TestAppContext) {
     cx.update(|cx| {
         init(cx);
@@ -1279,15 +1332,27 @@ fn worktree_inputs_tab_in_order_then_reach_cancel(cx: &mut gpui::TestAppContext)
     });
     let (shell, cx) = cx.add_window_view(Shell::new);
     draw(cx);
+    let selector = cx.debug_bounds("dashboard-worktree-selector").unwrap();
+    cx.simulate_click(selector.center(), gpui::Modifiers::default());
+    draw(cx);
+    let manage = cx.debug_bounds("dashboard-manage-worktrees").unwrap();
+    cx.simulate_click(manage.center(), gpui::Modifiers::default());
+    draw(cx);
+    assert!(cx
+        .debug_bounds("settings-project-worktree-list-0")
+        .is_some());
+    assert!(cx.debug_bounds("checkout-management").is_none());
+    cx.simulate_keystrokes("escape");
+    draw(cx);
+    assert!(cx.debug_bounds("dashboard-worktree-selector").is_some());
+
     cx.update(|window, cx| {
-        let sidebar = shell.read(cx).sidebar.clone();
-        sidebar.update(cx, |sidebar, cx| {
-            sidebar.manage_project_checkouts(env!("CARGO_MANIFEST_DIR"), window, cx);
+        let settings = shell.read(cx).settings.clone();
+        settings.update(cx, |settings, cx| {
+            settings.open_project_creation_shortcut(Some(env!("CARGO_MANIFEST_DIR")), window, cx);
         });
     });
-    draw(cx);
-    let add = cx.debug_bounds("checkouts-add").expect("New worktree");
-    cx.simulate_click(add.center(), gpui::Modifiers::default());
+    cx.run_until_parked();
     draw(cx);
     let mut fields = Vec::new();
     for selector in [

@@ -345,16 +345,7 @@ impl Sidebar {
                 if !enabled {
                     return;
                 }
-                if click.is_fixture_launch()
-                    || matches!(
-                        &click,
-                        Action::RunScript(..)
-                            | Action::RunNamedScript(..)
-                            | Action::RemoveWorktree(..)
-                            | Action::HistoryFilterMenu(..)
-                            | Action::ToggleUsage
-                    )
-                {
+                if click.records_source_bounds() {
                     this.action_source_bounds.set(click_bounds.get());
                 }
                 #[cfg(test)]
@@ -380,16 +371,7 @@ impl Sidebar {
                     }
                     if matches!(event.keystroke.key.as_str(), "enter" | "space") {
                         cx.stop_propagation();
-                        if action.is_fixture_launch()
-                            || matches!(
-                                &action,
-                                Action::RunScript(..)
-                                    | Action::RunNamedScript(..)
-                                    | Action::RemoveWorktree(..)
-                                    | Action::HistoryFilterMenu(..)
-                                    | Action::ToggleUsage
-                            )
-                        {
+                        if action.records_source_bounds() {
                             this.action_source_bounds.set(key_bounds.get());
                         }
                         this.act(action.clone(), window, cx);

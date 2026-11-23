@@ -801,19 +801,24 @@ headers.
 
 ## Work-first project access
 
-Projects is not a primary sidebar destination. The New session composer's existing
-project and checkout pickers remain the everyday entry points for selecting a
-folder, adding a project and creating a worktree. The project picker omits Project settings and aligns every leading icon without
-an extra icon-column indent. Manage projects opens Settings → Projects; the latter lists active or archived projects
-within the current workspace, with inline worktree disclosures and direct
-administration. Rename,
-appearance, lifecycle and reusable scripts retain explicit Save/Cancel. Moving,
-archiving, restoring and removing registrations keep the existing service guards.
-A contextual Checkouts utility exposes checkout selection and guarded deletion;
-the main checkout has no Delete action. Creating a project returns to New session
-with it selected and never starts an agent. Navigation through these utilities
-retains the existing composer entity, provider preferences and unfinished draft.
-Legacy Projects startup preferences land on New session.
+Settings → Projects is the single management destination for projects and
+worktrees. The Home composer keeps its project and worktree pickers for choosing
+a destination. Manage projects opens the current workspace list. Manage worktrees
+opens Active in that same list, expands the current project, scrolls to it, and
+focuses its disclosure. If the project is no longer active in the workspace,
+show the current list with an explanation. Neither entry changes the composer draft.
+Projects is not a primary sidebar destination. Legacy Projects startup preferences
+land on New session.
+
+Add project and New worktree open nested forms in Settings → Projects from both
+the Settings list and Home shortcuts. Cancel returns to the source, restoring
+the Settings row, scroll and expansion where applicable. A successful creation
+or Use checkout returns to Home with the resulting checkout selected and the
+existing composer entity, draft, attachments and provider settings intact.
+Selecting or creating a checkout never starts an agent. Worktree creation checks
+for a repository and a first commit, shows the resolved base and folder, and
+keeps entered values on failure. A pending creation disables duplicate submission
+and navigation away from the form.
 
 The Edit project form omits the project-folder readout. One Scripts section groups
 setup, teardown and reusable shell/prompt entries, with one Add script action.
@@ -821,7 +826,9 @@ Save/Cancel retain their existing meaning without additional save-explanation co
 
 Settings → Projects omits project search. Each active project’s leading chevron,
 name and path form one disclosure. Archived projects use a neutral folder icon.
-Projects expand independently and show compact indented worktree rows. Branch
+Projects expand independently and show compact indented worktree rows.
+Discovery runs off the UI thread. It shows loading when rows are unavailable,
+and an inline error with Retry when discovery fails. Branch
 and folder share one metadata line at wide widths and stack at compact widths.
 Long paths shorten in the list and remain available in full on demand. Project
 and linked-worktree overflow triggers align to the same trailing edge and open
@@ -840,5 +847,7 @@ when deleting, and protection for the main project folder. In Settings, the
 actions follow the review, aligning right in wide panes and left in compact panes.
 The review scrolls when space is short and the actions remain reachable. Grove uses the
 existing project and worktree removal guards and shows the operation result.
+Retrying a failed destructive operation starts a fresh review. Failure to discover
+linked worktrees leaves the keep-folders removal path available.
 Cancel or Back retains project expansion and restores the action trigger.
 Successful deletion restores focus to a surviving row or the Projects page.
