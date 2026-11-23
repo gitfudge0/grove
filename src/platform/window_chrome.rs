@@ -69,6 +69,98 @@ pub fn controls(
     }
 }
 
+/// A press on app-owned window chrome, with the original event AppKit needs
+/// when the pointer begins to drag.
+pub(crate) struct MacTitlebarPress {
+    #[cfg(all(target_os = "macos", not(test)))]
+    event: Option<objc::rc::StrongPtr>,
+}
+
+impl MacTitlebarPress {
+    pub(crate) fn capture(window: &gpui::Window) -> Self {
+        #[cfg(all(target_os = "macos", not(test)))]
+        {
+            use objc::runtime::Object;
+            use objc::{class, msg_send, sel, sel_impl};
+
+            const LEFT_MOUSE_DOWN: usize = 1; // NSEventTypeLeftMouseDown
+            let event = with_appkit_window(window, |native| {
+                // SAFETY: GPUI dispatches the pointer event on AppKit's main
+                // thread. Retain currentEvent before the dispatch returns.
+                unsafe {
+                    let app: *mut Object = msg_send![class!(NSApplication), sharedApplication];
+                    let event: *mut Object = msg_send![app, currentEvent];
+                    if event.is_null() {
+                        return None;
+                    }
+                    let kind: usize = msg_send![event, type];
+                    let owner: *mut Object = msg_send![event, window];
+                    (kind == LEFT_MOUSE_DOWN && owner == native)
+                        .then(|| objc::rc::StrongPtr::retain(event))
+                }
+            })
+            .flatten();
+            Self { event }
+        }
+        // GPUI's TestWindow has no native window handle.
+        #[cfg(any(not(target_os = "macos"), test))]
+        {
+            let _ = window;
+            Self {}
+        }
+    }
+
+    pub(crate) fn begin_drag(self, window: &gpui::Window) -> bool {
+        #[cfg(all(target_os = "macos", not(test)))]
+        {
+            use objc::runtime::Object;
+            use objc::{msg_send, sel, sel_impl};
+
+            let Some(event) = self.event else {
+                return false;
+            };
+            with_appkit_window(window, |native| {
+                let raw_event = *event;
+                // SAFETY: Both objects are live for this synchronous main-thread
+                // call. AppKit requires the original mouse-down for this window.
+                unsafe {
+                    let owner: *mut Object = msg_send![raw_event, window];
+                    if owner != native {
+                        return false;
+                    }
+                    let _: () = msg_send![native, performWindowDragWithEvent: raw_event];
+                }
+                true
+            })
+            .unwrap_or(false)
+        }
+        #[cfg(any(not(target_os = "macos"), test))]
+        {
+            let _ = window;
+            false
+        }
+    }
+}
+
+#[cfg(all(target_os = "macos", not(test)))]
+fn with_appkit_window<T>(
+    window: &gpui::Window,
+    run: impl FnOnce(*mut objc::runtime::Object) -> T,
+) -> Option<T> {
+    use objc::runtime::Object;
+    use objc::{msg_send, sel, sel_impl};
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+
+    let handle = HasWindowHandle::window_handle(window).ok()?;
+    let RawWindowHandle::AppKit(view) = handle.as_raw() else {
+        return None;
+    };
+    // SAFETY: GPUI supplies a live NSView on AppKit's main thread. A non-null
+    // NSWindow is borrowed for the duration of the synchronous operation.
+    let native: *mut Object = unsafe { msg_send![view.ns_view.as_ptr().cast::<Object>(), window] };
+    (!native.is_null()).then(|| run(native))
+}
+
 #[cfg(target_os = "macos")]
 pub fn sync_native_buttons(window: &gpui::Window) {
     use objc::runtime::{Object, BOOL, YES};

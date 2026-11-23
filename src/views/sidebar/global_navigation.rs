@@ -716,6 +716,7 @@ impl Sidebar {
     }
 
     pub(crate) fn header_workspace_control(&self, cx: &mut Context<Self>) -> AnyElement {
+        let mac = cfg!(target_os = "macos");
         let ws = &cx.global::<SettingsState>().store.workspaces;
         let name = ws.name(ws.active).to_string();
         let trigger = self
@@ -731,7 +732,11 @@ impl Sidebar {
             )
             .debug_selector(|| "header-workspace".into())
             .track_focus(&self.compact_workspace_focus)
-            .w_full()
+            .min_w_0()
+            .when(!mac, gpui::Styled::w_full)
+            .when(mac, |row| {
+                row.w_auto().max_w_full().block_mouse_except_scroll()
+            })
             .justify_start()
             .h(rpx(HEAD_H))
             .pl_0()
@@ -749,15 +754,22 @@ impl Sidebar {
                     .inset_0(),
             );
         }
+        let row = if mac {
+            // Leave unused header width available for dragging the window.
+            div().flex().child(row).into_any_element()
+        } else {
+            row.into_any_element()
+        };
         div()
             .relative()
             .w_full()
             .min_w_0()
-            .child(row.w_full().min_w_0())
+            .child(row)
             .when(self.runtime.read(cx).upgrade.read(cx).can_update(), |d| {
                 d.child(
                     self.control("sidebar-update", "Update Grove", Action::UpdateApp, cx)
                         .debug_selector(|| "sidebar-update".into())
+                        .when(mac, |control| control.block_mouse_except_scroll())
                         .child(icon("arrow-up", ICON_SM, c::FG_DIM())),
                 )
             })

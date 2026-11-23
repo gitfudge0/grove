@@ -99,6 +99,7 @@ pub struct Shell {
     highlights_startup_scheduled: bool,
     focus: FocusHandle,
     header_focus: std::collections::HashMap<&'static str, FocusHandle>,
+    mac_titlebar_press: Option<window_chrome::MacTitlebarPress>,
     runtime: Entity<Runtime>,
     workspaces: Entity<super::workspace_manager::WorkspaceManager>,
     sidebar: Entity<super::sidebar::Sidebar>,
@@ -276,6 +277,7 @@ impl Shell {
             runtime,
             workspaces,
             window_observers: None,
+            mac_titlebar_press: None,
             header_focus: [
                 "window-close",
                 "window-minimize",
@@ -465,6 +467,9 @@ impl Shell {
         };
         let mut group = div()
             .group("traffic-lights")
+            .when(platform == ControlPlatform::Mac, |group| {
+                group.block_mouse_except_scroll()
+            })
             .flex()
             .flex_shrink_0()
             .items_center();
@@ -530,6 +535,55 @@ impl Shell {
             })
     }
 
+    fn mac_window_drag_area(&self, cx: &mut Context<Self>) -> gpui::Stateful<gpui::Div> {
+        div()
+            .id("mac-titlebar-drag-region")
+            .debug_selector(|| "mac-titlebar-drag-region".into())
+            .block_mouse_except_scroll()
+            .on_mouse_down_out(cx.listener(|this, _, _, _| this.mac_titlebar_press = None))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, _, window, _| {
+                    this.mac_titlebar_press =
+                        Some(window_chrome::MacTitlebarPress::capture(window));
+                }),
+            )
+            .on_mouse_up_out(
+                MouseButton::Left,
+                cx.listener(|this, _, _, _| this.mac_titlebar_press = None),
+            )
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(|this, event: &gpui::MouseUpEvent, window, _| {
+                    if this.mac_titlebar_press.take().is_some() && event.click_count == 2 {
+                        window.titlebar_double_click();
+                    }
+                }),
+            )
+            // A held pointer can leave the header on its first move. Start
+            // AppKit's drag from that move so a stationary click stays a click.
+            .child(
+                gpui::canvas(|_, _, _| (), {
+                    let listener = cx.listener(|this, event: &gpui::MouseMoveEvent, window, cx| {
+                        let Some(press) = this.mac_titlebar_press.take() else {
+                            return;
+                        };
+                        if event.dragging() && press.begin_drag(window) {
+                            cx.stop_propagation();
+                        }
+                    });
+                    move |_, (), window, _| {
+                        window.on_mouse_event(move |event, phase, window, cx| {
+                            if phase == gpui::DispatchPhase::Capture {
+                                listener(event, window, cx);
+                            }
+                        });
+                    }
+                })
+                .absolute(),
+            )
+    }
+
     fn header(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
         let collapsed = self.sidebar.read(cx).navigation_collapsed(window, cx);
         let compact = f32::from(window.viewport_size().width)
@@ -576,6 +630,7 @@ impl Shell {
                     },
                     cx,
                 )
+                .when(mac, |control| control.block_mouse_except_scroll())
                 .child(icon(
                     if collapsed {
                         "sidebar-expand"
@@ -599,7 +654,7 @@ impl Shell {
             })
     }
 
-    fn window_header(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn window_header(&mut self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
         let mac = ControlPlatform::current() == ControlPlatform::Mac;
         let sidebar = self.sidebar.read(cx);
         let sidebar_width = sidebar.animated_sidebar_width(window, cx);
@@ -614,6 +669,15 @@ impl Shell {
             MAC_FIXED_HEADER_W
         } else {
             sidebar_width
+        };
+        let mac_drag_visible = mac && drag_width > SPACE_LG * 2.0;
+        if !mac_drag_visible {
+            self.mac_titlebar_press = None;
+        }
+        let drag_height = if sidebar_width > 0.0 {
+            APPBAR_TOTAL_H
+        } else {
+            APPBAR_TOP_INSET
         };
         let leading_width = if mac {
             sidebar_width
@@ -632,23 +696,22 @@ impl Shell {
             .bg(c::BG_RAIL())
             .when(mac, |row| row.w(rpx(leading_width)))
             .when(!mac, gpui::Styled::w_full)
+            .when(mac_drag_visible, |row| {
+                row.child(
+                    self.mac_window_drag_area(cx)
+                        .absolute()
+                        .top_0()
+                        .left(rpx(SPACE_LG))
+                        .w(rpx(drag_width - SPACE_LG * 2.0))
+                        .h(rpx(drag_height)),
+                )
+            })
             .child(
                 div()
                     .w(rpx(leading_width))
                     .flex_shrink_0()
                     .child(self.header(window, cx)),
             )
-            .when(mac && drag_width > SPACE_LG * 2.0, |row| {
-                row.child(
-                    Self::window_drag_area("mac-titlebar-drag-region")
-                        .absolute()
-                        .top_0()
-                        .left(rpx(SPACE_LG))
-                        .w(rpx(drag_width - SPACE_LG * 2.0))
-                        .h(rpx(APPBAR_TOP_INSET))
-                        .block_mouse_except_scroll(),
-                )
-            })
             .when(!mac, |row| {
                 row.child(
                     Self::window_drag_area("window-header-drag-region")

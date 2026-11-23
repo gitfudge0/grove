@@ -843,7 +843,7 @@ fn home_content_respects_platform_window_header(cx: &mut gpui::TestAppContext) {
 
 #[cfg(target_os = "macos")]
 #[gpui::test]
-fn mac_titlebar_drag_area_spans_empty_top_space(cx: &mut gpui::TestAppContext) {
+fn mac_titlebar_drag_area_uses_only_free_header_space(cx: &mut gpui::TestAppContext) {
     cx.update(init);
     let (shell, cx) = cx.add_window_view(Shell::new);
     for (width, zoom, collapsed) in [
@@ -868,27 +868,60 @@ fn mac_titlebar_drag_area_spans_empty_top_space(cx: &mut gpui::TestAppContext) {
         assert_eq!(drag.top(), header.top());
         assert!(drag.left() > header.left());
         assert!(drag.size.width >= gpui::px(CHROME_CONTROL_H * 3.0 * zoom));
-        assert!(drag.size.height >= gpui::px(SPACE_SM * zoom));
+        let toggle = cx.debug_bounds("sidebar-toggle").expect("sidebar toggle");
+        let press = |position| gpui::MouseDownEvent {
+            button: MouseButton::Left,
+            position,
+            click_count: 1,
+            ..Default::default()
+        };
+        let release = |position| gpui::MouseUpEvent {
+            button: MouseButton::Left,
+            position,
+            click_count: 1,
+            ..Default::default()
+        };
+        let outside = gpui::point(drag.center().x, header.bottom() + gpui::px(1.0));
+        if let Some(rail) = cx.debug_bounds("global-navigation") {
+            assert!(!collapsed);
+            assert_eq!(drag.bottom(), header.bottom());
+            assert!(drag.right() < rail.right());
+            let divider = cx.debug_bounds("sidebar-divider").expect("resize hit zone");
+            assert!(!drag.intersects(&divider));
+            let workspace = cx.debug_bounds("header-workspace").expect("workspace");
+            assert!(workspace.right() < toggle.left());
+            let gap = gpui::point(
+                workspace.right() + (toggle.left() - workspace.right()) / 2.0,
+                workspace.center().y,
+            );
+            cx.simulate_event(press(gap));
+            assert!(cx.update(|_, cx| shell.read(cx).mac_titlebar_press.is_some()));
+            cx.simulate_event(release(outside));
+            assert!(!cx.update(|_, cx| shell.read(cx).mac_titlebar_press.is_some()));
+        } else {
+            assert!(collapsed);
+            assert!(drag.right() <= toggle.right());
+            assert!(drag.bottom() <= toggle.top());
+            cx.simulate_event(press(drag.center()));
+            assert!(cx.update(|_, cx| shell.read(cx).mac_titlebar_press.is_some()));
+            cx.simulate_event(release(drag.center()));
+            assert!(!cx.update(|_, cx| shell.read(cx).mac_titlebar_press.is_some()));
+        }
         for selector in [
             "window-close",
             "window-minimize",
             window_toggle_id(),
             "header-workspace",
             "sidebar-toggle",
-            "sidebar-divider",
         ] {
             if let Some(control) = cx.debug_bounds(selector) {
-                assert!(!drag.intersects(&control), "{selector} overlaps {drag:?}");
+                cx.simulate_event(press(control.center()));
+                assert!(
+                    !cx.update(|_, cx| shell.read(cx).mac_titlebar_press.is_some()),
+                    "{selector} armed a window drag"
+                );
+                cx.simulate_event(release(outside));
             }
-        }
-        if let Some(rail) = cx.debug_bounds("global-navigation") {
-            assert!(!collapsed);
-            assert!(drag.right() < rail.right());
-            assert!(drag.contains(&gpui::point(rail.center().x, drag.center().y)));
-        } else {
-            assert!(collapsed);
-            let toggle = cx.debug_bounds("sidebar-toggle").expect("sidebar toggle");
-            assert!(drag.right() <= toggle.right());
         }
     }
 
