@@ -209,11 +209,12 @@ fn nonfinal_home_close_keeps_remaining_owner_and_selection(cx: &mut gpui::TestAp
 }
 
 #[gpui::test]
-fn update_header_requires_installable_release_and_hides_when_collapsed(
-    cx: &mut gpui::TestAppContext,
-) {
+fn update_footer_opens_about_and_tracks_actionable_state(cx: &mut gpui::TestAppContext) {
+    use crate::entities::upgrade_state::{ChangelogState, UpgradeState};
     cx.update(|cx| {
         gpui_component::init(cx);
+        cx.set_reduce_motion(true);
+        cx.set_global(crate::zoom::ZoomState::new(crate::zoom::ZOOM_DEFAULT));
         cx.set_global(SettingsState::new(grove_core::storage::Store {
             default_landing_page: grove_core::storage::LandingPage::Projects,
             ..Default::default()
@@ -222,13 +223,21 @@ fn update_header_requires_installable_release_and_hides_when_collapsed(
     });
     let (fixture, cx) = cx.add_window_view(|window, cx| {
         let runtime = cx.new(Runtime::new);
-        let sidebar = cx.new(|cx| Sidebar::new(runtime, window, cx));
+        let settings =
+            cx.new(|cx| crate::views::settings_panel::SettingsPanel::new(runtime.clone(), cx));
+        let sidebar = cx.new(|cx| {
+            let mut sidebar = Sidebar::new(runtime, window, cx);
+            sidebar.set_settings_panel(settings, cx);
+            sidebar
+        });
         cx.observe(&sidebar, |_, _, cx| cx.notify()).detach();
         WorkspaceHeaderFixture::new(sidebar, cx)
     });
     let sidebar = fixture.read_with(cx, |fixture, _| fixture.sidebar.clone());
     draw(cx);
     assert!(cx.debug_bounds("sidebar-update").is_none());
+    let usage = cx.debug_bounds("sidebar-usage").unwrap();
+    let settings = cx.debug_bounds("sidebar-settings").unwrap();
     let mut release = grove_core::upgrade::Release {
         version: semver::Version::new(99, 0, 0),
         tag: "v99.0.0".into(),
@@ -253,9 +262,34 @@ fn update_header_requires_installable_release_and_hides_when_collapsed(
     fixture.update(cx, |_, cx| cx.notify());
     draw(cx);
     let update = cx.debug_bounds("sidebar-update").unwrap();
-    let header = cx.debug_bounds("global-navigation").unwrap();
-    assert!(update.left() >= header.left() && update.right() <= header.right());
+    assert_eq!(usage, cx.debug_bounds("sidebar-usage").unwrap());
+    assert_eq!(settings, cx.debug_bounds("sidebar-settings").unwrap());
+    assert_eq!(update.top(), usage.top());
+    assert!(update.right() < usage.left());
     assert!(cx.debug_bounds("header-workspace").is_some());
+
+    cx.simulate_click(update.center(), gpui::Modifiers::default());
+    draw(cx);
+    assert!(cx.debug_bounds("settings-update-now").is_some());
+    assert!(upgrade.read_with(cx, |upgrade, _| upgrade.can_update()));
+    cx.update(|window, cx| {
+        let settings = sidebar.read(cx).settings_panel.clone().unwrap();
+        settings.update(cx, |settings, cx| settings.close(window, cx));
+        assert!(sidebar.read(cx).update_button_focus.is_focused(window));
+        upgrade.update(cx, |upgrade, cx| {
+            upgrade.set_fixture(UpgradeState::Updated, ChangelogState::Idle, cx);
+        });
+    });
+    draw(cx);
+    assert_eq!(Some(update), cx.debug_bounds("sidebar-update"));
+    cx.simulate_keystrokes("space");
+    draw(cx);
+    assert!(cx.debug_bounds("settings-update-restart").is_some());
+    cx.update(|window, cx| {
+        let settings = sidebar.read(cx).settings_panel.clone().unwrap();
+        settings.update(cx, |settings, cx| settings.close(window, cx));
+    });
+
     cx.update(|_, cx| SettingsState::update(cx, |store| store.sidebar_collapsed = true));
     draw(cx);
     assert!(cx.debug_bounds("sidebar-update").is_none());

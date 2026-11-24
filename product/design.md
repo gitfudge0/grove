@@ -735,6 +735,12 @@ Review response shows the assembled answers before sending. Multiple selections 
 
 ## Provider account usage
 
+The sidebar footer shows an amber download-to-tray icon immediately left of Usage
+when a Grove update can be installed. After installation, a restart icon takes
+its place until the app restarts. Otherwise the control is absent. Usage and
+Settings keep their positions. The control has an accessible name and an
+identifying tooltip, and opens Settings → About for explicit installation or restart.
+
 The sidebar footer places an icon-only standard pie-chart Usage icon immediately
 left of Settings, with balanced optical sizing and the accessible name “Usage”.
 Hovering opens

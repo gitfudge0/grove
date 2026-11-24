@@ -72,7 +72,7 @@ pub(super) enum Action {
     AddTerminal,
     OpenSettings,
     ToggleUsage,
-    UpdateApp,
+    OpenUpdates,
     #[cfg(test)]
     NewMultiProjectSession,
     ToggleSidebar,
@@ -285,14 +285,13 @@ impl Sidebar {
                     cx.emit(SidebarEvent::NewMultiProjectSession);
                 }
             }
-            Action::UpdateApp => {
-                if self.navigation_available() {
-                    let upgrade = self.runtime.read(cx).upgrade.clone();
-                    if upgrade.read(cx).can_update() {
-                        if let Some(settings) = &self.settings_panel {
-                            settings.update(cx, |settings, cx| settings.open_updates(window, cx));
+            Action::OpenUpdates => {
+                if self.navigation_available() && self.update_footer_action(cx).is_some() {
+                    if let Some(settings) = &self.settings_panel {
+                        if !settings.read(cx).is_open() {
+                            self.update_button_focus.focus(window, cx);
                         }
-                        upgrade.update(cx, crate::entities::upgrade::Upgrade::start_update);
+                        settings.update(cx, |settings, cx| settings.open_updates(window, cx));
                     }
                 }
             }

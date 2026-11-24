@@ -1,5 +1,6 @@
 //! App destinations and the single workspace-scoped sidebar.
 use super::*;
+use crate::entities::upgrade_state::restart_available;
 use grove_core::storage::LandingPage;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -41,6 +42,17 @@ const NAVIGATION_ITEMS: [(Destination, &str, &str); 2] = [
 ];
 
 impl Sidebar {
+    pub(super) fn update_footer_action(&self, cx: &App) -> Option<(&'static str, &'static str)> {
+        let upgrade = self.runtime.read(cx).upgrade.read(cx);
+        if restart_available(upgrade.state()) {
+            Some(("Restart required", "restart"))
+        } else if upgrade.can_update() {
+            Some(("View Grove update", "download"))
+        } else {
+            None
+        }
+    }
+
     pub(crate) fn open_numbered_destination(
         &mut self,
         index: usize,
@@ -476,6 +488,23 @@ impl Sidebar {
                                     .child(format!("v{}", env!("CARGO_PKG_VERSION"))),
                             ),
                     )
+                    .when_some(self.update_footer_action(cx), |footer, (label, glyph)| {
+                        footer.child(
+                            self.control_with_tooltip(
+                                "sidebar-update",
+                                label,
+                                Action::OpenUpdates,
+                                cx,
+                            )
+                            .debug_selector(|| "sidebar-update".into())
+                            .track_focus(&self.update_button_focus)
+                            .child(icon(
+                                glyph,
+                                ICON_LG,
+                                c::STATUS_WARNING(),
+                            )),
+                        )
+                    })
                     .child(
                         self.control("sidebar-usage", "Usage", Action::ToggleUsage, cx)
                             .debug_selector(|| "sidebar-usage".into())
@@ -765,14 +794,6 @@ impl Sidebar {
             .w_full()
             .min_w_0()
             .child(row)
-            .when(self.runtime.read(cx).upgrade.read(cx).can_update(), |d| {
-                d.child(
-                    self.control("sidebar-update", "Update Grove", Action::UpdateApp, cx)
-                        .debug_selector(|| "sidebar-update".into())
-                        .when(mac, |control| control.block_mouse_except_scroll())
-                        .child(icon("arrow-up", ICON_SM, c::FG_DIM())),
-                )
-            })
             .when_some(self.workspace_selector.clone(), gpui::ParentElement::child)
             .into_any_element()
     }

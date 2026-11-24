@@ -1270,6 +1270,7 @@ impl SettingsPanel {
                     window,
                     cx,
                 )
+                .debug_selector(|| "settings-update-restart".into())
                 .icon(gpui_component::Icon::default().path("icons/restart.svg"))
                 .on_click(cx.listener(|this, _, _, cx| {
                     if restart_available(this.runtime.read(cx).upgrade.read(cx).state()) {
@@ -1288,7 +1289,8 @@ impl SettingsPanel {
                     window,
                     cx,
                 )
-                .icon(gpui_component::Icon::default().path("icons/arrow-up.svg"))
+                .debug_selector(|| "settings-update-now".into())
+                .icon(gpui_component::Icon::default().path("icons/download.svg"))
                 .disabled(!can_update)
                 .when(can_update, |el| {
                     el.on_click(cx.listener(|this, _, _, cx| {
