@@ -587,7 +587,7 @@ fn codex_and_claude_snippet_run_stays_inline_and_preserves_draft(cx: &mut gpui::
             show.bottom() < body.bottom(),
             "The list footer must fit above the next paragraph"
         );
-        assert!(cx.debug_bounds("snippet-share-0").is_none());
+        assert!(cx.debug_bounds("snippet-reference-0").is_none());
         let toolbar = cx.debug_bounds("snippet-options").unwrap();
         cx.simulate_click(toolbar.center(), gpui::Modifiers::default());
         draw(cx);
@@ -617,19 +617,21 @@ fn codex_and_claude_snippet_run_stays_inline_and_preserves_draft(cx: &mut gpui::
         cx.simulate_keystrokes("enter");
         draw(cx);
         assert!(cx.debug_bounds("snippet-terminal-0").is_some());
-        let share = cx.debug_bounds("snippet-share-0").unwrap();
+        let reference_action = cx.debug_bounds("snippet-reference-0").unwrap();
         assert!(
-            show.bottom() <= share.top(),
-            "Draft action belongs inside output"
+            show.bottom() <= reference_action.top(),
+            "Reference action belongs inside output"
         );
-        cx.simulate_click(share.center(), gpui::Modifiers::default());
+        cx.simulate_click(reference_action.center(), gpui::Modifiers::default());
         draw(cx);
+        assert!(cx.debug_bounds("codex-reference-preview").is_some());
         cx.update(|_, cx| {
-            let draft = view.read(cx).input.read(cx).value().to_string();
-            assert!(draft.starts_with("unsent draft\n\nScript run in "));
-            assert!(draft.contains(&path));
-            assert!(draft.contains(code));
-            assert!(draft.contains("exit 0"));
+            let view = view.read(cx);
+            assert_eq!(view.input.read(cx).value().as_ref(), "unsent draft");
+            let reference = view.reference.as_ref().unwrap();
+            assert!(reference.text.contains(&path));
+            assert!(reference.text.contains(code));
+            assert!(reference.text.contains("exit 0"));
         });
         fs_err::remove_dir_all(root).unwrap();
     }

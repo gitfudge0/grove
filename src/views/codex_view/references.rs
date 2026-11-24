@@ -16,6 +16,20 @@ use gpui::prelude::{
 use gpui::{div, Context, Focusable, Window};
 use gpui_component::WindowExt as _;
 
+pub(super) const COMMAND_OUTPUT_REFERENCE_ROLE: &str = "Command output";
+
+pub(super) fn new_reference_id() -> String {
+    static NEXT_REFERENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    format!(
+        "{}-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos(),
+        NEXT_REFERENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    )
+}
+
 /// Decode only complete canonical reference prompts. All other user text stays literal.
 pub(super) fn reference_prompt(text: &str) -> Option<(codex::ReferenceDraft, &str)> {
     let body = text.strip_prefix("Referenced transcript selection (quoted data):\n")?;
@@ -151,7 +165,6 @@ impl CodexView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        static NEXT_REFERENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
         let Some(current) = window.text_selection_snapshot(cx) else {
             return;
         };
@@ -162,14 +175,7 @@ impl CodexView {
         let Some(mut reference) = self.selection_reference(&current, &state) else {
             return;
         };
-        reference.id = format!(
-            "{}-{}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_nanos(),
-            NEXT_REFERENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-        );
+        reference.id = new_reference_id();
         self.set_reference(Some(reference), cx);
         window.clear_text_selection(cx);
         self.selection_dismissed = None;
@@ -323,16 +329,20 @@ impl CodexView {
         let provider = self.session.read(cx).state.saved.provider;
         let mut roles = Vec::new();
         for source in &quote.sources {
-            let role = if source.role == "Assistant" {
-                provider.label()
-            } else {
-                "You"
+            let role = match source.role.as_str() {
+                "Assistant" => provider.label(),
+                COMMAND_OUTPUT_REFERENCE_ROLE => COMMAND_OUTPUT_REFERENCE_ROLE,
+                _ => "You",
             };
             if !roles.contains(&role) {
                 roles.push(role);
             }
         }
-        let sources = roles.join(" · ");
+        let label = if roles == [COMMAND_OUTPUT_REFERENCE_ROLE] {
+            "Referenced command output".to_owned()
+        } else {
+            format!("Replying to {}", roles.join(" · "))
+        };
         Some(
             div()
                 .id("codex-reference-preview")
@@ -365,7 +375,7 @@ impl CodexView {
                                 .min_w_0()
                                 .text_size(rpx(TEXT_MICRO))
                                 .text_color(c::FG_DIM())
-                                .child(format!("Replying to {sources}")),
+                                .child(label),
                         )
                         .child(
                             (if self.dashboard_pending {

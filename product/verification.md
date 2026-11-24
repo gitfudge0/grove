@@ -2911,3 +2911,11 @@ the default and expanded tray for Codex and Claude. The live Codex transport
 smoke cancelled an actual approval and confirmed the command did not run.
 Live Claude remains untested because the installed CLI is signed out. A live
 UI-to-provider round trip and native macOS and Windows renders remain untested.
+
+## Referencing inline command output
+
+Codex and Claude Linux fixtures exercised the output reference action, unchanged
+draft text, no implicit submission, and removal and reattachment. Isolated
+native X11 captures showed the output excerpt above the unchanged draft in
+both appearances. Live provider submission of an output reference was not
+exercised.

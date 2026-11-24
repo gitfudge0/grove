@@ -1,5 +1,8 @@
 //! User-initiated shell runs owned by the original response, never by the agent.
-use super::*;
+use super::{
+    references::{new_reference_id, COMMAND_OUTPUT_REFERENCE_ROLE},
+    *,
+};
 use crate::entities::terminal_session::TerminalSession;
 use crate::fonts::MONO_FAMILY;
 use crate::views::terminal_view::TerminalView;
@@ -8,7 +11,7 @@ use gpui_component::popover::Popover;
 
 const OUTPUT_HEIGHT: f32 = 240.0;
 const COMMAND_MENU_W: f32 = 296.0;
-const SHARED_OUTPUT_LINES: usize = 200;
+const REFERENCED_OUTPUT_LINES: usize = 200;
 static SHELL: std::sync::OnceLock<String> = std::sync::OnceLock::new();
 
 /// Source validity is independent of render preparation: session observers may
@@ -102,7 +105,7 @@ pub(super) struct SnippetRun {
     view: Entity<TerminalView>,
     pub(super) expanded: bool,
     stop_requested: bool,
-    shared: bool,
+    reference_key: String,
     toggle_focus: FocusHandle,
     _observer: Subscription,
 }
@@ -655,7 +658,7 @@ impl CodexView {
             view,
             expanded: confirmed,
             stop_requested: false,
-            shared: false,
+            reference_key: format!("command-output-{}:", new_reference_id()),
             toggle_focus,
             _observer: observer,
         });
@@ -747,8 +750,9 @@ impl CodexView {
         });
     }
 
-    fn can_share_snippet(&self, cx: &App) -> bool {
+    fn can_reference_snippet_output(&self, cx: &App) -> bool {
         !self.transcript_only()
+            && !self.dashboard_pending
             && self.plan_answer.is_none()
             && self.queue_editor.is_none()
             && self.submitted.is_none()
@@ -758,14 +762,14 @@ impl CodexView {
             && self.session.read(cx).state.saved.pending_edit.is_none()
     }
 
-    fn share_snippet(
+    fn reference_snippet_output(
         &mut self,
         key: &str,
         index: usize,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if !self.can_share_snippet(cx) {
+        if !self.can_reference_snippet_output(cx) {
             return;
         }
         let signature = self.snippet_source_signature(key, cx);
@@ -779,19 +783,32 @@ impl CodexView {
         }
         let Some(run) = self
             .snippets
-            .get_mut(key)
-            .and_then(|snippet| snippet.runs.get_mut(index))
+            .get(key)
+            .and_then(|snippet| snippet.runs.get(index))
         else {
             return;
         };
-        if !run.terminal.read(cx).has_exited() || run.shared {
+        if !run.terminal.read(cx).has_exited()
+            || self
+                .reference
+                .as_ref()
+                .is_some_and(|reference| reference.id.starts_with(&run.reference_key))
+        {
             return;
         }
+        let thread_id = self.session.read(cx).state.saved.thread_id.clone();
+        let Some(message_id) = key
+            .rsplit_once(":code:")
+            .and_then(|(owner, _)| owner.strip_prefix(thread_id.as_deref().unwrap_or("")))
+            .and_then(|owner| owner.strip_prefix(':'))
+        else {
+            return;
+        };
         let output = run.terminal.update(cx, |terminal, _| {
             terminal
                 .selection_all_bounds()
                 .and_then(|(mut start, end)| {
-                    start.a_row = start.a_row.min(SHARED_OUTPUT_LINES - 1);
+                    start.a_row = start.a_row.min(REFERENCED_OUTPUT_LINES - 1);
                     terminal.selection_text(start, end)
                 })
                 .unwrap_or_default()
@@ -803,20 +820,26 @@ impl CodexView {
             .read(cx)
             .exit_code()
             .map_or("unknown".into(), |code| code.to_string());
-        let result = format!("Script run in {} (exit {exit}):\n\n{}\n\nOutput (up to {SHARED_OUTPUT_LINES} terminal lines):\n{}", run.cwd, run.command, output);
-        let draft = self.input.read(cx).value().to_string();
-        self.input.update(cx, |input, cx| {
-            input.set_value(
-                if draft.is_empty() {
-                    result
-                } else {
-                    format!("{draft}\n\n{result}")
-                },
-                window,
-                cx,
-            );
-        });
-        run.shared = true;
+        let excerpt = if output.is_empty() {
+            "No command output was captured."
+        } else {
+            &output
+        };
+        let result = format!(
+            "{excerpt}\n\nCommand run in {} (exit {exit}):\n{}",
+            run.cwd, run.command,
+        );
+        let reference = codex::ReferenceDraft {
+            id: format!("{}{}", run.reference_key, new_reference_id()),
+            thread_id,
+            sources: vec![codex::ReferenceSource {
+                message_id: message_id.to_owned(),
+                role: COMMAND_OUTPUT_REFERENCE_ROLE.to_owned(),
+            }],
+            text: result,
+        };
+        self.set_reference(Some(reference), cx);
+        self.set_composer_collapsed(false, cx);
         self.input.focus_handle(cx).focus(window, cx);
         cx.notify();
     }
@@ -829,7 +852,11 @@ impl CodexView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let share_enabled = self.can_share_snippet(cx);
+        let reference_enabled = self.can_reference_snippet_output(cx);
+        let current_reference = self
+            .reference
+            .as_ref()
+            .map(|reference| reference.id.clone());
         let snippet = self.ensure_snippet(key, code, cwd, cx);
         let mut body = div()
             .flex()
@@ -951,7 +978,7 @@ impl CodexView {
                 }
             };
             let toggle_key = key.to_owned();
-            let share_key = key.to_owned();
+            let reference_key = key.to_owned();
             let stop_key = key.to_owned();
             let mut actions = div()
                 .flex()
@@ -988,30 +1015,25 @@ impl CodexView {
                         })
                     }),
                 );
-            let add_to_draft = (done && run.expanded).then(|| {
-                transcript_action(
-                    ("snippet-share", index),
-                    if run.shared {
-                        "Added to draft"
-                    } else {
-                        "Add to draft"
-                    },
-                    false,
-                    window,
-                    cx,
-                )
-                .debug_selector(move || format!("snippet-share-{index}"))
-                .icon(action_icon(if run.shared { "check" } else { "reply" }))
-                .disabled(!share_enabled || run.shared)
-                .map(|button| {
-                    bound_action(
-                        button,
-                        share_enabled && !run.shared,
-                        cx,
-                        move |this, window, cx| {
-                            this.share_snippet(&share_key, index, window, cx);
-                        },
-                    )
+            let is_referenced = current_reference
+                .as_ref()
+                .is_some_and(|id| id.starts_with(&run.reference_key));
+            let reference_output = (done && run.expanded).then(|| {
+                let label = if is_referenced {
+                    "Output referenced"
+                } else if current_reference.is_some() {
+                    "Replace reference with output"
+                } else {
+                    "Reference output"
+                };
+                let enabled = reference_enabled && !is_referenced;
+                let button =
+                    transcript_action(("snippet-reference", index), label, false, window, cx)
+                        .debug_selector(move || format!("snippet-reference-{index}"))
+                        .icon(action_icon(if is_referenced { "check" } else { "reply" }))
+                        .disabled(!enabled);
+                bound_action(button, enabled, cx, move |this, window, cx| {
+                    this.reference_snippet_output(&reference_key, index, window, cx);
                 })
             });
             if !done {
@@ -1097,7 +1119,7 @@ impl CodexView {
                                         " · edited copy"
                                     },
                                 ))
-                                .children(add_to_draft),
+                                .children(reference_output),
                         )
                         .when(run.cwd != snippet.cwd, |row| {
                             row.child(
@@ -1303,13 +1325,18 @@ mod tests {
                     terminal.update(cx, |terminal, cx| {
                         terminal.ingest_for_test(b"fixture output\r\n", cx);
                     });
-                    view.share_snippet(&key, 0, window, cx);
-                    let draft = view.input.read(cx).value().to_string();
-                    assert!(draft.starts_with("keep my draft\n\n"));
-                    assert!(draft.contains("exit 7"));
-                    assert!(draft.contains("fixture output"));
-                    view.share_snippet(&key, 0, window, cx);
-                    assert_eq!(view.input.read(cx).value().as_ref(), draft);
+                    view.reference_snippet_output(&key, 0, window, cx);
+                    assert_eq!(view.input.read(cx).value().as_ref(), "keep my draft");
+                    let reference = view.reference.clone().unwrap();
+                    assert_eq!(reference.sources[0].role, COMMAND_OUTPUT_REFERENCE_ROLE);
+                    assert!(reference.text.contains("exit 7"));
+                    assert!(reference.text.starts_with("fixture output"));
+                    view.reference_snippet_output(&key, 0, window, cx);
+                    assert_eq!(view.reference.as_ref(), Some(&reference));
+                    view.remove_reference(window, cx);
+                    view.reference_snippet_output(&key, 0, window, cx);
+                    assert_ne!(view.reference.as_ref().unwrap().id, reference.id);
+                    assert_eq!(view.input.read(cx).value().as_ref(), "keep my draft");
                     view.session.update(cx, |session, _| {
                         session.state.saved.thread_id = Some("another-thread".into());
                     });
@@ -1330,7 +1357,7 @@ mod tests {
                         | codex::Action::Prompt(_)
                         | codex::Action::PromptWithImages { .. }
                 )),
-                "Sharing only edits the draft"
+                "Referencing output does not submit a message"
             );
         }
     }
@@ -1577,12 +1604,16 @@ mod capture {
                     terminal.update(cx, |terminal, cx| { assert!(!terminal.alive()); terminal.ingest_for_test(b"Working tree clean\r\n", cx); });
                     cx.notify();
                 })).unwrap();
+                let capture_reference = std::env::var_os("GROVE_SNIPPET_REFERENCE_CAPTURE").is_some();
                 for (name, provider, theme, width, rem, expanded) in [
                     ("codex-dark-collapsed", codex::Provider::Codex, "grove-dark", 980., 16., false),
                     ("claude-light-narrow", codex::Provider::Claude, "grove-light", 540., 16., false),
                     ("codex-dark-expanded", codex::Provider::Codex, "grove-dark", 980., 16., true),
                     ("claude-light-zoom", codex::Provider::Claude, "grove-light", 760., 20., true),
                 ] {
+                    if capture_reference && !expanded {
+                        continue;
+                    }
                     cx.update(|cx| { grove_core::theme::set_by_name(theme); c::sync_component_theme(cx); cx.set_global(crate::zoom::ZoomState::new(rem / 16.)); });
                     cx.update_window(window.into(), |_, window, cx| {
                         window.resize(gpui::size(gpui::px(width), gpui::px(800.)));
@@ -1592,6 +1623,11 @@ mod capture {
                             view.snippets.values_mut().next().unwrap().runs[0].expanded = expanded;
                             view.smooth_follow = false;
                             view.set_composer_collapsed(true, cx);
+                            if capture_reference {
+                                let key = view.snippets.keys().next().unwrap().clone();
+                                view.reference_snippet_output(&key, 0, window, cx);
+                                assert!(view.reference.is_some());
+                            }
                             view.scroll.scroll_to_top_of_item(0);
                             cx.notify();
                         });
