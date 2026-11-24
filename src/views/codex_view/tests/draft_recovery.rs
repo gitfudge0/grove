@@ -600,8 +600,8 @@ fn codex_and_claude_snippet_run_stays_inline_and_preserves_draft(cx: &mut gpui::
         assert!(cx.debug_bounds("snippet-terminal-0").is_some());
         let reference_action = cx.debug_bounds("snippet-reference-0").unwrap();
         assert!(
-            show.bottom() <= reference_action.top(),
-            "Reference action belongs inside output"
+            show.top() < reference_action.bottom() && reference_action.top() < show.bottom(),
+            "The reference icon belongs in the output status row"
         );
         cx.simulate_click(reference_action.center(), gpui::Modifiers::default());
         draw(cx);

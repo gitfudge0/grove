@@ -706,40 +706,75 @@ impl CodexView {
             let toggle_key = key.to_owned();
             let reference_key = key.to_owned();
             let stop_key = key.to_owned();
-            let mut actions = div()
-                .flex()
-                .flex_shrink_0()
-                .ml_auto()
-                .gap(rpx(SPACE_SM))
-                .child(
-                    crate::views::components::dense_disclosure_action(
-                        ("snippet-toggle", index),
-                        if run.expanded {
-                            "Hide output"
-                        } else {
-                            "Output"
-                        },
-                        window,
-                        cx,
-                    )
-                    .with_focus_handle(run.toggle_focus.clone())
-                    .aria_expanded(run.expanded)
-                    .debug_selector(move || format!("snippet-output-{index}"))
-                    .icon(action_icon("terminal"))
-                    .map(|button| {
-                        bound_action(button, true, cx, move |this, window, cx| {
-                            if let Some(run) = this
-                                .snippets
-                                .get_mut(&toggle_key)
-                                .and_then(|s| s.runs.get_mut(index))
-                            {
-                                run.expanded = !run.expanded;
-                                run.toggle_focus.focus(window, cx);
-                            }
-                            cx.notify();
-                        })
-                    }),
-                );
+            let label = if snippet.runs.len() > 1 {
+                format!("{label} · Attempt {}", index + 1)
+            } else {
+                label
+            };
+            let toggle_label = format!(
+                "{} · {label}",
+                if run.expanded {
+                    "Hide output"
+                } else {
+                    "Show output"
+                },
+            );
+            let toggle = move |this: &mut Self, window: &mut Window, cx: &mut Context<Self>| {
+                if let Some(run) = this
+                    .snippets
+                    .get_mut(&toggle_key)
+                    .and_then(|snippet| snippet.runs.get_mut(index))
+                {
+                    run.expanded = !run.expanded;
+                    run.toggle_focus.focus(window, cx);
+                    cx.notify();
+                }
+            };
+            let keyboard_toggle = toggle.clone();
+            let disclosure = crate::views::components::focusable_inline_disclosure(
+                ("snippet-toggle", index),
+                toggle_label,
+            )
+            .w_auto()
+            .justify_start()
+            .gap(rpx(SPACE_SM))
+            .text_color(color)
+            .track_focus(&run.toggle_focus)
+            .focus_visible(|style| style.bg(c::BG_HOVER()))
+            .aria_expanded(run.expanded)
+            .debug_selector(move || format!("snippet-output-{index}"))
+            .child(status::mark(
+                format!("snippet-{key}-{index}"),
+                match icon {
+                    "status-working" => StatusKind::Working,
+                    "status-success" => StatusKind::Success,
+                    "status-failed" => StatusKind::Failed,
+                    "stop" => StatusKind::Stopped,
+                    _ => StatusKind::Unknown,
+                },
+                ICON_SM,
+                cx,
+            ))
+            .child(label)
+            .child(crate::icons::icon(
+                if run.expanded {
+                    "chev-down"
+                } else {
+                    "chev-right"
+                },
+                ICON_SM,
+                c::FG_DIM(),
+            ))
+            .on_click(cx.listener(move |this, _, window, cx| toggle(this, window, cx)))
+            .on_key_down(cx.listener(
+                move |this, event: &gpui::KeyDownEvent, window, cx| {
+                    if action_key(event) && !event.is_held {
+                        keyboard_toggle(this, window, cx);
+                        cx.stop_propagation();
+                    }
+                },
+            ));
+            let mut actions = div().flex().flex_shrink_0().ml_auto();
             let is_referenced = current_reference
                 .as_ref()
                 .is_some_and(|id| id.starts_with(&run.reference_key));
@@ -752,11 +787,17 @@ impl CodexView {
                     "Reference output"
                 };
                 let enabled = reference_enabled && !is_referenced;
-                let button =
-                    transcript_action(("snippet-reference", index), label, false, window, cx)
-                        .debug_selector(move || format!("snippet-reference-{index}"))
-                        .icon(action_icon(if is_referenced { "check" } else { "reply" }))
-                        .disabled(!enabled);
+                let button = crate::views::components::dense_disclosure_action(
+                    ("snippet-reference", index),
+                    label,
+                    window,
+                    cx,
+                )
+                .icon_only()
+                .tooltip(label)
+                .debug_selector(move || format!("snippet-reference-{index}"))
+                .icon(action_icon(if is_referenced { "check" } else { "reply" }))
+                .disabled(!enabled);
                 bound_action(button, enabled, cx, move |this, window, cx| {
                     this.reference_snippet_output(&reference_key, index, window, cx);
                 })
@@ -794,48 +835,11 @@ impl CodexView {
                             .flex_wrap()
                             .items_center()
                             .gap(rpx(SPACE_LG))
-                            .child(
-                                div()
-                                    .flex()
-                                    .items_center()
-                                    .gap(rpx(SPACE_SM))
-                                    .text_color(color)
-                                    .child(status::mark(
-                                        format!("snippet-{key}-{index}"),
-                                        match icon {
-                                            "status-working" => StatusKind::Working,
-                                            "status-success" => StatusKind::Success,
-                                            "status-failed" => StatusKind::Failed,
-                                            "stop" => StatusKind::Stopped,
-                                            _ => StatusKind::Unknown,
-                                        },
-                                        ICON_SM,
-                                        cx,
-                                    ))
-                                    .min_w_0()
-                                    .child(label)
-                                    .when(snippet.runs.len() > 1 && !run.expanded, |status| {
-                                        status.child(
-                                            div()
-                                                .text_color(c::FG_DIM())
-                                                .child(format!("· {}", index + 1)),
-                                        )
-                                    }),
-                            )
-                            .child(actions),
+                            .child(disclosure)
+                            .child(actions.children(reference_output)),
                     )
                     .when(run.expanded, |row| {
-                        row.child(
-                            div()
-                                .flex()
-                                .flex_wrap()
-                                .items_center()
-                                .justify_between()
-                                .gap(rpx(SPACE_SM))
-                                .child(format!("Attempt {}", index + 1))
-                                .children(reference_output),
-                        )
-                        .when(run.cwd != snippet.cwd, |row| {
+                        row.when(run.cwd != snippet.cwd, |row| {
                             row.child(
                                 div()
                                     .text_color(c::FG_DIM())
