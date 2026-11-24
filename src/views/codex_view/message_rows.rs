@@ -649,9 +649,34 @@ impl CodexView {
                                     .message_slots
                                     .get(&format!("{owner_key}:{index}"))
                                     .is_none_or(|cache| cache.borrow().code_controls_static(self));
+                                let inline_owner = owner.clone();
+                                let inline_key = owner_key.clone();
                                 view.code_block_layout_projection(project_code)
                                     .code_block_layout_revision(u64::from(finalized))
-                                    .code_block_actions(move |block, window, cx| {
+                                    .code_block_inline_actions(move |block, window, cx| {
+                                        let code = block.code();
+                                        if !finalized
+                                            || !block.is_closed_fence()
+                                            || code.trim().is_empty()
+                                            || !block
+                                                .lang()
+                                                .is_some_and(|lang| snippet_shell_supported(&lang))
+                                        {
+                                            return None;
+                                        }
+                                        let key = snippets::key_with_digests(
+                                            &inline_key,
+                                            block.span.as_ref().map_or(0, |span| span.start),
+                                            block.content_digest(),
+                                            source_digest,
+                                        );
+                                        inline_owner
+                                            .update(cx, |this, cx| {
+                                                this.snippet_actions(&key, &code, &cwd, window, cx)
+                                            })
+                                            .ok()
+                                    })
+                                    .code_block_actions(move |block, _, cx| {
                                         let code = block.code();
                                         let key = snippets::key_with_digests(
                                             &owner_key,
@@ -659,19 +684,6 @@ impl CodexView {
                                             block.content_digest(),
                                             source_digest,
                                         );
-                                        let language =
-                                            block.lang().map(|s| s.to_string()).unwrap_or_default();
-                                        if finalized
-                                            && block.is_closed_fence()
-                                            && !code.trim().is_empty()
-                                            && snippet_shell_supported(&language)
-                                        {
-                                            if let Ok(actions) = owner.update(cx, |this, cx| {
-                                                this.snippet_actions(&key, &code, &cwd, window, cx)
-                                            }) {
-                                                return actions;
-                                            }
-                                        }
                                         let focus = owner
                                             .update(cx, |this, cx| {
                                                 this.message_focus

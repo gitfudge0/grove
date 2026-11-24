@@ -18,6 +18,9 @@ use crate::{global_state::GlobalState, text::TextViewStyle};
 pub(crate) type CodeBlockActionsFn =
     dyn Fn(&CodeBlock, &mut Window, &mut App) -> AnyElement + Send + Sync;
 
+pub(crate) type CodeBlockInlineActionsFn =
+    dyn Fn(&CodeBlock, &mut Window, &mut App) -> Option<(AnyElement, AnyElement)> + Send + Sync;
+
 /// A text view that renders Markdown (GFM) or simple Reader-Mode-style HTML; not a full editor/viewer or CSS-capable HTML renderer.
 ///
 /// See also [`MarkdownElement`], [`HtmlElement`]
@@ -34,6 +37,7 @@ pub struct TextView {
     code_block_actions: Option<Arc<CodeBlockActionsFn>>,
     code_block_layout_projection: bool,
     code_block_layout_revision: u64,
+    code_block_inline_actions: Option<Arc<CodeBlockInlineActionsFn>>,
     code_block_footer: Option<Arc<CodeBlockActionsFn>>,
     markdown_extensions: Arc<MarkdownExtensions>,
 }
@@ -74,6 +78,7 @@ impl TextView {
             code_block_actions: None,
             code_block_layout_projection: false,
             code_block_layout_revision: 0,
+            code_block_inline_actions: None,
             code_block_footer: None,
             markdown_extensions: Arc::default(),
         }
@@ -92,6 +97,7 @@ impl TextView {
             code_block_actions: None,
             code_block_layout_projection: false,
             code_block_layout_revision: 0,
+            code_block_inline_actions: None,
             code_block_footer: None,
             markdown_extensions: Arc::default(),
         }
@@ -110,6 +116,7 @@ impl TextView {
             code_block_actions: None,
             code_block_layout_projection: false,
             code_block_layout_revision: 0,
+            code_block_inline_actions: None,
             code_block_footer: None,
             markdown_extensions: Arc::default(),
         }
@@ -154,6 +161,18 @@ impl TextView {
         self.code_block_actions = Some(Arc::new(move |code_block, window, cx| {
             f(&code_block, window, cx).into_any_element()
         }));
+        self
+    }
+
+    /// Optional metadata above the code and a trailing action beside its first line.
+    pub fn code_block_inline_actions<F>(mut self, f: F) -> Self
+    where
+        F: Fn(&CodeBlock, &mut Window, &mut App) -> Option<(AnyElement, AnyElement)>
+            + Send
+            + Sync
+            + 'static,
+    {
+        self.code_block_inline_actions = Some(Arc::new(f));
         self
     }
 
@@ -275,6 +294,7 @@ impl Element for TextView {
             state.code_block_actions = self.code_block_actions.clone();
             state.code_block_layout_projection = self.code_block_layout_projection;
             state.code_block_layout_revision = self.code_block_layout_revision;
+            state.code_block_inline_actions = self.code_block_inline_actions.clone();
             state.code_block_footer = self.code_block_footer.clone();
             state.set_markdown_extensions(self.markdown_extensions.clone(), cx);
             state.selectable = self.selectable;

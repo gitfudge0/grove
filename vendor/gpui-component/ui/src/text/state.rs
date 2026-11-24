@@ -13,7 +13,7 @@ use crate::{
     input::{self, SelectAll},
     scroll::AutoScroll,
     text::{
-        CodeBlockActionsFn, MarkdownExtensions, TextViewStyle,
+        CodeBlockActionsFn, CodeBlockInlineActionsFn, MarkdownExtensions, TextViewStyle,
         document::ParsedDocument,
         format,
         node::{self, NodeContext},
@@ -65,6 +65,7 @@ pub struct TextViewState {
     pub(super) code_block_actions: Option<std::sync::Arc<CodeBlockActionsFn>>,
     pub(super) code_block_layout_projection: bool,
     pub(super) code_block_layout_revision: u64,
+    pub(super) code_block_inline_actions: Option<std::sync::Arc<CodeBlockInlineActionsFn>>,
     pub(super) code_block_footer: Option<std::sync::Arc<CodeBlockActionsFn>>,
     pub(super) markdown_extensions: Arc<MarkdownExtensions>,
 
@@ -156,6 +157,7 @@ impl TextViewState {
             code_block_actions: None,
             code_block_layout_projection: false,
             code_block_layout_revision: 0,
+            code_block_inline_actions: None,
             code_block_footer: None,
             markdown_extensions: Arc::default(),
             is_selecting: false,
@@ -348,7 +350,9 @@ impl TextViewState {
     }
 
     pub(super) fn has_code_block_actions(&self) -> bool {
-        (self.code_block_actions.is_some() || self.code_block_footer.is_some())
+        (self.code_block_actions.is_some()
+            || self.code_block_inline_actions.is_some()
+            || self.code_block_footer.is_some())
             && self.document_code_blocks.contains_code()
     }
 
@@ -516,6 +520,7 @@ impl Render for TextViewState {
         let mut node_cx = self.parsed_content.node_cx.clone();
 
         node_cx.code_block_actions = self.code_block_actions.clone();
+        node_cx.code_block_inline_actions = self.code_block_inline_actions.clone();
         node_cx.code_block_footer = self.code_block_footer.clone();
         node_cx.markdown_extensions = self.markdown_extensions.clone();
         node_cx.style = self.text_view_style.clone();

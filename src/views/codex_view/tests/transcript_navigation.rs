@@ -1774,7 +1774,7 @@ fn response_groups_split_only_at_users_and_copy_all_prose() {
 }
 
 #[gpui::test]
-fn agent_code_blocks_and_finished_responses_copy_verbatim(cx: &mut gpui::TestAppContext) {
+fn shell_card_keeps_run_and_finished_response_copy(cx: &mut gpui::TestAppContext) {
     let (view, cx, _actions, updates) = fixture(cx);
     let text = "Run this:\n\n```sh\n  cargo test --workspace\n```";
     let mut response = snapshot();
@@ -1793,21 +1793,15 @@ fn agent_code_blocks_and_finished_responses_copy_verbatim(cx: &mut gpui::TestApp
         cx.debug_bounds("codex-run-code").is_some(),
         "Finalized shell fences retain a disabled Run control when checkout runtime is unavailable"
     );
-    let options = cx.debug_bounds("snippet-options").unwrap();
-    cx.simulate_click(options.center(), gpui::Modifiers::default());
-    draw(cx);
-    cx.simulate_keystrokes("down enter");
-    cx.run_until_parked();
-    draw(cx);
-    assert_eq!(cx.debug_bounds("snippet-options"), Some(options));
-    assert_eq!(
-        view.read_with(cx, |view, _| view.copied_code_blocks.len()),
-        1
-    );
-    assert_eq!(
-        clipboard(cx).as_deref().map(str::trim_end),
-        Some("  cargo test --workspace")
-    );
+    assert!(cx.debug_bounds("snippet-options").is_none());
+    let directory = cx.debug_bounds("snippet-directory").unwrap();
+    let run = cx.debug_bounds("codex-run-code").unwrap();
+    let source = cx.debug_bounds("inline-code-source").unwrap();
+    assert!(directory.bottom() < run.top());
+    assert_eq!(directory.left(), source.left());
+    assert!(directory.right() < run.left());
+    assert_eq!(source.top(), run.top());
+    assert!(source.right() < run.left());
     let response = cx.debug_bounds("codex-copy-response").unwrap().center();
     cx.simulate_click(response, gpui::Modifiers::default());
     assert_eq!(clipboard(cx).as_deref(), Some(text));
@@ -1816,7 +1810,6 @@ fn agent_code_blocks_and_finished_responses_copy_verbatim(cx: &mut gpui::TestApp
     cx.run_until_parked();
     draw(cx);
     assert!(view.read_with(cx, |view, _| view.copied_code_blocks.is_empty()));
-    assert_eq!(cx.debug_bounds("snippet-options"), Some(options));
 }
 
 #[gpui::test]

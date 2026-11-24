@@ -21,7 +21,7 @@ use crate::{
     input::{InputEdit, RopeExt as _},
     scroll::horizontal_scroll_area,
     text::{
-        CodeBlockActionsFn, MarkdownExtensions, MarkdownNode,
+        CodeBlockActionsFn, CodeBlockInlineActionsFn, MarkdownExtensions, MarkdownNode,
         document::NodeRenderOptions,
         inline::{Inline, InlineState},
         inline_flow::{InlineFlow, InlineFlowItem},
@@ -801,6 +801,19 @@ impl CodeBlock {
         cx: &mut App,
     ) -> AnyElement {
         let style = &node_cx.style;
+        let source = Inline::new(
+            "code",
+            self.state.clone(),
+            vec![],
+            self.styles(&cx.theme().highlight_theme),
+        )
+        .cache_layout();
+        let inline_actions = node_cx
+            .code_block_inline_actions
+            .as_ref()
+            .and_then(|actions| actions(self, window, cx));
+        let compact = inline_actions.is_some();
+        let font = cx.theme().font_family.clone();
 
         div()
             .w_full()
@@ -818,45 +831,63 @@ impl CodeBlock {
                     .text_size(cx.theme().mono_font_size)
                     .relative()
                     .refine_style(&style.code_block)
-                    .when(node_cx.code_block_footer.is_some(), |this| {
-                        this.when_some(node_cx.code_block_actions.clone(), |this, actions| {
+                    .when(compact, |this| this.p_2().pt_1())
+                    .map(|this| {
+                        if let Some((metadata, action)) = inline_actions {
                             this.child(
                                 div()
                                     .flex()
-                                    .justify_end()
                                     .mb_2()
-                                    .font_family(cx.theme().font_family.clone())
-                                    .child(actions(self, window, cx)),
+                                    .font_family(font.clone())
+                                    .child(metadata),
                             )
-                        })
-                    })
-                    .child(
-                        Inline::new(
-                            "code",
-                            self.state.clone(),
-                            vec![],
-                            self.styles(&cx.theme().highlight_theme),
-                        )
-                        .cache_layout(),
-                    )
-                    .when_some(
-                        node_cx
-                            .code_block_actions
-                            .clone()
-                            .filter(|_| node_cx.code_block_footer.is_none()),
-                        |this, actions| {
-                            this.child(
+                            .child(
                                 div()
-                                    .id("actions")
-                                    .absolute()
-                                    .top_2()
-                                    .right_2()
-                                    .bg(cx.theme().tokens.muted)
-                                    .rounded(cx.theme().radius)
-                                    .child(actions(&self, window, cx)),
+                                    .flex()
+                                    .items_start()
+                                    .gap_2()
+                                    .child(
+                                        div()
+                                            .flex_1()
+                                            .min_w_0()
+                                            .debug_selector(|| "inline-code-source".into())
+                                            .child(source),
+                                    )
+                                    .child(
+                                        div()
+                                            .flex_shrink_0()
+                                            .font_family(font.clone())
+                                            .child(action),
+                                    ),
                             )
-                        },
-                    )
+                        } else if let Some(actions) = &node_cx.code_block_actions {
+                            let actions = actions(self, window, cx);
+                            if node_cx.code_block_footer.is_some() {
+                                this.child(
+                                    div()
+                                        .flex()
+                                        .justify_end()
+                                        .mb_2()
+                                        .font_family(font.clone())
+                                        .child(actions),
+                                )
+                                .child(source)
+                            } else {
+                                this.child(source).child(
+                                    div()
+                                        .id("actions")
+                                        .absolute()
+                                        .top_2()
+                                        .right_2()
+                                        .bg(cx.theme().tokens.muted)
+                                        .rounded(cx.theme().radius)
+                                        .child(actions),
+                                )
+                            }
+                        } else {
+                            this.child(source)
+                        }
+                    })
                     .when_some(node_cx.code_block_footer.clone(), |this, footer| {
                         this.child(
                             div()
@@ -876,6 +907,7 @@ pub(crate) struct NodeContext {
     pub(crate) link_refs: HashMap<SharedString, LinkMark>,
     pub(crate) style: TextViewStyle,
     pub(crate) code_block_actions: Option<Arc<CodeBlockActionsFn>>,
+    pub(crate) code_block_inline_actions: Option<Arc<CodeBlockInlineActionsFn>>,
     pub(crate) code_block_footer: Option<Arc<CodeBlockActionsFn>>,
     pub(crate) markdown_extensions: Arc<MarkdownExtensions>,
 }
@@ -940,7 +972,11 @@ impl Paragraph {
             };
             if let Some(content) = content {
                 return if let Some(footer) = footer {
-                    v_flex().min_w_0().child(content).child(footer).into_any_element()
+                    v_flex()
+                        .min_w_0()
+                        .child(content)
+                        .child(footer)
+                        .into_any_element()
                 } else {
                     content
                 };

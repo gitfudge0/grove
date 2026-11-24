@@ -63,9 +63,8 @@ Inspect the actual native rendering against the selected reference at normal and
 
 For transcript code-layout caching, compare warmed and fresh code geometry after
 narrowing and widening the pane, including Unicode carets, syntax styling and rem
-changes. Exercise offscreen Copy, Run, and More command actions, including
-keyboard selection and focus return from the menu, as well as expanded tool
-Copy. Open an editor or run output and change the execution directory to check
+changes. Exercise offscreen Copy, Run, and the command directory control, including
+keyboard activation, as well as expanded tool Copy. Open an editor or run output and change the execution directory to check
 that mutable footers reflow. Include a shell fence nested in a Markdown list
 followed by prose. Check that source replacement and document removal release
 cached layout. Keep these native/structural checks separate from live

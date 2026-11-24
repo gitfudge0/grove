@@ -588,26 +588,7 @@ fn codex_and_claude_snippet_run_stays_inline_and_preserves_draft(cx: &mut gpui::
             "The list footer must fit above the next paragraph"
         );
         assert!(cx.debug_bounds("snippet-reference-0").is_none());
-        let toolbar = cx.debug_bounds("snippet-options").unwrap();
-        cx.simulate_click(toolbar.center(), gpui::Modifiers::default());
-        draw(cx);
-        cx.update(|_, cx| {
-            assert!(view
-                .read(cx)
-                .snippets
-                .values()
-                .next()
-                .unwrap()
-                .options_open())
-        });
-        cx.simulate_keystrokes("escape");
-        draw(cx);
-        cx.update(|window, cx| {
-            let borrowed = view.read(cx);
-            let snippet = borrowed.snippets.values().next().unwrap();
-            assert!(!snippet.options_open());
-            assert!(snippet.options_focused(window));
-        });
+        assert!(cx.debug_bounds("snippet-options").is_none());
         cx.simulate_click(show.center(), gpui::Modifiers::default());
         draw(cx);
         assert!(cx.debug_bounds("snippet-terminal-0").is_some());
