@@ -177,7 +177,7 @@ impl CodexView {
         self.input.focus_handle(cx).focus(window, cx);
     }
 
-    pub(super) fn render_selection_reply(
+    pub(super) fn render_selection_actions(
         &mut self,
         state: &codex::Snapshot,
         window: &mut Window,
@@ -202,13 +202,14 @@ impl CodexView {
         }
         let control = rpx(CHROME_CONTROL_H).to_pixels(window.rem_size());
         let gap = rpx(SPACE_SM).to_pixels(window.rem_size());
+        let width = control + gap + control;
         let mut left = snapshot.endpoint.x + gap;
-        if left + control > pane.right() {
-            left = snapshot.endpoint.x - gap - control;
+        if left + width > pane.right() {
+            left = snapshot.endpoint.x - gap - width;
         }
         left = left
             .max(pane.left())
-            .min((pane.right() - control).max(pane.left()));
+            .min((pane.right() - width).max(pane.left()));
         let top = snapshot
             .endpoint
             .y
@@ -216,12 +217,13 @@ impl CodexView {
             .max(pane.top());
         let keyboard = snapshot.clone();
         let action_owner = cx.entity_id();
-        Some(
+        let copy_markdown = |window: &mut Window, cx: &mut gpui::App| {
+            window.dispatch_action(Box::new(gpui_component::text::CopyAsMarkdown), cx);
+        };
+        let copy_focus = self.ensure_control_focus("transcript-selection:markdown", window, cx);
+        let reply =
             header_control_with_label_tooltip("codex-selection-reply", "Reply to selection")
                 .debug_selector(|| "codex-selection-reply".into())
-                .absolute()
-                .left(left - pane.left())
-                .top(top - pane.top())
                 .bg(c::SURFACE_RAISED())
                 .border_1()
                 .border_color(c::BORDER_SOFT())
@@ -234,16 +236,6 @@ impl CodexView {
                 )
                 .tab_index(0)
                 .focus_visible(|style| style.bg(c::BG_HOVER()))
-                .child(
-                    gpui::canvas(
-                        move |bounds, window, cx| {
-                            window.set_text_selection_action_bounds(action_owner, Some(bounds), cx);
-                        },
-                        |_, (), _, _| {},
-                    )
-                    .absolute()
-                    .size_full(),
-                )
                 .child(crate::icons::icon("reply", ICON_MD, c::FG()))
                 .on_key_down(
                     cx.listener(move |this, event: &gpui::KeyDownEvent, window, cx| {
@@ -256,7 +248,46 @@ impl CodexView {
                 .on_click(cx.listener(move |this, _, window, cx| {
                     this.attach_selection(&snapshot, window, cx);
                     cx.stop_propagation();
-                }))
+                }));
+        let copy =
+            header_control_with_label_tooltip("codex-selection-copy-markdown", "Copy as Markdown")
+                .debug_selector(|| "codex-selection-copy-markdown".into())
+                .bg(c::SURFACE_RAISED())
+                .border_1()
+                .border_color(c::BORDER_SOFT())
+                .track_focus(&copy_focus)
+                .tab_index(0)
+                .focus_visible(|style| style.bg(c::BG_HOVER()))
+                .child(crate::icons::icon("copy", ICON_MD, c::FG()))
+                .on_key_down(move |event: &gpui::KeyDownEvent, window, cx| {
+                    if action_key(event) {
+                        copy_markdown(window, cx);
+                        cx.stop_propagation();
+                    }
+                })
+                .on_click(move |_, window, cx| {
+                    copy_markdown(window, cx);
+                    cx.stop_propagation();
+                });
+        Some(
+            div()
+                .absolute()
+                .left(left - pane.left())
+                .top(top - pane.top())
+                .flex()
+                .gap(rpx(SPACE_SM))
+                .child(
+                    gpui::canvas(
+                        move |bounds, window, cx| {
+                            window.set_text_selection_action_bounds(action_owner, Some(bounds), cx);
+                        },
+                        |_, (), _, _| {},
+                    )
+                    .absolute()
+                    .size_full(),
+                )
+                .child(reply)
+                .child(copy)
                 .into_any_element(),
         )
     }

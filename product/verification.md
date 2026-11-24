@@ -1,3 +1,17 @@
+## Formatted transcript copy
+
+Linux X11 native windows with Codex and Claude transcript fixtures copied a
+drag selection from inside a link through a quoted list. A separate clipboard
+reader confirmed the selected link destination, list, quote, inline code and
+bold text in HTML, the rendered plain-text fallback, and Markdown from the
+alternate shortcut. GPUI fixtures also exercised the selection button and
+confirmed that using it preserves the highlight. The production clipboard
+writer published both HTML and plain text to a separate process on an
+isolated Sway Wayland compositor.
+
+Live Codex and Claude provider sessions, Wayland window interaction, and
+macOS and Windows clipboard behavior were untested.
+
 ## Dashboard Activity heading colors
 
 Linux dark and light desktop captures showed Needs you, Review and Working

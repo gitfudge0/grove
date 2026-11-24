@@ -297,15 +297,6 @@ impl Element for TextView {
                 this.size_full().vertical_scrollbar(&list_state)
             })
             .relative()
-            .on_action(move |_: &crate::input::Copy, window, cx| {
-                use crate::WindowExt as _;
-                let text = window.selected_text(cx);
-                if text.trim().is_empty() {
-                    cx.propagate();
-                    return;
-                }
-                cx.write_to_clipboard(gpui::ClipboardItem::new_string(text));
-            })
             .on_action(move |_: &crate::input::Escape, window, cx| {
                 use crate::WindowExt as _;
                 if window.selected_text(cx).is_empty() {

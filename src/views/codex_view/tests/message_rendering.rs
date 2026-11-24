@@ -630,6 +630,96 @@ fn native_markdown_drag_selects_and_copies_live_response(cx: &mut gpui::TestAppC
 }
 
 #[gpui::test]
+fn transcript_selection_copies_rich_text_and_markdown_for_both_providers(
+    cx: &mut gpui::TestAppContext,
+) {
+    thread_local! {
+        static RICH: std::cell::RefCell<Option<(String, String)>> = const { std::cell::RefCell::new(None) };
+    }
+    const SOURCE: &str = "> - [a link](https://example.com) and `make`\n\nOutside the selection";
+    const MARKDOWN: &str = "> - [a link](https://example.com) and `make`";
+
+    for provider in [codex::Provider::Codex, codex::Provider::Claude] {
+        let (_view, cx, _actions, updates) = fixture(cx);
+        cx.update(|_, cx| {
+            gpui_component::text::set_rich_clipboard_writer(cx, |html, text| {
+                RICH.with_borrow_mut(|captured| *captured = Some((html.into(), text.into())));
+                true
+            });
+        });
+        let mut response = snapshot();
+        response.saved.provider = provider;
+        response.saved.items.push(serde_json::json!({
+            "type": "agentMessage", "id": "formatted-answer", "text": SOURCE, "groveCompleted": true
+        }));
+        updates.send(response).unwrap();
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(40));
+        draw(cx);
+        let body = cx.debug_bounds("codex-message-body-0").unwrap();
+        let top_line = body.top() + gpui::px(8.);
+        let start = gpui::point(body.left() + gpui::px(1.), top_line);
+        let end = gpui::point(body.right() - gpui::px(1.), top_line);
+        cx.simulate_mouse_down(start, gpui::MouseButton::Left, gpui::Modifiers::default());
+        cx.simulate_mouse_move(
+            gpui::point(body.left() + gpui::px(55.), top_line),
+            Some(gpui::MouseButton::Left),
+            gpui::Modifiers::default(),
+        );
+        cx.simulate_mouse_move(
+            end,
+            Some(gpui::MouseButton::Left),
+            gpui::Modifiers::default(),
+        );
+        cx.simulate_mouse_up(end, gpui::MouseButton::Left, gpui::Modifiers::default());
+        draw(cx);
+
+        let selected = cx.update(gpui_component::WindowExt::selected_text);
+        assert_eq!(selected.trim(), "a link and make", "{provider:?}");
+        #[cfg(target_os = "macos")]
+        cx.simulate_keystrokes("cmd-c");
+        #[cfg(not(target_os = "macos"))]
+        cx.simulate_keystrokes("ctrl-c");
+        let (html, plain) = RICH.with_borrow_mut(Option::take).unwrap();
+        assert_eq!(plain, selected);
+        assert!(
+            html.contains("<blockquote>") && html.contains("<ul>"),
+            "{html}"
+        );
+        assert!(
+            html.contains("<a href=\"https://example.com\">a link</a>"),
+            "{html}"
+        );
+        assert!(html.contains("<code>make</code>"), "{html}");
+        assert!(!html.contains("Outside the selection"), "{html}");
+
+        #[cfg(target_os = "macos")]
+        cx.simulate_keystrokes("cmd-shift-c");
+        #[cfg(not(target_os = "macos"))]
+        cx.simulate_keystrokes("ctrl-shift-c");
+        assert_eq!(
+            cx.update(|_, cx| cx.read_from_clipboard().and_then(|clip| clip.text()))
+                .as_deref(),
+            Some(MARKDOWN)
+        );
+
+        // Overwrite the test clipboard so the mouse path proves that it copied.
+        cx.update(|_, cx| cx.write_to_clipboard(gpui::ClipboardItem::new_string("old".into())));
+        let copy = cx.debug_bounds("codex-selection-copy-markdown").unwrap();
+        cx.simulate_click(copy.center(), gpui::Modifiers::default());
+        assert_eq!(
+            cx.update(|_, cx| cx.read_from_clipboard().and_then(|clip| clip.text()))
+                .as_deref(),
+            Some(MARKDOWN)
+        );
+        assert_eq!(
+            cx.update(gpui_component::WindowExt::selected_text),
+            selected
+        );
+    }
+}
+
+#[gpui::test]
 fn response_footer_copies_collapsed_prose_and_survives_streaming(cx: &mut gpui::TestAppContext) {
     let (view, cx, _, updates) = fixture(cx);
     let mut state = snapshot();

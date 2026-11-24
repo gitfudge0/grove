@@ -397,7 +397,7 @@ pub(crate) struct InlineNode {
     pub(crate) image: Option<ImageNode>,
     pub(crate) marks: Vec<(Range<usize>, TextMark)>,
 
-    state: Arc<Mutex<InlineState>>,
+    pub(super) state: Arc<Mutex<InlineState>>,
 }
 
 impl PartialEq for InlineNode {

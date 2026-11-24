@@ -6,14 +6,16 @@ use crate::{
     native_menu::FallbackMenuOverlay,
     notification::{Notification, NotificationList},
     sheet::Sheet,
-    text::{SelectionScope, TextSelectionController, TextViewState, WindowTextSelection},
+    text::{
+        CopyAsMarkdown, SelectionScope, TextSelectionController, TextViewState, WindowTextSelection,
+    },
     tooltip::TooltipOverlay,
     window_border,
 };
 use gpui::{
-    Anchor, AnyView, App, AppContext, Bounds, ClipboardItem, Context, DefiniteLength, ElementId,
-    Entity, EntityId, FocusHandle, Hitbox, InteractiveElement, IntoElement, ParentElement as _,
-    Pixels, Render, StyleRefinement, Styled, WeakEntity, WeakFocusHandle, Window, actions, div,
+    Anchor, AnyView, App, AppContext, Bounds, Context, DefiniteLength, ElementId, Entity, EntityId,
+    FocusHandle, Hitbox, InteractiveElement, IntoElement, ParentElement as _, Pixels, Render,
+    StyleRefinement, Styled, WeakEntity, WeakFocusHandle, Window, actions, div,
     prelude::FluentBuilder as _,
 };
 use std::{any::TypeId, collections::HashMap, rc::Rc};
@@ -511,12 +513,20 @@ impl Root {
     }
 
     fn on_action_copy(&mut self, _: &Copy, _: &mut Window, cx: &mut Context<Self>) {
-        let text = self.window_selected_text(cx);
-        if text.trim().is_empty() {
+        if !self.copy_text_selection(false, cx) {
             cx.propagate();
-            return;
         }
-        cx.write_to_clipboard(ClipboardItem::new_string(text));
+    }
+
+    fn on_action_copy_markdown(
+        &mut self,
+        _: &CopyAsMarkdown,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.copy_text_selection(true, cx) {
+            cx.propagate();
+        }
     }
 }
 
@@ -544,6 +554,7 @@ impl Render for Root {
             .on_action(cx.listener(Self::on_action_tab))
             .on_action(cx.listener(Self::on_action_tab_prev))
             .on_action(cx.listener(Self::on_action_copy))
+            .on_action(cx.listener(Self::on_action_copy_markdown))
             .relative()
             .size_full()
             .font_family(cx.theme().font_family.clone())

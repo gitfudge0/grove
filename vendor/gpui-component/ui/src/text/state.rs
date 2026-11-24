@@ -30,8 +30,12 @@ pub(crate) fn init(cx: &mut App) {
         KeyBinding::new("escape", input::Escape, Some(CONTEXT)),
         #[cfg(target_os = "macos")]
         KeyBinding::new("cmd-c", input::Copy, Some(CONTEXT)),
+        #[cfg(target_os = "macos")]
+        KeyBinding::new("cmd-shift-c", super::CopyAsMarkdown, Some(CONTEXT)),
         #[cfg(not(target_os = "macos"))]
         KeyBinding::new("ctrl-c", input::Copy, Some(CONTEXT)),
+        #[cfg(not(target_os = "macos"))]
+        KeyBinding::new("ctrl-shift-c", super::CopyAsMarkdown, Some(CONTEXT)),
         #[cfg(target_os = "macos")]
         KeyBinding::new("cmd-a", input::SelectAll, Some(CONTEXT)),
         #[cfg(not(target_os = "macos"))]
@@ -276,6 +280,19 @@ impl TextViewState {
             let text = self.text.clone();
             self.increment_update(&text, false, cx);
         }
+    }
+
+    pub(super) fn selected_markdown(&self) -> Option<String> {
+        if self.format != TextViewFormat::Markdown {
+            return None;
+        }
+        let content = &self.parsed_content;
+        let markdown = super::selection_markdown::selected_markdown(
+            &content.document.blocks,
+            self.select_all,
+            &content.node_cx,
+        );
+        (!markdown.is_empty()).then_some(markdown)
     }
 
     pub fn selected_text(&self) -> String {

@@ -226,6 +226,7 @@ pub fn boot(cx: &mut gpui::App) {
     // The component Root supplies native text selection. Copy bindings are scoped
     // to TextView/Input so terminal Ctrl+C still reaches the PTY.
     gpui_component::init(cx);
+    gpui_component::text::set_rich_clipboard_writer(cx, crate::platform::clipboard::copy_html);
     gpui_component::kbd::Kbd::set_content_renderer(
         |stroke| {
             use gpui::IntoElement as _;

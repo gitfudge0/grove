@@ -650,7 +650,7 @@ impl CodexView {
             .retain(|key, _| rendered_header_keys.contains(key));
         let minimap =
             self.render_message_minimap(transcript.prepared.clone(), &minimap_anchors, window, cx);
-        let selection_overlay = self.render_selection_reply(state, window, cx);
+        let selection_overlay = self.render_selection_actions(state, window, cx);
         let transcript_bounds = self.transcript_bounds.clone();
         let bounds_owner = cx.entity().downgrade();
         let transcript = div()
