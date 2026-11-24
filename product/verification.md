@@ -620,6 +620,22 @@ These probes verify installed CLI responses, not native-button-to-provider
 behavior. Real browser callbacks, login/logout, provider installation/update
 mutation, and macOS/Windows native rendering remain untested.
 
+## Provider details cards and maintenance recovery
+
+The Linux XWayland QA fixture compared the prior and revised Providers
+screens at 900px with default text in light and dark themes and at 500px
+with enlarged text in dark. The revised native layout was inspected against
+the approved exploratory mock for aligned account and installation rows,
+row-end chevrons, action wrapping, sign-out confirmation, browser handoff,
+provider-code entry and external credentials. This was a visual comparison
+across native and browser rendering, with no pixel-equivalence claim.
+
+Twenty-five Settings, four updater entity, 33 UI conformance, 18 core
+updater and 19 core connections tests passed. Codex and Claude Code account
+and maintenance states were exercised with fixtures. Live browser callbacks,
+credential changes, installer mutations, and macOS and Windows rendering
+remain untested.
+
 ## Ten user/agent transcript turns (November 2026)
 
 The default history window and reveal batch are ten turns, counting each user

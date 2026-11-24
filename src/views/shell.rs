@@ -382,6 +382,61 @@ impl Shell {
         }
     }
 
+    fn provider_account_notice(
+        &self,
+        agent: Agent,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let name = if agent == Agent::Claude {
+            "Claude Code"
+        } else {
+            "Codex"
+        };
+        div()
+            .id("provider-account-notice")
+            .flex()
+            .flex_wrap()
+            .items_center()
+            .gap(rpx(SPACE_MD))
+            .px(rpx(SPACE_LG))
+            .py(rpx(SPACE_SM))
+            .bg(c::BG_STRIP())
+            .border_t_1()
+            .border_color(c::BORDER())
+            .child(super::status::label(
+                "provider-account-notice-status",
+                super::status::StatusKind::Working,
+                format!("{name} account operation in progress"),
+                ICON_SM,
+                cx,
+            ))
+            .child(
+                form_action(
+                    "resume-provider-account",
+                    "Resume account operation",
+                    false,
+                    window,
+                    cx,
+                )
+                .icon(gpui_component::Icon::default().path("icons/chev-right.svg"))
+                .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
+                    if matches!(event.keystroke.key.as_str(), "enter" | "space") && !event.is_held {
+                        window.prevent_default();
+                        cx.stop_propagation();
+                        this.settings.update(cx, |settings, cx| {
+                            settings.resume_provider_account(window, cx);
+                        });
+                    }
+                }))
+                .on_click(cx.listener(|this, _, window, cx| {
+                    this.settings.update(cx, |settings, cx| {
+                        settings.resume_provider_account(window, cx);
+                    });
+                })),
+            )
+    }
+
     fn provider_update_notice(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
         let updates = self.runtime.read(cx).provider_updates.clone();
         let text = updates.read(cx).notice().unwrap_or_default();
@@ -1458,6 +1513,12 @@ impl Render for Shell {
             }))
             .child(div().flex_1().min_h_0().child(self.sidebar.clone()))
             .child(self.window_header(window, cx))
+            .when_some(
+                (!self.settings.read(cx).is_open())
+                    .then(|| self.settings.read(cx).active_provider_account(cx))
+                    .flatten(),
+                |root, agent| root.child(self.provider_account_notice(agent, window, cx)),
+            )
             .when(
                 self.runtime
                     .read(cx)

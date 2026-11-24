@@ -320,7 +320,7 @@ fn provider_account_refresh_and_confirmation_are_keyboard_accessible(
             .read(cx)
             .fixture_confirming());
     });
-    cx.simulate_keystrokes("tab space");
+    cx.simulate_keystrokes("space");
     draw(cx);
     cx.update(|_, cx| {
         assert!(!panel.read(cx).provider_accounts[0]
@@ -569,6 +569,7 @@ fn providers_review_linux_capture() {
                         "collapsed",
                         "codex",
                         "claude",
+                        "browser",
                         "waiting",
                         "confirm",
                         "external",
@@ -591,7 +592,8 @@ fn providers_review_linux_capture() {
                                 };
                                 let index =
                                     usize::from(panel.managed_provider == Some(Agent::Claude));
-                                if ["waiting", "confirm", "external"].contains(&scenario) {
+                                if ["browser", "waiting", "confirm", "external"].contains(&scenario)
+                                {
                                     panel.provider_accounts[index].update(cx, |account, cx| {
                                         account.fixture(scenario, window, cx);
                                     });

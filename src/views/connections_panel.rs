@@ -20,6 +20,18 @@ use std::time::Duration;
 pub struct ConnectionChanged(pub Provider);
 impl gpui::EventEmitter<ConnectionChanged> for ConnectionsPanel {}
 
+fn requests_account_code(snapshot: &grove_core::connections::JobSnapshot) -> bool {
+    if snapshot.phase != JobPhase::Waiting {
+        return false;
+    }
+    let output = grove_core::connections::strip_ansi(&snapshot.output).to_ascii_lowercase();
+    // Match an input prompt, not instructions for entering a device code in a browser.
+    output.contains("paste code here")
+        || output.contains("paste the code here:")
+        || output.contains("paste the redirect url here:")
+        || output.contains("enter the authorization code here:")
+}
+
 pub struct ConnectionsPanel {
     runtime: Entity<Runtime>,
     provider: Provider,
@@ -36,10 +48,13 @@ pub struct ConnectionsPanel {
     job_action: Option<ConnectionAction>,
     job_snapshot: Option<grove_core::connections::JobSnapshot>,
     auth_input: Option<Entity<InputState>>,
+    auth_input_error: Option<String>,
     confirmation: Option<ConnectionAction>,
     message: Option<(StatusKind, String)>,
     contexts_open: bool,
     account_focus: gpui::FocusHandle,
+    sign_out_focus: gpui::FocusHandle,
+    confirm_cancel_focus: gpui::FocusHandle,
     auth_focus: [gpui::FocusHandle; 4],
     retired_auth_focus: Option<Vec<gpui::FocusHandle>>,
     auth_source_focus: Option<gpui::FocusHandle>,
@@ -68,10 +83,13 @@ impl ConnectionsPanel {
             job_action: None,
             job_snapshot: None,
             auth_input: None,
+            auth_input_error: None,
             confirmation: None,
             message: None,
             contexts_open: false,
             account_focus: cx.focus_handle(),
+            sign_out_focus: cx.focus_handle(),
+            confirm_cancel_focus: cx.focus_handle(),
             auth_focus: [
                 cx.focus_handle(),
                 cx.focus_handle(),
@@ -101,9 +119,21 @@ impl ConnectionsPanel {
         panel
     }
     pub(super) fn busy(&self) -> bool {
-        self.job.is_some() || self.checking || self.checking_servers
+        self.account_in_progress() || self.checking || self.checking_servers
+    }
+    pub(super) fn account_in_progress(&self) -> bool {
+        self.job.is_some() || self.job_snapshot.is_some()
     }
     pub(super) fn summary(&self) -> (StatusKind, &'static str) {
+        if self.account_in_progress() {
+            let phase = self.job_snapshot.as_ref().map(|snapshot| snapshot.phase);
+            let label = match (&self.job_action, phase) {
+                (_, Some(JobPhase::Verifying)) => "Verifying account…",
+                (Some(ConnectionAction::Logout), _) => "Signing out…",
+                _ => "Signing in…",
+            };
+            return (StatusKind::Working, label);
+        }
         if self.checking {
             return (StatusKind::Working, "Checking sign-in");
         }
@@ -116,7 +146,7 @@ impl ConnectionsPanel {
         }
     }
     pub(super) fn can_login(&self) -> bool {
-        matches!(&self.account, Some(Ok(AccountStatus::SignedOut)))
+        !self.account_in_progress() && matches!(&self.account, Some(Ok(AccountStatus::SignedOut)))
     }
     pub(super) fn login(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.start(ConnectionAction::Login, window, cx);
@@ -236,6 +266,9 @@ impl ConnectionsPanel {
         if self.active_sessions(cx) {
             self.message=Some((StatusKind::Warning,"Wait for this provider’s active turns or terminal sessions to finish before changing shared credentials.".into()));
             self.confirmation = None;
+            if self.account_only && matches!(action, ConnectionAction::Logout) {
+                self.account_focus.focus(window, cx);
+            }
             cx.notify();
             return;
         }
@@ -251,12 +284,16 @@ impl ConnectionsPanel {
                 self.job = Some(job);
                 self.job_action = Some(job_action);
                 self.job_snapshot = None;
+                self.auth_input_error = None;
                 self.message = None;
                 self.confirmation = None;
                 self.auth_input = Some(cx.new(|cx| {
                     InputState::new(window, cx)
                         .placeholder("Provider code or redirect URL, only when requested")
                 }));
+                if self.account_only && matches!(self.job_action, Some(ConnectionAction::Login)) {
+                    self.auth_focus[0].focus(window, cx);
+                }
             }
             Err(e) => self.message = Some((StatusKind::Failed, e)),
         }
@@ -272,6 +309,7 @@ impl ConnectionsPanel {
         }
         self.retired_auth_focus = Some(handles);
         self.auth_input = None;
+        self.auth_input_error = None;
         self.job_snapshot = None;
     }
     #[cfg(test)]
@@ -327,7 +365,13 @@ impl ConnectionsPanel {
             }
             match snapshot.result {
                 Some(Ok(JobResult::Account(account))) => {
-                    let label = if account == AccountStatus::SignedOut {
+                    let label = if self.account_only {
+                        if account == AccountStatus::SignedOut {
+                            "Shared CLI login cleared"
+                        } else {
+                            "Account verified"
+                        }
+                    } else if account == AccountStatus::SignedOut {
                         "Signed out"
                     } else {
                         "Signed in"
@@ -437,6 +481,310 @@ impl ConnectionsPanel {
         self.confirmation = None;
         cx.notify();
     }
+    fn confirm_account_sign_out(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.confirmation = Some(ConnectionAction::Logout);
+        self.message = None;
+        self.confirm_cancel_focus.focus(window, cx);
+        cx.notify();
+    }
+    fn cancel_account_sign_out(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.confirmation = None;
+        self.sign_out_focus.focus(window, cx);
+        cx.notify();
+    }
+    fn submit_account_code(&mut self, cx: &mut Context<Self>) {
+        let (Some(job), Some(input)) = (&self.job, &self.auth_input) else {
+            return;
+        };
+        if !self
+            .job_snapshot
+            .as_ref()
+            .is_some_and(requests_account_code)
+        {
+            return;
+        }
+        let value = input.read(cx).value();
+        self.auth_input_error = if value.trim().is_empty() {
+            Some("Enter the code or redirect URL requested by the provider.".into())
+        } else {
+            job.respond(value.to_string()).err()
+        };
+        cx.notify();
+    }
+    fn render_provider_account(&self, window: &Window, cx: &mut Context<Self>) -> gpui::Div {
+        let body = div()
+            .w_full()
+            .min_w_0()
+            .flex()
+            .flex_col()
+            .gap(rpx(SPACE_SM));
+        if self.account_in_progress() {
+            return body.child(self.render_provider_auth(window, cx));
+        }
+        let busy = self.busy();
+        let (value, note, can_logout) = match self.account.as_ref() {
+            _ if self.checking => ("Checking account…".into(), None, false),
+            Some(Ok(AccountStatus::Connected { identity, method })) => (
+                identity.as_deref().unwrap_or(method).to_owned(),
+                Some(if identity.is_some() {
+                    format!("{method} · Shared CLI login")
+                } else {
+                    "Shared CLI login".into()
+                }),
+                !self
+                    .context
+                    .as_ref()
+                    .is_ok_and(ConnectionContext::externally_managed),
+            ),
+            Some(Ok(AccountStatus::SignedOut)) => ("Uses the shared CLI login".into(), None, false),
+            Some(Ok(AccountStatus::External)) => {
+                ("Managed in the CLI environment".into(), None, false)
+            }
+            Some(Err(error)) => (
+                "Account status unavailable".into(),
+                Some(error.clone()),
+                false,
+            ),
+            None => ("Sign-in not checked".into(), None, false),
+        };
+        let label = div()
+            .w(rpx(FIELD_LABEL_COL_W))
+            .flex_shrink_0()
+            .font_weight(FontWeight::MEDIUM)
+            .child("CLI account");
+        let mut values = div()
+            .flex_1()
+            .min_w(rpx(FIELD_LABEL_COL_W))
+            .child(value)
+            .when_some(note, |cell, note| {
+                cell.child(
+                    div()
+                        .text_size(rpx(TEXT_SMALL))
+                        .text_color(c::FG_DIM())
+                        .child(note),
+                )
+            });
+        let mut actions = components::form_actions()
+            .w_auto()
+            .max_w_full()
+            .flex_shrink_1()
+            .id("provider-account-actions")
+            .debug_selector(|| "provider-account-actions".into());
+        if self.confirmation.is_some() {
+            values = div().flex_1().min_w(rpx(FIELD_LABEL_COL_W)).child(
+                div()
+                    .id("connections-confirmation")
+                    .debug_selector(|| "connections-confirmation".into())
+                    .child(
+                        div()
+                            .font_weight(FontWeight::MEDIUM)
+                            .child(format!("Sign out of {}?", self.provider.label())),
+                    )
+                    .child(
+                        div()
+                            .text_size(rpx(TEXT_SMALL))
+                            .text_color(c::FG_DIM())
+                            .child(
+                                "Clears the shared CLI login for Grove and other clients using it.",
+                            ),
+                    ),
+            );
+            actions = actions
+                .child(
+                    Self::button(
+                        "connections-confirm-cancel",
+                        "Cancel",
+                        "close",
+                        !busy,
+                        false,
+                        window,
+                        cx,
+                    )
+                    .with_focus_handle(self.confirm_cancel_focus.clone())
+                    .on_click(
+                        cx.listener(|this, _, window, cx| this.cancel_account_sign_out(window, cx)),
+                    ),
+                )
+                .child(
+                    Self::button(
+                        "connections-confirm",
+                        "Confirm sign-out",
+                        "check",
+                        !busy,
+                        false,
+                        window,
+                        cx,
+                    )
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.start(ConnectionAction::Logout, window, cx);
+                    })),
+                );
+        } else {
+            actions = actions.child(
+                Self::button(
+                    "connections-refresh",
+                    "Refresh",
+                    "refresh",
+                    !busy,
+                    false,
+                    window,
+                    cx,
+                )
+                .with_focus_handle(self.account_focus.clone())
+                .on_click(cx.listener(|this, _, _, cx| this.refresh(false, cx))),
+            );
+            if can_logout {
+                actions = actions.child(
+                    Self::button(
+                        "connections-logout",
+                        "Sign out",
+                        "arrow-right",
+                        !busy,
+                        false,
+                        window,
+                        cx,
+                    )
+                    .with_focus_handle(self.sign_out_focus.clone())
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.confirm_account_sign_out(window, cx);
+                    })),
+                );
+            }
+        }
+        body.child(
+            div()
+                .w_full()
+                .min_w_0()
+                .flex()
+                .flex_wrap()
+                .items_start()
+                .gap(rpx(SPACE_LG))
+                .child(label)
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w(rpx(FIELD_LABEL_COL_W))
+                        .flex()
+                        .flex_wrap()
+                        .items_start()
+                        .gap(rpx(SPACE_LG))
+                        .child(values)
+                        .child(actions),
+                ),
+        )
+        .when_some(self.message.as_ref(), |body, (kind, message)| {
+            body.child(status::label(
+                "connections-result",
+                *kind,
+                message.clone(),
+                ICON_SM,
+                cx,
+            ))
+        })
+    }
+    fn render_provider_auth(&self, window: &Window, cx: &mut Context<Self>) -> gpui::Div {
+        let snapshot = self.job_snapshot.as_ref();
+        let code_requested = snapshot.is_some_and(requests_account_code);
+        let title = match (self.job_action.as_ref(), snapshot.map(|state| state.phase)) {
+            (_, Some(JobPhase::Verifying)) => "Verifying account",
+            (Some(ConnectionAction::Logout), _) => "Clearing the shared CLI login",
+            _ if code_requested => "Enter the provider code",
+            (_, Some(JobPhase::Waiting)) => "Continue in your browser",
+            _ => "Starting sign-in",
+        };
+        let mut body = div()
+            .w_full()
+            .min_w_0()
+            .flex()
+            .flex_col()
+            .gap(rpx(SPACE_LG))
+            .child(div().font_weight(FontWeight::MEDIUM).child(title));
+        if let Some(input) = self.auth_input.as_ref().filter(|_| code_requested) {
+            body = body
+                .child(components::form_field(
+                    "connections-auth-input",
+                    "Provider code or redirect URL",
+                    input,
+                    self.auth_input_error.as_deref(),
+                    window,
+                    cx,
+                ))
+                .child(
+                    components::form_actions().child(
+                        Self::button(
+                            "connections-auth-respond",
+                            "Send to provider",
+                            "check",
+                            true,
+                            true,
+                            window,
+                            cx,
+                        )
+                        .with_focus_handle(self.auth_focus[2].clone())
+                        .on_click(cx.listener(|this, _, _, cx| this.submit_account_code(cx))),
+                    ),
+                );
+        }
+        let mut actions = components::form_actions();
+        if let Some(url) = snapshot.and_then(|snapshot| snapshot.authorization_url.clone()) {
+            let copy_url = url.clone();
+            actions = actions
+                .child(
+                    Self::button(
+                        "connections-open-browser",
+                        "Open browser",
+                        "external-link",
+                        true,
+                        !code_requested,
+                        window,
+                        cx,
+                    )
+                    .with_focus_handle(self.auth_focus[1].clone())
+                    .on_click(move |_, _, cx| cx.open_url(&url)),
+                )
+                .child(
+                    Self::button(
+                        "connections-copy-link",
+                        "Copy sign-in link",
+                        "copy",
+                        true,
+                        false,
+                        window,
+                        cx,
+                    )
+                    .with_focus_handle(self.auth_focus[3].clone())
+                    .on_click(move |_, _, cx| {
+                        cx.write_to_clipboard(gpui::ClipboardItem::new_string(copy_url.clone()));
+                    }),
+                );
+        }
+        if !matches!(self.job_action, Some(ConnectionAction::Logout)) {
+            actions = actions.child(
+                Self::button(
+                    "connections-cancel",
+                    "Cancel",
+                    "close",
+                    true,
+                    false,
+                    window,
+                    cx,
+                )
+                .with_focus_handle(self.auth_focus[0].clone())
+                .on_click(cx.listener(|this, _, _, cx| {
+                    if let Some(job) = &this.job {
+                        job.cancel();
+                    }
+                    cx.notify();
+                })),
+            );
+        }
+        body.child(actions).child(
+            div()
+                .text_size(rpx(TEXT_SMALL))
+                .text_color(c::FG_DIM())
+                .child("This operation continues outside Settings."),
+        )
+    }
     fn button(
         id: impl Into<gpui::ElementId>,
         label: &'static str,
@@ -455,6 +803,17 @@ impl ConnectionsPanel {
             .disabled(!enabled)
             .on_key_down(
                 cx.listener(move |this, event: &gpui::KeyDownEvent, window, cx| {
+                    if this.account_only
+                        && this.confirmation.is_some()
+                        && matches!(label, "Cancel" | "Confirm sign-out")
+                        && event.keystroke.key == "escape"
+                        && !event.is_held
+                    {
+                        window.prevent_default();
+                        cx.stop_propagation();
+                        this.cancel_account_sign_out(window, cx);
+                        return;
+                    }
                     if !this.account_only
                         || !enabled
                         || event.is_held
@@ -484,18 +843,14 @@ impl ConnectionsPanel {
                     match label {
                         "Refresh" => this.refresh(false, cx),
                         "Sign in" => this.start(ConnectionAction::Login, window, cx),
-                        "Sign out" => {
-                            this.confirmation = Some(ConnectionAction::Logout);
-                            cx.notify();
-                        }
+                        "Sign out" => this.confirm_account_sign_out(window, cx),
                         "Cancel" => {
                             if let Some(job) = &this.job {
                                 job.cancel();
+                                cx.notify();
                             } else {
-                                this.confirmation = None;
-                                this.account_focus.focus(window, cx);
+                                this.cancel_account_sign_out(window, cx);
                             }
-                            cx.notify();
                         }
                         "Confirm sign-out" => {
                             if let Some(action) = this.confirmation.clone() {
@@ -520,15 +875,7 @@ impl ConnectionsPanel {
                                 cx.open_url(url);
                             }
                         }
-                        "Send to provider" => {
-                            if let (Some(job), Some(input)) = (&this.job, &this.auth_input) {
-                                let value = input.read(cx).value().to_string();
-                                if let Err(error) = job.respond(value) {
-                                    this.message = Some((StatusKind::Warning, error));
-                                }
-                                input.update(cx, |input, cx| input.set_value("", window, cx));
-                            }
-                        }
+                        "Send to provider" => this.submit_account_code(cx),
                         _ => {}
                     }
                 }),
@@ -567,6 +914,7 @@ impl ConnectionsPanel {
         self.confirmation = None;
         self.job_snapshot = None;
         self.auth_input = None;
+        self.auth_input_error = None;
         self.checking = false;
         self.account = Some(Ok(AccountStatus::Connected {
             identity: Some("alex@example.test".into()),
@@ -601,12 +949,14 @@ impl ConnectionsPanel {
         if scenario == "confirm" {
             self.confirmation = Some(ConnectionAction::Logout);
         }
-        if scenario == "waiting" {
+        if matches!(scenario, "waiting" | "browser") {
             self.job_snapshot = Some(grove_core::connections::JobSnapshot {
                 phase: JobPhase::Waiting,
-                output:
-                    "Finish sign-in in your browser.\nOr paste the redirect URL here when prompted."
-                        .into(),
+                output: if scenario == "waiting" {
+                    "Finish sign-in in your browser.\nPaste the redirect URL here:".into()
+                } else {
+                    "Finish sign-in in your browser.".into()
+                },
                 authorization_url: Some("https://identity.example.test/authorize".into()),
                 result: None,
             });
@@ -626,6 +976,9 @@ impl Render for ConnectionsPanel {
             if handles.iter().any(|handle| handle.is_focused(window)) {
                 self.account_focus.focus(window, cx);
             }
+        }
+        if self.account_only {
+            return self.render_provider_account(window, cx).into_any_element();
         }
         let busy = self.job.is_some() || self.checking || self.checking_servers;
         let mut body = div()
@@ -814,35 +1167,7 @@ impl Render for ConnectionsPanel {
                 })),
             );
         }
-        body = body.child(if self.account_only {
-            div()
-                .w_full()
-                .min_w_0()
-                .flex()
-                .flex_wrap()
-                .items_center()
-                .gap(rpx(SPACE_LG))
-                .border_t_1()
-                .border_color(c::BORDER_SOFT())
-                .pt(rpx(SPACE_2XL))
-                .child(
-                    account
-                        .border_t_0()
-                        .pt_0()
-                        .flex_1()
-                        .min_w(rpx(FIELD_LABEL_COL_W)),
-                )
-                .child(
-                    actions
-                        .w_auto()
-                        .max_w_full()
-                        .flex_shrink_1()
-                        .id("provider-account-actions")
-                        .debug_selector(|| "provider-account-actions".into()),
-                )
-        } else {
-            account.child(actions)
-        });
+        body = body.child(account.child(actions));
         if let Some(snapshot) = &self.job_snapshot {
             let title = match snapshot.phase {
                 JobPhase::Starting => "Starting provider sign-in",
@@ -1011,9 +1336,6 @@ impl Render for ConnectionsPanel {
                     ),
             );
         }
-        if self.account_only {
-            return body;
-        }
         let mut servers=div().flex().flex_col().gap(rpx(SPACE_LG)).border_t_1().border_color(c::BORDER_SOFT()).pt(rpx(SPACE_3XL)).child(div().font_weight(FontWeight::MEDIUM).child("Configured MCP servers")).child(div().text_size(rpx(TEXT_SMALL)).text_color(c::FG_DIM()).child("Check the selected provider’s existing servers. This may start approved server processes; it does not approve project servers or edit configuration.")).child(components::form_actions().child(Self::button("connections-servers-refresh",if self.checking_servers{"Checking servers…"}else{"Check servers"},if self.checking_servers{"status-working"}else{"refresh"},!busy,false,window,cx).on_click(cx.listener(|this,_,_,cx|this.refresh(true,cx)))));
         match &self.servers {
             None => {}
@@ -1129,6 +1451,6 @@ impl Render for ConnectionsPanel {
             }
         }
         servers=servers.child(div().text_size(rpx(TEXT_SMALL)).text_color(c::FG_DIM()).child("After authorization, reconnect matching idle conversations explicitly. Their thread identity, draft and queued inputs stay intact; failed messages and tools are not resent.")).child(components::form_actions().child(Self::button("connections-reconnect","Reconnect conversations","refresh",!busy,false,window,cx).on_click(cx.listener(|this,_,_,cx|this.reconnect(cx)))));
-        body.child(servers)
+        body.child(servers).into_any_element()
     }
 }

@@ -57,11 +57,12 @@ impl ProviderStatus {
             .is_some_and(|(a, b)| b > a)
     }
     pub fn can_update(&self) -> bool {
-        match self.installer {
-            Installer::ClaudeNative => self.installed.as_deref().and_then(version).is_some(),
-            Installer::Npm { .. } => self.update_available(),
-            Installer::External { .. } => false,
-        }
+        self.error.is_none()
+            && match self.installer {
+                Installer::ClaudeNative => self.installed.as_deref().and_then(version).is_some(),
+                Installer::Npm { .. } => self.update_available(),
+                Installer::External { .. } => false,
+            }
     }
 }
 fn package(agent: Agent) -> Option<&'static str> {
@@ -308,11 +309,15 @@ pub fn latest(agent: Agent) -> Result<String, String> {
         .ok_or_else(|| "The provider registry returned an invalid version.".into())
 }
 pub fn check(agent: Agent) -> ProviderStatus {
-    let mut status = discover(agent);
-    if matches!(status.installer, Installer::ClaudeNative) {
+    complete_check(discover(agent))
+}
+
+/// Finish a release check using the already-observed local installation.
+pub fn complete_check(mut status: ProviderStatus) -> ProviderStatus {
+    if status.error.is_some() || matches!(status.installer, Installer::ClaudeNative) {
         return status;
     }
-    match latest(agent) {
+    match latest(status.agent) {
         Ok(v) => status.latest = Some(v),
         Err(e) => status.error = Some(format!("Could not check for updates: {e}")),
     }
@@ -334,6 +339,9 @@ fn update_with(
     mut latest_version: impl FnMut(Agent) -> Result<String, String>,
     mut execute: impl FnMut(Command) -> Result<String, String>,
 ) -> Result<ProviderStatus, String> {
+    if request.error.is_some() {
+        return Err("Check for updates successfully before updating.".into());
+    }
     // Never trust persisted installer details or a stale PATH resolution to authorize mutation.
     let fresh = discover_provider(request.agent);
     if fresh.executable != request.executable || fresh.installer != request.installer {
@@ -635,6 +643,20 @@ mod tests {
             |_| request.clone(),
             |_| Ok("3.0.0".into()),
             |_| panic!("changed target must not mutate")
+        )
+        .is_err());
+    }
+    #[test]
+    fn failed_check_with_last_known_release_cannot_start_an_update() {
+        let mut request = managed_status("1.0.0");
+        request.error = Some("Registry unavailable".into());
+        assert!(request.update_available());
+        assert!(!request.can_update());
+        assert!(update_with(
+            &request,
+            |_| panic!("failed check must stop before discovery"),
+            |_| panic!("failed check must stop before network"),
+            |_| panic!("failed check must not mutate")
         )
         .is_err());
     }

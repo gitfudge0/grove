@@ -1711,8 +1711,8 @@ impl SettingsPanel {
             Page::Settings => self.category.description(),
             Page::Themes => Some("Theme changes apply to the entire app."),
             Page::Shortcuts => Some("Commands for the current view"),
-            Page::Providers => Some("Accounts and version maintenance for your agents"),
-            Page::Changelog
+            Page::Providers
+            | Page::Changelog
             | Page::Connections
             | Page::Archived
             | Page::Project
@@ -1970,13 +1970,24 @@ impl Render for SettingsPanel {
                             .pb(rpx(SPACE_20))
                             .child(
                                 div()
-                                    .id("settings-page-title")
-                                    .debug_selector(|| "settings-page-title".into())
-                                    .text_size(rpx(title_size))
-                                    .line_height(rpx(title_size + SPACE_SM))
-                                    .font_weight(FontWeight::BOLD)
-                                    .text_color(c::FG())
-                                    .child(title),
+                                    .flex()
+                                    .items_center()
+                                    .justify_between()
+                                    .flex_wrap()
+                                    .gap(rpx(SPACE_LG))
+                                    .child(
+                                        div()
+                                            .id("settings-page-title")
+                                            .debug_selector(|| "settings-page-title".into())
+                                            .text_size(rpx(title_size))
+                                            .line_height(rpx(title_size + SPACE_SM))
+                                            .font_weight(FontWeight::BOLD)
+                                            .text_color(c::FG())
+                                            .child(title),
+                                    )
+                                    .when(self.page == Page::Providers, |heading| {
+                                        heading.child(self.check_all_providers_action(window, cx))
+                                    }),
                             )
                             .when_some(description, |body, description| {
                                 body.child(

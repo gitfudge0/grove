@@ -23,6 +23,23 @@ pub struct ProviderRow {
     pub last_success: Option<i64>,
     pub error: Option<String>,
 }
+impl ProviderRow {
+    pub fn check_error(&self) -> Option<&str> {
+        self.status.error.as_deref().filter(|_| !self.checking)
+    }
+
+    pub fn update_error(&self) -> Option<&str> {
+        self.error.as_deref().filter(|_| !self.checking)
+    }
+
+    pub fn latest_is_cached(&self) -> bool {
+        self.status.latest.is_some() && (self.checking || self.status.error.is_some())
+    }
+
+    pub fn can_update(&self) -> bool {
+        !self.checking && !self.updating && self.status.can_update()
+    }
+}
 #[derive(Default, Serialize, Deserialize)]
 struct Cache {
     latest: HashMap<String, (String, i64)>,
@@ -148,34 +165,42 @@ impl ProviderUpdates {
             .collect()
     }
     pub fn check(&mut self, cx: &mut Context<Self>) {
+        self.start_check(&PROVIDERS, cx);
+    }
+
+    pub fn check_provider(&mut self, agent: Agent, cx: &mut Context<Self>) {
+        if PROVIDERS.contains(&agent) {
+            self.start_check(std::slice::from_ref(&agent), cx);
+        }
+    }
+
+    fn start_check(&mut self, providers: &[Agent], cx: &mut Context<Self>) {
         if self.checking() || self.rows.iter().any(|r| r.updating) {
             return;
         }
-        self.last_attempt = Some(now());
-        for row in &mut self.rows {
+        if providers == PROVIDERS.as_slice() {
+            self.last_attempt = Some(now());
+        }
+        for row in self
+            .rows
+            .iter_mut()
+            .filter(|r| providers.contains(&r.status.agent))
+        {
             row.checking = true;
             row.updated = false;
             row.update_verified = false;
         }
         let (sender, mut receiver) = futures::channel::mpsc::unbounded();
-        let work = PROVIDERS
-            .into_iter()
+        let work = providers
+            .iter()
+            .copied()
             .map(|agent| {
                 let sender = sender.clone();
                 cx.background_spawn(async move {
-                    let mut status = provider_updates::discover(agent);
+                    let status = provider_updates::discover(agent);
                     let _ = sender.unbounded_send((status.clone(), true));
-                    match if matches!(status.installer, provider_updates::Installer::ClaudeNative) {
-                        Ok(None)
-                    } else {
-                        provider_updates::latest(agent).map(Some)
-                    } {
-                        Ok(latest) => status.latest = latest,
-                        Err(error) => {
-                            status.error = Some(format!("Could not check for updates: {error}"));
-                        }
-                    }
-                    let _ = sender.unbounded_send((status, false));
+                    let _ =
+                        sender.unbounded_send((provider_updates::complete_check(status), false));
                 })
             })
             .collect::<Vec<_>>();
@@ -187,7 +212,6 @@ impl ProviderUpdates {
                 if this
                     .update(cx, |this, cx| {
                         let key = cache_key(&status);
-                        let error = status.error.clone();
                         if matches!(status.installer, provider_updates::Installer::ClaudeNative) {
                             status.latest = None;
                         }
@@ -197,7 +221,8 @@ impl ProviderUpdates {
                                 .insert(key.clone(), (latest.clone(), now()));
                         }
                         let last_success = this.cache.latest.get(&key).map(|(_, at)| *at);
-                        if status.latest.is_none()
+                        if (checking || status.error.is_some())
+                            && status.latest.is_none()
                             && !matches!(
                                 status.installer,
                                 provider_updates::Installer::ClaudeNative
@@ -212,7 +237,7 @@ impl ProviderUpdates {
                             updated: false,
                             update_verified: false,
                             last_success,
-                            error,
+                            error: None,
                         };
                         if let Some(existing) = this
                             .rows
@@ -248,7 +273,7 @@ impl ProviderUpdates {
         let Some(row) = self.rows.iter_mut().find(|r| r.status.agent == agent) else {
             return;
         };
-        if !row.status.can_update() {
+        if !row.can_update() {
             return;
         }
         row.updating = true;
@@ -280,7 +305,10 @@ impl ProviderUpdates {
                     }
                     Err(error) => {
                         if let Some(mut detected) = detected {
-                            if detected.latest.is_none()
+                            if detected.error.is_some()
+                                && detected.latest.is_none()
+                                && detected.executable == row.status.executable
+                                && detected.installer == row.status.installer
                                 && !matches!(
                                     detected.installer,
                                     provider_updates::Installer::ClaudeNative
@@ -306,6 +334,7 @@ impl ProviderUpdates {
                 !r.updating
                     && !r.checking
                     && r.error.is_none()
+                    && r.status.error.is_none()
                     && r.status.update_available()
                     && self.cache.dismissed.get(r.status.agent.label()) != r.status.latest.as_ref()
             })
@@ -319,7 +348,7 @@ impl ProviderUpdates {
     }
     pub fn dismiss(&mut self, cx: &mut Context<Self>) {
         for row in &self.rows {
-            if row.status.update_available() {
+            if !row.latest_is_cached() && row.status.update_available() {
                 if let Some(latest) = &row.status.latest {
                     self.cache
                         .dismissed
@@ -391,6 +420,35 @@ mod tests {
             last_success: Some(1),
             error: None,
         }
+    }
+    #[gpui::test]
+    fn cached_candidate_does_not_authorize_installation_or_a_notice(cx: &mut gpui::TestAppContext) {
+        let registry = cx.new(|_| SessionRegistry::new());
+        let updates = cx.new(|cx| ProviderUpdates::new(registry, cx));
+        updates.update(cx, |updates, cx| {
+            let mut fixture = row();
+            fixture.status.error = Some("The release registry did not respond".into());
+            fixture.checking = true;
+            updates.rows.push(fixture);
+
+            assert!(updates.rows[0].latest_is_cached());
+            assert!(updates.rows[0].check_error().is_none());
+            updates.start_update(Agent::Codex, cx);
+            assert!(updates.update_task.is_none());
+
+            updates.rows[0].checking = false;
+            assert!(updates.rows[0].check_error().is_some());
+            assert!(updates.rows[0].update_error().is_none());
+            assert!(updates.notice().is_none());
+            updates.dismiss(cx);
+            updates.start_update(Agent::Codex, cx);
+            assert!(updates.update_task.is_none());
+
+            updates.rows[0].status.error = None;
+            assert!(updates.rows[0].can_update());
+            assert!(!updates.rows[0].latest_is_cached());
+            assert!(updates.notice().is_some());
+        });
     }
     #[gpui::test]
     fn open_sessions_allow_updates_before_worker_dispatch(cx: &mut gpui::TestAppContext) {
