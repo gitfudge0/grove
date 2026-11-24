@@ -429,6 +429,35 @@ fn html_transcript_links_keep_viewer_and_browser_actions(cx: &mut gpui::TestAppC
 }
 
 #[gpui::test]
+fn html_transcript_link_footer_follows_prose_and_owns_repeated_targets(cx: &mut gpui::TestAppContext) {
+    let (fixture, cx) = link_fixture(cx);
+    fixture.update(cx, |fixture, cx| {
+        fixture.text = "The [revised mock](mock.html) puts an update icon in the sidebar.".into();
+        cx.notify();
+    });
+    for width in [720., 280.] {
+        cx.simulate_resize(gpui::size(gpui::px(width), gpui::px(700.)));
+        draw_links(cx);
+        let viewer = cx.debug_bounds("transcript-file-link").unwrap();
+        let footer = cx.debug_bounds("transcript-link-footer").unwrap();
+        let action = cx.debug_bounds("transcript-browser-link").unwrap();
+        assert!(viewer.bottom() < footer.top(), "{viewer:?}, {footer:?}");
+        assert!(action.left() >= footer.left() && action.right() <= footer.right());
+    }
+
+    fixture.update(cx, |fixture, cx| {
+        fixture.session =
+            cx.new(|_| HtmlSession::new(std::env::current_dir().unwrap(), ScrollHandle::new()));
+        fixture.text = "See [the mock](mock.html) and [the same mock](./mock.html).\n\nSee [the mock again](mock.html).".into();
+        cx.notify();
+    });
+    draw_links(cx);
+    fixture.read_with(cx, |fixture, cx| {
+        assert_eq!(fixture.session.read(cx).file_focus.len(), 5);
+    });
+}
+
+#[gpui::test]
 fn html_transcript_link_activation_and_missing_file_feedback(cx: &mut gpui::TestAppContext) {
     let (fixture, cx) = link_fixture(cx);
     let missing = tempfile::tempdir().unwrap().path().join("missing.html");
@@ -456,7 +485,7 @@ fn html_transcript_link_activation_and_missing_file_feedback(cx: &mut gpui::Test
             assert_eq!(fixture.opened.borrow().len(), 1);
             assert!(fixture.session.read(cx).browser_errors[&(
                 "saved-message".into(),
-                missing.to_string_lossy().into_owned()
+                format!("0:{}", missing.display())
             )]
                 .contains("File unavailable"));
         });
@@ -481,7 +510,7 @@ fn html_transcript_browser_launch_errors_are_visible(cx: &mut gpui::TestAppConte
     fixture.read_with(cx, |fixture, cx| {
         assert!(fixture.opened.borrow().is_empty());
         let error = &fixture.session.read(cx).browser_errors
-            [&("saved-message".into(), file.to_string_lossy().into_owned())];
+            [&("saved-message".into(), format!("0:{}", file.display()))];
         assert!(error.starts_with("Couldn’t open in browser:"));
         assert!(
             !error.contains("File unavailable"),
@@ -537,9 +566,9 @@ fn html_transcript_links_native_capture() {
                     fixture.update(cx, |fixture, cx| {
                         fixture.width = Some(gpui::px(if narrow { 280. } else { 700. }));
                         fixture.text = if narrow {
-                            "[A longer interactive mock label with several words for narrow transcript layout](preview.htm)\n\n[Open in browser](preview.html)"
+                            "The [revised mock](preview.htm) puts an amber update icon in the sidebar footer.\n\nCompare the [sidebar footer mock](one.html) with the [Settings → About mock](two.htm).\n\n[Open in browser](preview.html)"
                         } else {
-                            "[Open interactive mock](.grove-artifacts/composer-suggestions/index.html)\n\nTry typing, clearing the draft, switching with arrows, and accepting with Tab.\n\n[First](one.html) and [Second](two.htm)"
+                            "[Open interactive mock](.grove-artifacts/composer-suggestions/index.html)\n\nTry typing, clearing the draft, switching with arrows, and accepting with Tab.\n\nThe [revised mock](one.html) puts an amber update icon in the sidebar footer.\n\nCompare the [sidebar footer mock](one.html) with the [Settings → About mock](two.htm)."
                         }.into();
                         cx.notify();
                     });

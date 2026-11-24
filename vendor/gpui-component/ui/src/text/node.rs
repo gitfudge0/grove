@@ -906,7 +906,8 @@ impl Paragraph {
             })
         });
         if self.should_render_inline_flow() || custom_link {
-            let mut items = InlineFlow::render_links(
+            let (mut items, footer) = InlineFlow::render_links(
+                span.unwrap_or_default().start,
                 self.inline_flow_items(node_cx, cx),
                 &node_cx.markdown_extensions,
                 window,
@@ -916,24 +917,33 @@ impl Paragraph {
             // labels and action group can wrap to the actual parent width.
             // Measuring it as an atomic inline image uses intrinsic width and
             // lets long labels overflow narrow transcript panes.
-            if items.len() == 1
+            let content = if items.len() == 1
                 && let InlineFlowItem::Custom { element } = &mut items[0]
-                && let Some(element) = element.take()
             {
-                return element;
-            }
-            if self.should_render_inline_flow()
+                element.take()
+            } else if self.should_render_inline_flow()
                 || items
                     .iter()
                     .any(|item| matches!(item, InlineFlowItem::Custom { .. }))
             {
-                return InlineFlow::new(
-                    span.unwrap_or_default(),
-                    items,
-                    self.flow_states.clone(),
-                    self.state.clone(),
+                Some(
+                    InlineFlow::new(
+                        span.unwrap_or_default(),
+                        items,
+                        self.flow_states.clone(),
+                        self.state.clone(),
+                    )
+                    .into_any_element(),
                 )
-                .into_any_element();
+            } else {
+                None
+            };
+            if let Some(content) = content {
+                return if let Some(footer) = footer {
+                    v_flex().min_w_0().child(content).child(footer).into_any_element()
+                } else {
+                    content
+                };
             }
         }
 

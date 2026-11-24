@@ -2232,6 +2232,15 @@ Live Codex and Claude provider delivery remain untested: the provider checks abo
 use synthetic snapshots, not live transport. Actual OS browser handoff, native
 hover/focus, scrolling/restoration in a live session, and macOS/Windows native
 interactions remain untested; desktop interaction control is unavailable here.
+
+The paragraph layout was verified in isolated Linux X11 link fixtures in dark
+at 700 logical pixels and light at 280. Supplementary browser actions sat below
+the whole paragraph and named each target when there were multiple files. GPUI
+checks covered repeated target grouping, saved Markdown, click activation and
+keyboard retries after a launch error. The synthetic Codex and Claude transcript
+fixture verified file viewing with line references and returning with Escape.
+Live transport, successful OS browser launch, screen reader behavior and native
+macOS/Windows rendering remain untested.
 The original screenshot’s apparently plain label was not reproduced in the
 running application. Its saved response contained a valid HTML link and its file
 existed; the native component fixture renders that label as a functioning link.

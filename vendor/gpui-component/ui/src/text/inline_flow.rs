@@ -125,11 +125,13 @@ impl InlineFlow {
     }
 
     pub(super) fn render_links(
+        paragraph: usize,
         items: Vec<InlineFlowItem>,
         extensions: &super::MarkdownExtensions,
         window: &mut Window,
         cx: &mut App,
-    ) -> Vec<InlineFlowItem> {
+    ) -> (Vec<InlineFlowItem>, Option<AnyElement>) {
+        let mut paragraph_links = Vec::new();
         let mut output = Vec::new();
         for item in items {
             let InlineFlowItem::Text {
@@ -148,9 +150,16 @@ impl InlineFlow {
                 if range.start < cursor || range.end > text.len() {
                     continue;
                 }
-                if let Some(element) =
-                    extensions.render_link(&link.url, &text[range.clone()], window, cx)
-                {
+                let label = &text[range.clone()];
+                if let Some(element) = extensions.render_link(
+                    paragraph,
+                    paragraph_links.len(),
+                    &link.url,
+                    label,
+                    window,
+                    cx,
+                ) {
+                    paragraph_links.push((link.url.clone(), label.to_owned()));
                     replacements.push((range.clone(), element));
                     cursor = range.end;
                 }
@@ -181,7 +190,16 @@ impl InlineFlow {
                 output.push(text_item(cursor, text.len()));
             }
         }
-        output
+        let footer = if paragraph_links.is_empty() {
+            None
+        } else {
+            let links = paragraph_links
+                .iter()
+                .map(|(url, label)| (url.as_ref(), label.as_str()))
+                .collect::<Vec<_>>();
+            extensions.render_link_footer(paragraph, &links, window, cx)
+        };
+        (output, footer)
     }
 
     fn image_element(

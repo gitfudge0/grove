@@ -1,17 +1,18 @@
 //! Session-scoped HTML ownership, Markdown links, and automatic opening.
 
+use super::super::file_browser::{FileTarget, local_target};
 use super::{
-    c, expanded, inline_card, local_html_path, markdown_ast, parse, rpx, source_view, AutoOpen,
-    DocumentBlock, HashMap, HtmlArtifact, HtmlSession, HtmlUi, MarkdownExtensions, NativeDocument,
-    OpenLocalFile, Path, PathBuf, Rc,
+    AutoOpen, DocumentBlock, HashMap, HtmlArtifact, HtmlSession, HtmlUi, MarkdownExtensions,
+    NativeDocument, OpenLocalFile, Path, PathBuf, Rc, c, expanded, inline_card, local_html_path,
+    markdown_ast, parse, rpx, source_view,
 };
 use crate::views::tokens::{ICON_SM, SPACE_SM, TEXT_SMALL};
+use gpui::AppContext as _;
 use gpui::prelude::{
     FluentBuilder, InteractiveElement, IntoElement, ParentElement, StatefulInteractiveElement,
     Styled,
 };
-use gpui::AppContext as _;
-use gpui::{div, AnyElement, App, Context, ScrollHandle, SharedString, Window};
+use gpui::{AnyElement, App, Context, ScrollHandle, SharedString, Window, div};
 #[cfg(test)]
 use gpui::{Entity, EntityId};
 #[cfg(test)]
@@ -142,6 +143,8 @@ impl HtmlSession {
         let owner = message.to_owned();
         let links = session.clone();
         let link_owner = owner.clone();
+        let footer_session = session.clone();
+        let footer_owner = owner.clone();
         let legacy = self.legacy;
         let extensions = super::super::mermaid::extensions()
             .block_parser(move |node, cx| if legacy { parse(node, cx) } else { None })
@@ -182,71 +185,28 @@ impl HtmlSession {
                     })
                     .unwrap_or_else(|_| source_view(&block.markdown, block.offset, window))
             })
-            .link_renderer(move |target, label, _window, cx| {
+            .located_link_renderer(move |paragraph, occurrence, target, label, _, cx| {
                 links
                     .update(cx, |session, cx| {
-                        let file = super::super::file_browser::local_target(target, &session.cwd)?;
+                        let file = local_target(target, &session.cwd)?;
                         let browser = browser_link_label(label)
                             && crate::platform::inline_html::browser_supported_path(&file.path);
-                        let additional_browser = !browser
-                            && file
-                                .path
-                                .extension()
-                                .and_then(|ext| ext.to_str())
-                                .is_some_and(|ext| {
-                                    ext.eq_ignore_ascii_case("html")
-                                        || ext.eq_ignore_ascii_case("htm")
-                                });
-                        let error = session
-                            .browser_errors
-                            .get(&(link_owner.clone(), target.to_owned()))
-                            .cloned();
-                        let primary = session.file_link_control(
-                            &link_owner,
-                            target,
+                        Some(session.file_link_control(
+                            &format!("{paragraph}:{occurrence}:{target}"),
+                            (link_owner.clone(), format!("{paragraph}:{target}")),
                             label,
-                            file.clone(),
+                            file,
                             browser,
                             cx,
-                        );
-                        if !additional_browser && error.is_none() {
-                            return Some(primary);
-                        }
-                        Some(
-                            div()
-                                .flex()
-                                .flex_col()
-                                .min_w_0()
-                                .max_w_full()
-                                .child(
-                                    div()
-                                        .flex()
-                                        .flex_wrap()
-                                        .items_center()
-                                        .gap(rpx(SPACE_SM))
-                                        .child(primary)
-                                        .when(additional_browser, |row| {
-                                            row.child(session.file_link_control(
-                                                &link_owner,
-                                                target,
-                                                "Open in browser",
-                                                file,
-                                                true,
-                                                cx,
-                                            ))
-                                        }),
-                                )
-                                .when_some(error, |row, error| {
-                                    row.child(
-                                        div()
-                                            .debug_selector(|| "transcript-browser-error".into())
-                                            .text_size(rpx(TEXT_SMALL))
-                                            .text_color(c::RED())
-                                            .child(error),
-                                    )
-                                })
-                                .into_any_element(),
-                        )
+                        ))
+                    })
+                    .ok()
+                    .flatten()
+            })
+            .link_footer(move |paragraph, links, _, cx| {
+                footer_session
+                    .update(cx, |session, cx| {
+                        session.link_footer(&footer_owner, paragraph, links, cx)
                     })
                     .ok()
                     .flatten()
@@ -300,24 +260,139 @@ impl HtmlSession {
         cx.notify();
     }
 
-    fn file_link_control(
+    fn link_footer(
         &mut self,
         message: &str,
+        paragraph: usize,
+        links: &[(&str, &str)],
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        struct BrowserTarget<'a> {
+            explicit: bool,
+            label: &'a str,
+            file: FileTarget,
+            error_key: (String, String),
+            error: Option<String>,
+        }
+
+        let mut targets: Vec<BrowserTarget<'_>> = Vec::new();
+        for &(target, label) in links {
+            let Some(file) = local_target(target, &self.cwd) else {
+                continue;
+            };
+            let key = (message.to_owned(), format!("{paragraph}:{target}"));
+            let error = self.browser_errors.get(&key).cloned();
+            let explicit = browser_link_label(label)
+                && crate::platform::inline_html::browser_supported_path(&file.path);
+            let html = file
+                .path
+                .extension()
+                .and_then(|ext| ext.to_str())
+                .is_some_and(|ext| {
+                    ext.eq_ignore_ascii_case("html") || ext.eq_ignore_ascii_case("htm")
+                });
+            if ((!explicit && html) || error.is_some())
+                && !targets.iter().any(|existing| {
+                    existing.file.path == file.path && existing.explicit == explicit
+                })
+            {
+                targets.push(BrowserTarget {
+                    explicit,
+                    label,
+                    file,
+                    error_key: key,
+                    error,
+                });
+            }
+        }
+        if targets.is_empty() {
+            return None;
+        }
+        let labels = targets
+            .iter()
+            .filter(|target| !target.explicit)
+            .map(|target| target.label)
+            .collect::<Vec<_>>();
+        let multiple = labels.len() > 1;
+        Some(
+            div()
+                .debug_selector(|| "transcript-link-footer".into())
+                .flex()
+                .flex_col()
+                .min_w_0()
+                .mt(rpx(SPACE_SM))
+                .gap(rpx(SPACE_SM))
+                .children(targets.into_iter().map(|target| {
+                    let BrowserTarget {
+                        explicit,
+                        label,
+                        file,
+                        error_key,
+                        error,
+                    } = target;
+                    let mut row = div().min_w_0().text_size(rpx(TEXT_SMALL));
+                    if !explicit {
+                        let label = if labels
+                            .iter()
+                            .filter(|candidate| **candidate == label)
+                            .count()
+                            > 1
+                        {
+                            format!(
+                                "{label} ({})",
+                                file.path
+                                    .strip_prefix(&self.cwd)
+                                    .unwrap_or(&file.path)
+                                    .display()
+                            )
+                        } else {
+                            label.to_owned()
+                        };
+                        let browser_label = if multiple {
+                            format!("Open {label} in browser")
+                        } else {
+                            "Open in browser".to_owned()
+                        };
+                        row = row.child(self.file_link_control(
+                            &error_key.1,
+                            error_key.clone(),
+                            &browser_label,
+                            file,
+                            true,
+                            cx,
+                        ));
+                    }
+                    row.when_some(error, |row, error| {
+                        row.child(
+                            div()
+                                .debug_selector(|| "transcript-browser-error".into())
+                                .when(!explicit, |message| message.pl(rpx(ICON_SM + SPACE_SM)))
+                                .text_color(c::RED())
+                                .child(error),
+                        )
+                    })
+                }))
+                .into_any_element(),
+        )
+    }
+
+    fn file_link_control(
+        &mut self,
         target: &str,
+        error_key: (String, String),
         label: &str,
-        file: super::super::file_browser::FileTarget,
+        file: FileTarget,
         browser: bool,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let owner = cx.entity().downgrade();
         let keyboard = owner.clone();
         let keyboard_file = file.clone();
-        let error_key = (message.to_owned(), target.to_owned());
         let keyboard_error_key = error_key.clone();
         let action = format!("local-file-{browser}-{target}");
         let focus = self
             .file_focus
-            .entry((message.to_owned(), action.clone()))
+            .entry((error_key.0.clone(), action.clone()))
             .or_insert_with(|| cx.focus_handle())
             .clone();
         let mouse_focus = focus.clone();
@@ -380,7 +455,7 @@ impl HtmlSession {
 
     fn activate_file_link(
         &mut self,
-        file: super::super::file_browser::FileTarget,
+        file: FileTarget,
         browser: bool,
         error_key: (String, String),
         cx: &mut Context<Self>,

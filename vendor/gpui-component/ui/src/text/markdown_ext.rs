@@ -149,7 +149,10 @@ impl PartialEq for MarkdownNode {
 }
 
 type MarkdownLinkRendererFn =
-    dyn Fn(&str, &str, &mut Window, &mut App) -> Option<AnyElement> + Send + Sync;
+    dyn Fn(usize, usize, &str, &str, &mut Window, &mut App) -> Option<AnyElement> + Send + Sync;
+
+type MarkdownLinkFooterFn =
+    dyn Fn(usize, &[(&str, &str)], &mut Window, &mut App) -> Option<AnyElement> + Send + Sync;
 
 #[derive(Clone, Default)]
 pub struct MarkdownExtensions {
@@ -158,19 +161,56 @@ pub struct MarkdownExtensions {
     block_renderers: HashMap<SharedString, Arc<MarkdownBlockRenderFn>>,
     revision: u64,
     link_renderer: Option<Arc<MarkdownLinkRendererFn>>,
+    link_footer: Option<Arc<MarkdownLinkFooterFn>>,
     link_renderer_filter: Option<Arc<dyn Fn(&str) -> bool + Send + Sync>>,
 }
 
 impl MarkdownExtensions {
     /// App-owned inline link controls; None preserves ordinary text links.
     pub fn link_renderer(
-        mut self,
+        self,
         render: impl Fn(&str, &str, &mut Window, &mut App) -> Option<AnyElement> + Send + Sync + 'static,
+    ) -> Self {
+        self.located_link_renderer(move |_, _, url, label, window, cx| {
+            render(url, label, window, cx)
+        })
+    }
+
+    /// Render a link with its paragraph start and occurrence in reading order.
+    pub fn located_link_renderer(
+        mut self,
+        render: impl Fn(usize, usize, &str, &str, &mut Window, &mut App) -> Option<AnyElement>
+        + Send
+        + Sync
+        + 'static,
     ) -> Self {
         self.link_renderer = Some(Arc::new(render));
         self.link_renderer_filter = None;
         self.bump_revision();
         self
+    }
+
+    /// Render auxiliary actions below the paragraph that owns the links.
+    pub fn link_footer(
+        mut self,
+        render: impl Fn(usize, &[(&str, &str)], &mut Window, &mut App) -> Option<AnyElement>
+        + Send
+        + Sync
+        + 'static,
+    ) -> Self {
+        self.link_footer = Some(Arc::new(render));
+        self.bump_revision();
+        self
+    }
+
+    pub(crate) fn render_link_footer(
+        &self,
+        paragraph: usize,
+        links: &[(&str, &str)],
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Option<AnyElement> {
+        self.link_footer.as_ref()?(paragraph, links, window, cx)
     }
 
     /// Restrict an installed renderer to URLs it can replace. Ordinary links
@@ -194,6 +234,8 @@ impl MarkdownExtensions {
     }
     pub(crate) fn render_link(
         &self,
+        paragraph: usize,
+        occurrence: usize,
         url: &str,
         label: &str,
         window: &mut Window,
@@ -202,7 +244,7 @@ impl MarkdownExtensions {
         if !self.may_render_link(url) {
             return None;
         }
-        self.link_renderer.as_ref()?(url, label, window, cx)
+        self.link_renderer.as_ref()?(paragraph, occurrence, url, label, window, cx)
     }
 
     /// Disables raw HTML constructs, since markdown-rs gives HTML priority over MDX when both are enabled.
@@ -338,7 +380,7 @@ mod tests {
         cx.update(|window, cx| {
             assert!(
                 extensions
-                    .render_link("https://example.com", "ordinary", window, cx)
+                    .render_link(0, 0, "https://example.com", "ordinary", window, cx)
                     .is_some()
             );
         });
@@ -349,13 +391,13 @@ mod tests {
         cx.update(|window, cx| {
             assert!(
                 extensions
-                    .render_link("https://example.com", "ordinary", window, cx)
+                    .render_link(0, 0, "https://example.com", "ordinary", window, cx)
                     .is_none()
             );
             assert_eq!(calls.load(Ordering::Relaxed), 1);
             assert!(
                 extensions
-                    .render_link("report.html", "report", window, cx)
+                    .render_link(0, 0, "report.html", "report", window, cx)
                     .is_some()
             );
         });
