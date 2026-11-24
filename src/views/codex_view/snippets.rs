@@ -3,9 +3,11 @@ use super::*;
 use crate::entities::terminal_session::TerminalSession;
 use crate::fonts::MONO_FAMILY;
 use crate::views::terminal_view::TerminalView;
-use gpui::AnyElement;
+use gpui::{Anchor, AnyElement};
+use gpui_component::popover::Popover;
 
 const OUTPUT_HEIGHT: f32 = 240.0;
+const COMMAND_MENU_W: f32 = 296.0;
 const SHARED_OUTPUT_LINES: usize = 200;
 static SHELL: std::sync::OnceLock<String> = std::sync::OnceLock::new();
 
@@ -114,19 +116,47 @@ pub(super) struct Snippet {
     editor: Option<Entity<InputState>>,
     editor_observer: Option<Subscription>,
     run_focus: FocusHandle,
-    edit_focus: FocusHandle,
+    menu_focus: FocusHandle,
+    menu: Option<(Entity<PopupMenu>, Subscription)>,
     review_focus: FocusHandle,
-    directory_focus: FocusHandle,
     review: Option<String>,
     error: Option<String>,
     pub(super) runs: Vec<SnippetRun>,
 }
 
+impl Snippet {
+    fn is_running(&self, cx: &App) -> bool {
+        self.runs
+            .last()
+            .is_some_and(|run| !run.terminal.read(cx).has_exited())
+    }
+
+    fn can_run_original(&self, cx: &App) -> bool {
+        !self.is_running(cx) && self.review.is_none() && self.editor.is_none()
+    }
+
+    #[cfg(test)]
+    pub(super) fn options_open(&self) -> bool {
+        self.menu.is_some()
+    }
+
+    #[cfg(test)]
+    pub(super) fn options_focused(&self, window: &Window) -> bool {
+        self.menu_focus.is_focused(window)
+    }
+}
+
+#[derive(Clone, Copy)]
+enum SnippetMenuAction {
+    Copy,
+    Edit,
+    Directory,
+}
+
 #[derive(Clone, Copy)]
 pub(super) enum SnippetControl {
-    Edit,
     Run,
-    Directory,
+    Menu,
 }
 
 pub(super) fn source_digest(source: &str) -> u64 {
@@ -210,9 +240,9 @@ impl CodexView {
                 editor: None,
                 editor_observer: None,
                 run_focus: cx.focus_handle(),
-                edit_focus: cx.focus_handle(),
+                menu_focus: cx.focus_handle(),
+                menu: None,
                 review_focus: cx.focus_handle(),
-                directory_focus: cx.focus_handle(),
                 review: None,
                 error: None,
                 runs: Vec::new(),
@@ -224,6 +254,7 @@ impl CodexView {
     pub(super) fn snippet_requires_eager(&self, key: &str) -> bool {
         self.snippets.get(key).is_some_and(|snippet| {
             snippet.custom_directory
+                || snippet.menu.is_some()
                 || snippet.editor.is_some()
                 || snippet.review.is_some()
                 || snippet.error.is_some()
@@ -239,18 +270,11 @@ impl CodexView {
         let Some(snippet) = self.snippets.get(key) else {
             return Vec::new();
         };
-        let running = snippet
-            .runs
-            .last()
-            .is_some_and(|run| !run.terminal.read(cx).has_exited());
         let mut controls = Vec::new();
-        if !running && snippet.review.is_none() && snippet.editor.is_none() {
-            controls.push((snippet.edit_focus.clone(), SnippetControl::Edit));
+        if snippet.can_run_original(cx) {
             controls.push((snippet.run_focus.clone(), SnippetControl::Run));
         }
-        if !running {
-            controls.push((snippet.directory_focus.clone(), SnippetControl::Directory));
-        }
+        controls.push((snippet.menu_focus.clone(), SnippetControl::Menu));
         controls
     }
 
@@ -261,30 +285,139 @@ impl CodexView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        // Recheck the real action's current availability after projection: source
-        // and process state may have changed since the alias was registered.
-        let Some(snippet) = self.snippets.get(key) else {
-            return;
-        };
-        let running = snippet
-            .runs
-            .last()
-            .is_some_and(|run| !run.terminal.read(cx).has_exited());
         match kind {
-            SnippetControl::Directory if !running => {
-                self.choose_snippet_directory(key.to_owned(), window, cx);
-            }
-            SnippetControl::Edit | SnippetControl::Run
-                if !running && snippet.review.is_none() && snippet.editor.is_none() =>
-            {
-                match kind {
-                    SnippetControl::Edit => self.edit_snippet(key, window, cx),
-                    SnippetControl::Run => self.request_snippet_run(key, false, window, cx),
-                    SnippetControl::Directory => {}
+            SnippetControl::Run => {
+                if self
+                    .snippets
+                    .get(key)
+                    .is_some_and(|snippet| snippet.can_run_original(cx))
+                {
+                    self.request_snippet_run(key, false, window, cx);
                 }
             }
-            _ => {}
+            SnippetControl::Menu => self.toggle_snippet_menu(key, window, cx),
         }
+    }
+
+    fn toggle_snippet_menu(&mut self, key: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let signature = self.snippet_source_signature(key, cx);
+        if self.transcript_only() {
+            return;
+        }
+        let Some(snippet) = self.snippets.get_mut(key) else {
+            return;
+        };
+        if snippet.menu.take().is_some() {
+            snippet.menu_focus.focus(window, cx);
+            cx.notify();
+            return;
+        }
+        if signature.is_none() || signature != snippet.source_signature {
+            return;
+        }
+
+        let can_edit = snippet.can_run_original(cx);
+        let can_change_directory = !snippet.is_running(cx);
+        let directory_label = if snippet.cwd_available {
+            "Change directory"
+        } else {
+            "Choose directory"
+        };
+        let path = snippet.cwd.clone();
+        let shell = SHELL.get_or_init(grove_core::env_path::login_shell);
+        let focus = snippet.menu_focus.clone();
+        let key = key.to_owned();
+        let owner = cx.entity().downgrade();
+        let dismiss_key = key.clone();
+        let menu_key = key.clone();
+        let popup = PopupMenu::build(window, cx, move |popup, window, _| {
+            let width = rpx(COMMAND_MENU_W)
+                .to_pixels(window.rem_size())
+                .min(window.viewport_size().width - rpx(SPACE_3XL).to_pixels(window.rem_size()));
+            let mut popup = crate::views::components::dropdown_menu(popup, window)
+                .action_context(focus)
+                .min_w(width)
+                .max_w(width)
+                .item(
+                    PopupMenuItem::element(move |_, _| {
+                        div()
+                            .w_full()
+                            .min_w_0()
+                            .flex()
+                            .flex_col()
+                            .gap(rpx(SPACE_SM))
+                            .py(rpx(SPACE_SM))
+                            .child(format!("Local · {shell}"))
+                            .child(crate::views::components::readonly_value(
+                                "snippet-execution-path",
+                                path.clone(),
+                            ))
+                    })
+                    .disabled(true),
+                )
+                .separator();
+            for (action, label, icon, enabled) in [
+                (SnippetMenuAction::Copy, "Copy code", "copy", true),
+                (SnippetMenuAction::Edit, "Edit & run", "edit", can_edit),
+                (
+                    SnippetMenuAction::Directory,
+                    directory_label,
+                    "folder",
+                    can_change_directory,
+                ),
+            ] {
+                let owner = owner.clone();
+                let key = key.clone();
+                let item = PopupMenuItem::new(label)
+                    .icon(action_icon(icon))
+                    .disabled(!enabled);
+                popup = popup.item(item.on_click(move |_, window, cx| {
+                    if !enabled {
+                        return;
+                    }
+                    let owner = owner.clone();
+                    let key = key.clone();
+                    // PopupMenu restores its anchor focus after dispatch.
+                    window.defer(cx, move |window, cx| {
+                        let _ = owner.update(cx, |view, cx| {
+                            let Some(snippet) = view.snippets.get(&key) else {
+                                return;
+                            };
+                            if view.snippet_source_signature(&key, cx) != signature {
+                                return;
+                            }
+                            match action {
+                                SnippetMenuAction::Copy => {
+                                    let code = snippet.source.clone();
+                                    view.copy_code_block(key, code, cx);
+                                }
+                                SnippetMenuAction::Edit => view.edit_snippet(&key, window, cx),
+                                SnippetMenuAction::Directory if !snippet.is_running(cx) => {
+                                    view.choose_snippet_directory(key, window, cx);
+                                }
+                                _ => {}
+                            }
+                        });
+                    });
+                }));
+            }
+            popup
+        });
+        let dismissed = cx.subscribe_in(
+            &popup,
+            window,
+            move |view, _, _: &gpui::DismissEvent, _, cx| {
+                if let Some(snippet) = view.snippets.get_mut(&dismiss_key) {
+                    snippet.menu = None;
+                    cx.notify();
+                }
+            },
+        );
+        popup.focus_handle(cx).focus(window, cx);
+        if let Some(snippet) = self.snippets.get_mut(&menu_key) {
+            snippet.menu = Some((popup, dismissed));
+        }
+        cx.notify();
     }
 
     pub(super) fn snippet_actions(
@@ -295,59 +428,83 @@ impl CodexView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        let copied = self.copied_code_blocks.contains_key(key);
         let snippet = self.ensure_snippet(key, code, cwd, cx);
-        let running = snippet
-            .runs
-            .last()
-            .is_some_and(|run| !run.terminal.read(cx).has_exited());
-        let review = snippet.review.is_some();
-        let edited = snippet.editor.is_some();
-        let label = if running {
-            "Running"
-        } else if snippet.runs.is_empty() {
-            "Run"
-        } else {
-            "Run again"
-        };
+        let can_run = snippet.can_run_original(cx);
+        let folder = std::path::Path::new(&snippet.cwd)
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or(&snippet.cwd);
+        let destination = format!("Local · {folder}");
+        let menu = snippet.menu.as_ref().map(|(menu, _)| menu.clone());
         let run_key = key.to_owned();
-        let edit_key = key.to_owned();
+        let keyboard_key = key.to_owned();
+        let pointer_key = key.to_owned();
+        let owner = cx.entity().downgrade();
+        let trigger =
+            transcript_action("snippet-options", "More command actions", false, window, cx)
+                .icon(action_icon(if copied { "check" } else { "more" }))
+                .icon_only()
+                .with_focus_handle(snippet.menu_focus.clone())
+                .debug_selector(|| "snippet-options".into())
+                .on_key_down(
+                    cx.listener(move |this, event: &gpui::KeyDownEvent, window, cx| {
+                        if action_key(event) && !event.is_held {
+                            this.toggle_snippet_menu(&keyboard_key, window, cx);
+                            cx.stop_propagation();
+                        }
+                    }),
+                );
+        let options = Popover::new(format!("{key}:options"))
+            .anchor(Anchor::TopRight)
+            .appearance(false)
+            .overlay_closable(false)
+            .open(menu.is_some())
+            .on_open_change(move |open, window, cx| {
+                let _ = owner.update(cx, |view, cx| {
+                    if *open
+                        != view
+                            .snippets
+                            .get(&pointer_key)
+                            .is_some_and(|snippet| snippet.menu.is_some())
+                    {
+                        view.toggle_snippet_menu(&pointer_key, window, cx);
+                    }
+                });
+            })
+            .trigger(trigger)
+            .content(move |_, _, _| {
+                menu.clone()
+                    .map_or_else(|| div().into_any_element(), |menu| menu.into_any_element())
+            });
         div()
+            .w_full()
+            .min_w_0()
             .flex()
             .items_center()
             .gap(rpx(SPACE_SM))
             .child(
-                transcript_action("snippet-edit", "Edit & run", false, window, cx)
-                    .with_focus_handle(snippet.edit_focus.clone())
-                    .icon(action_icon("edit"))
-                    .disabled(running || review || edited)
-                    .map(|button| {
-                        bound_action(
-                            button,
-                            !running && !review && !edited,
-                            cx,
-                            move |this, window, cx| {
-                                this.edit_snippet(&edit_key, window, cx);
-                            },
-                        )
-                    }),
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .flex()
+                    .items_center()
+                    .gap(rpx(SPACE_SM))
+                    .text_size(rpx(TEXT_SMALL))
+                    .text_color(c::FG_DIM())
+                    .child(crate::icons::icon("folder", ICON_SM, c::FG_DIM()))
+                    .child(div().min_w_0().truncate().child(destination)),
             )
-            .child(
-                transcript_action("codex-run-code", label, false, window, cx)
+            .child(bound_action(
+                transcript_action("codex-run-code", "Run", false, window, cx)
                     .with_focus_handle(snippet.run_focus.clone())
                     .debug_selector(|| "codex-run-code".into())
-                    .icon(action_icon(if running { "status-working" } else { "play" }))
-                    .disabled(running || review || edited)
-                    .map(|button| {
-                        bound_action(
-                            button,
-                            !running && !review && !edited,
-                            cx,
-                            move |this, window, cx| {
-                                this.request_snippet_run(&run_key, false, window, cx);
-                            },
-                        )
-                    }),
-            )
+                    .icon(action_icon("play")),
+                can_run,
+                cx,
+                move |this, window, cx| this.request_snippet_run(&run_key, false, window, cx),
+            ))
+            .child(options)
             .into_any_element()
     }
 
@@ -674,59 +831,16 @@ impl CodexView {
     ) -> AnyElement {
         let share_enabled = self.can_share_snippet(cx);
         let snippet = self.ensure_snippet(key, code, cwd, cx);
-        let choose_key = key.to_owned();
-        let available = snippet.cwd_available;
-        let running = snippet
-            .runs
-            .last()
-            .is_some_and(|run| !run.terminal.read(cx).has_exited());
-        let shell = SHELL.get_or_init(grove_core::env_path::login_shell);
         let mut body = div()
             .flex()
             .flex_col()
-            .gap(rpx(SPACE_LG))
-            .mt(rpx(SPACE_LG))
+            .gap(rpx(SPACE_MD))
             .text_size(rpx(TEXT_SMALL))
-            .text_color(c::FG_DIM())
-            .child(
-                div()
-                    .flex()
-                    .flex_wrap()
-                    .items_center()
-                    .gap(rpx(SPACE_SM))
-                    .child(crate::icons::icon("folder", ICON_SM, c::FG_DIM()))
-                    .child(
-                        div()
-                            .min_w_0()
-                            .max_w_full()
-                            .child(format!("Local machine · {} · {shell}", snippet.cwd)),
-                    )
-                    .when(!running, |row| {
-                        row.child(
-                            transcript_action(
-                                "snippet-directory",
-                                if available {
-                                    "Change directory"
-                                } else {
-                                    "Choose directory"
-                                },
-                                false,
-                                window,
-                                cx,
-                            )
-                            .with_focus_handle(snippet.directory_focus.clone())
-                            .icon(action_icon("folder"))
-                            .map(|button| {
-                                bound_action(button, true, cx, move |this, window, cx| {
-                                    this.choose_snippet_directory(choose_key.clone(), window, cx);
-                                })
-                            }),
-                        )
-                    }),
+            .text_color(c::FG_DIM());
+        if !snippet.cwd_available {
+            body = body.mt(rpx(SPACE_MD)).child(
+                "Execution directory unavailable. Choose a directory from More command actions.",
             );
-        if !available {
-            body = body
-                .child("Execution directory unavailable. Choose a directory to run this script.");
         }
         if let Some(error) = &snippet.error {
             body = body.child(div().text_color(c::RED()).child(error.clone()));
@@ -760,7 +874,7 @@ impl CodexView {
                                             snippet.editor = None;
                                             snippet.editor_observer = None;
                                             snippet.review = None;
-                                            snippet.edit_focus.focus(window, cx);
+                                            snippet.menu_focus.focus(window, cx);
                                         }
                                         cx.notify();
                                     })
@@ -823,11 +937,7 @@ impl CodexView {
                 ("stop", c::FG_DIM(), "Stopped".into())
             } else {
                 match terminal.exit_code() {
-                    Some(0) => (
-                        "status-success",
-                        c::STATUS_SUCCESS(),
-                        "Completed · exit 0".into(),
-                    ),
+                    Some(0) => ("status-success", c::STATUS_SUCCESS(), "Exit 0".into()),
                     Some(code) => (
                         "status-failed",
                         c::STATUS_ERROR(),
@@ -854,13 +964,14 @@ impl CodexView {
                         if run.expanded {
                             "Hide output"
                         } else {
-                            "Show output"
+                            "Output"
                         },
                         false,
                         window,
                         cx,
                     )
                     .with_focus_handle(run.toggle_focus.clone())
+                    .aria_expanded(run.expanded)
                     .debug_selector(move || format!("snippet-output-{index}"))
                     .icon(action_icon("terminal"))
                     .map(|button| {
@@ -877,34 +988,33 @@ impl CodexView {
                         })
                     }),
                 );
-            if done {
-                actions = actions.child(
-                    transcript_action(
-                        ("snippet-share", index),
-                        if run.shared {
-                            "Added to draft"
-                        } else {
-                            "Share result"
-                        },
-                        false,
-                        window,
+            let add_to_draft = (done && run.expanded).then(|| {
+                transcript_action(
+                    ("snippet-share", index),
+                    if run.shared {
+                        "Added to draft"
+                    } else {
+                        "Add to draft"
+                    },
+                    false,
+                    window,
+                    cx,
+                )
+                .debug_selector(move || format!("snippet-share-{index}"))
+                .icon(action_icon(if run.shared { "check" } else { "reply" }))
+                .disabled(!share_enabled || run.shared)
+                .map(|button| {
+                    bound_action(
+                        button,
+                        share_enabled && !run.shared,
                         cx,
+                        move |this, window, cx| {
+                            this.share_snippet(&share_key, index, window, cx);
+                        },
                     )
-                    .debug_selector(move || format!("snippet-share-{index}"))
-                    .icon(action_icon(if run.shared { "check" } else { "reply" }))
-                    .disabled(!share_enabled || run.shared)
-                    .map(|button| {
-                        bound_action(
-                            button,
-                            share_enabled && !run.shared,
-                            cx,
-                            move |this, window, cx| {
-                                this.share_snippet(&share_key, index, window, cx);
-                            },
-                        )
-                    }),
-                );
-            } else {
+                })
+            });
+            if !done {
                 actions = actions.child(
                     transcript_action(("snippet-stop", index), "Stop", false, window, cx)
                         .debug_selector(move || format!("snippet-stop-{index}"))
@@ -932,7 +1042,8 @@ impl CodexView {
                 div()
                     .border_t_1()
                     .border_color(c::BORDER())
-                    .pt(rpx(SPACE_LG))
+                    .mt(rpx(SPACE_SM))
+                    .pt(rpx(SPACE_SM))
                     .child(
                         div()
                             .flex()
@@ -957,33 +1068,55 @@ impl CodexView {
                                         ICON_SM,
                                         cx,
                                     ))
-                                    .child(format!(
-                                        "{label} · attempt {}{}",
-                                        index + 1,
-                                        if run.command == snippet.source {
-                                            ""
-                                        } else {
-                                            " · edited copy"
-                                        }
-                                    )),
+                                    .min_w_0()
+                                    .child(label)
+                                    .when(snippet.runs.len() > 1 && !run.expanded, |status| {
+                                        status.child(
+                                            div()
+                                                .text_color(c::FG_DIM())
+                                                .child(format!("· {}", index + 1)),
+                                        )
+                                    }),
                             )
                             .child(actions),
                     )
                     .when(run.expanded, |row| {
                         row.child(
                             div()
-                                .text_color(c::FG_DIM())
-                                .child(format!("Run in {}", run.cwd)),
+                                .flex()
+                                .flex_wrap()
+                                .items_center()
+                                .justify_between()
+                                .gap(rpx(SPACE_SM))
+                                .child(format!(
+                                    "Attempt {}{}",
+                                    index + 1,
+                                    if run.command == snippet.source {
+                                        ""
+                                    } else {
+                                        " · edited copy"
+                                    },
+                                ))
+                                .children(add_to_draft),
                         )
+                        .when(run.cwd != snippet.cwd, |row| {
+                            row.child(
+                                div()
+                                    .text_color(c::FG_DIM())
+                                    .child(format!("Run in {}", run.cwd)),
+                            )
+                        })
+                        .when(run.command != snippet.source, |row| {
+                            row.child(
+                                div()
+                                    .font_family(MONO_FAMILY)
+                                    .text_color(c::FG())
+                                    .child(run.command.clone()),
+                            )
+                        })
                         .child(
                             div()
-                                .font_family(MONO_FAMILY)
-                                .text_color(c::FG())
-                                .child(run.command.clone()),
-                        )
-                        .child(
-                            div()
-                                .mt(rpx(SPACE_LG))
+                                .mt(rpx(SPACE_MD))
                                 .h(rpx(OUTPUT_HEIGHT))
                                 .id(("snippet-terminal", index))
                                 .debug_selector(move || format!("snippet-terminal-{index}"))
@@ -1012,7 +1145,7 @@ impl CodexView {
                                 .focus(window, cx);
                         } else if snippet.editor.take().is_some() {
                             snippet.editor_observer = None;
-                            snippet.edit_focus.focus(window, cx);
+                            snippet.menu_focus.focus(window, cx);
                         } else {
                             return;
                         }
@@ -1222,7 +1355,7 @@ mod tests {
                         cx,
                     );
                     assert!(!view.snippets[&key].cwd_available);
-                    assert_eq!(view.snippet_projection_controls(&key, cx).len(), 3);
+                    assert_eq!(view.snippet_projection_controls(&key, cx).len(), 2);
                     assert!(!view.snippet_requires_eager(&key));
                     // No item revision or render occurs between the directory
                     // appearing and activation of its original offscreen action.
@@ -1420,7 +1553,7 @@ mod capture {
                 let mut state = snapshot();
                 state.saved.cwd = "/tmp".into();
                 state.saved.draft = "Keep my conversation draft".into();
-                state.saved.items = vec![json!({"type":"agentMessage","id":"snippet-capture","groveCompleted":true,"text":"Check the workspace before continuing.\n\n```sh\nprintf 'Working tree clean\\n'\n```"})].into();
+                state.saved.items = vec![json!({"type":"agentMessage","id":"snippet-capture","groveCompleted":true,"text":"- Check the workspace before continuing.\n\n  ```sh\n  printf 'Working tree clean\\n'\n  ```\n\nThe next paragraph follows the complete command card."})].into();
                 let session = cx.new(|cx| CodexSession::from_connection(state, connection, cx));
                 let view = cx.new(|cx| CodexView::new(session, window, cx));
                 view.update(cx, |view, _| view.next_reply_generate = |_, _| Ok(Vec::new()));
@@ -1446,7 +1579,7 @@ mod capture {
                 })).unwrap();
                 for (name, provider, theme, width, rem, expanded) in [
                     ("codex-dark-collapsed", codex::Provider::Codex, "grove-dark", 980., 16., false),
-                    ("claude-light-narrow", codex::Provider::Claude, "grove-light", 640., 16., false),
+                    ("claude-light-narrow", codex::Provider::Claude, "grove-light", 540., 16., false),
                     ("codex-dark-expanded", codex::Provider::Codex, "grove-dark", 980., 16., true),
                     ("claude-light-zoom", codex::Provider::Claude, "grove-light", 760., 20., true),
                 ] {

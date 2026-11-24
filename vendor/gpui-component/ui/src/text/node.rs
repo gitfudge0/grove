@@ -1512,7 +1512,14 @@ impl BlockNode {
                                             .w_full()
                                             .min_w_0()
                                             .pl(rems(1.))
-                                            .overflow_hidden()
+                                            .map(|row| {
+                                                if matches!(child, BlockNode::CodeBlock(_)) {
+                                                    // Allow a live code footer to grow with its list item.
+                                                    row.flex_shrink_0()
+                                                } else {
+                                                    row.overflow_hidden()
+                                                }
+                                            })
                                             .child(block),
                                     );
                                 }

@@ -659,6 +659,19 @@ impl CodexView {
                                             block.content_digest(),
                                             source_digest,
                                         );
+                                        let language =
+                                            block.lang().map(|s| s.to_string()).unwrap_or_default();
+                                        if finalized
+                                            && block.is_closed_fence()
+                                            && !code.trim().is_empty()
+                                            && snippet_shell_supported(&language)
+                                        {
+                                            if let Ok(actions) = owner.update(cx, |this, cx| {
+                                                this.snippet_actions(&key, &code, &cwd, window, cx)
+                                            }) {
+                                                return actions;
+                                            }
+                                        }
                                         let focus = owner
                                             .update(cx, |this, cx| {
                                                 this.message_focus
@@ -717,23 +730,7 @@ impl CodexView {
                                                 );
                                             });
                                         });
-                                        let mut actions =
-                                            div().flex().gap(rpx(SPACE_SM)).child(copy);
-                                        let language =
-                                            block.lang().map(|s| s.to_string()).unwrap_or_default();
-                                        let closed = block.is_closed_fence();
-                                        if finalized
-                                            && closed
-                                            && !code.trim().is_empty()
-                                            && snippet_shell_supported(&language)
-                                        {
-                                            if let Ok(run_actions) = owner.update(cx, |this, cx| {
-                                                this.snippet_actions(&key, &code, &cwd, window, cx)
-                                            }) {
-                                                actions = actions.child(run_actions);
-                                            }
-                                        }
-                                        actions
+                                        div().flex().justify_end().child(copy).into_any_element()
                                     })
                                     .code_block_footer(move |block, window, cx| {
                                         let code = block.code();

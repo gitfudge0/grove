@@ -1793,10 +1793,13 @@ fn agent_code_blocks_and_finished_responses_copy_verbatim(cx: &mut gpui::TestApp
         cx.debug_bounds("codex-run-code").is_some(),
         "Finalized shell fences retain a disabled Run control when checkout runtime is unavailable"
     );
-    let copy_bounds = cx.debug_bounds("codex-copy-code").unwrap();
-    cx.simulate_click(copy_bounds.center(), gpui::Modifiers::default());
+    let options = cx.debug_bounds("snippet-options").unwrap();
+    cx.simulate_click(options.center(), gpui::Modifiers::default());
     draw(cx);
-    assert_eq!(cx.debug_bounds("codex-code-copied"), Some(copy_bounds));
+    cx.simulate_keystrokes("down enter");
+    cx.run_until_parked();
+    draw(cx);
+    assert_eq!(cx.debug_bounds("snippet-options"), Some(options));
     assert_eq!(
         view.read_with(cx, |view, _| view.copied_code_blocks.len()),
         1
@@ -1812,8 +1815,8 @@ fn agent_code_blocks_and_finished_responses_copy_verbatim(cx: &mut gpui::TestApp
         .advance_clock(std::time::Duration::from_millis(CODE_COPY_FEEDBACK_MS));
     cx.run_until_parked();
     draw(cx);
-    assert!(cx.debug_bounds("codex-code-copied").is_none());
-    assert_eq!(cx.debug_bounds("codex-copy-code"), Some(copy_bounds));
+    assert!(view.read_with(cx, |view, _| view.copied_code_blocks.is_empty()));
+    assert_eq!(cx.debug_bounds("snippet-options"), Some(options));
 }
 
 #[gpui::test]

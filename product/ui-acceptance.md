@@ -63,10 +63,12 @@ Inspect the actual native rendering against the selected reference at normal and
 
 For transcript code-layout caching, compare warmed and fresh code geometry after
 narrowing and widening the pane, including Unicode carets, syntax styling and rem
-changes. Exercise offscreen Copy/Edit/Run/Directory destinations and expanded tool
-Copy, then open an editor or run output and change the execution directory to
-check that mutable footers reflow. Check source replacement and document removal
-release cached layout. Keep these native/structural checks separate from live
+changes. Exercise offscreen Copy, Run, and More command actions, including
+keyboard selection and focus return from the menu, as well as expanded tool
+Copy. Open an editor or run output and change the execution directory to check
+that mutable footers reflow. Include a shell fence nested in a Markdown list
+followed by prose. Check that source replacement and document removal release
+cached layout. Keep these native/structural checks separate from live
 provider streaming and compositor presentation measurements.
 
 For shared questions, approvals, tasks, subagents, or transcript behavior, name **Codex and Claude** in acceptance checks. Report each as verified, unsupported, or untested with the method or reason. Fixtures do not establish live provider-boundary behavior. Cover affected macOS/Linux/Windows paths when platform behavior changes; do not infer unobserved parity.

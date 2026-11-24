@@ -874,22 +874,19 @@ impl PopupMenu {
 
     fn select_down(&mut self, _: &SelectDown, _: &mut Window, cx: &mut Context<Self>) {
         cx.stop_propagation();
-        let Some(ix) = self.selected_index else {
-            self.set_selected_index(0, cx);
-            return;
+        let next = {
+            let mut clickable = self.clickable_menu_items().map(|(ix, _)| ix);
+            let first = clickable.next();
+            self.selected_index
+                .and_then(|selected| {
+                    first.filter(|ix| *ix > selected)
+                        .or_else(|| clickable.find(|ix| *ix > selected))
+                })
+                .or(first)
         };
-
-        if let Some((next_ix, _)) = self
-            .menu_items
-            .iter()
-            .enumerate()
-            .find(|(i, item)| *i > ix && item.is_clickable())
-        {
-            self.set_selected_index(next_ix, cx);
-            return;
+        if let Some(ix) = next {
+            self.set_selected_index(ix, cx);
         }
-
-        self.set_selected_index(0, cx);
     }
 
     fn select_left(&mut self, _: &SelectLeft, window: &mut Window, cx: &mut Context<Self>) {

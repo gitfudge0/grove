@@ -481,7 +481,12 @@ fn codex_and_claude_snippet_run_stays_inline_and_preserves_draft(cx: &mut gpui::
         let mut response = snapshot();
         response.saved.provider = provider;
         response.saved.cwd = path.clone();
-        response.saved.items.push(json!({"type":"agentMessage","id":"shell-answer","text":format!("```sh\n{code}\n```"),"groveCompleted":true}));
+        let indented = code
+            .lines()
+            .map(|line| format!("  {line}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        response.saved.items.push(json!({"type":"agentMessage","id":"shell-answer","text":format!("- Run the command.\n\n  ```sh\n{indented}\n  ```\n\nThe next paragraph stays below the card."),"groveCompleted":true}));
         updates.send(response).unwrap();
         cx.executor()
             .advance_clock(std::time::Duration::from_millis(40));
@@ -577,8 +582,32 @@ fn codex_and_claude_snippet_run_stays_inline_and_preserves_draft(cx: &mut gpui::
             "Output starts collapsed"
         );
         let show = cx.debug_bounds("snippet-output-0").unwrap();
-        let share = cx.debug_bounds("snippet-share-0").unwrap();
-        assert_eq!(show.top(), share.top(), "Share belongs beside Show output");
+        let body = cx.debug_bounds("codex-message-body-0").unwrap();
+        assert!(
+            show.bottom() < body.bottom(),
+            "The list footer must fit above the next paragraph"
+        );
+        assert!(cx.debug_bounds("snippet-share-0").is_none());
+        let toolbar = cx.debug_bounds("snippet-options").unwrap();
+        cx.simulate_click(toolbar.center(), gpui::Modifiers::default());
+        draw(cx);
+        cx.update(|_, cx| {
+            assert!(view
+                .read(cx)
+                .snippets
+                .values()
+                .next()
+                .unwrap()
+                .options_open())
+        });
+        cx.simulate_keystrokes("escape");
+        draw(cx);
+        cx.update(|window, cx| {
+            let borrowed = view.read(cx);
+            let snippet = borrowed.snippets.values().next().unwrap();
+            assert!(!snippet.options_open());
+            assert!(snippet.options_focused(window));
+        });
         cx.simulate_click(show.center(), gpui::Modifiers::default());
         draw(cx);
         assert!(cx.debug_bounds("snippet-terminal-0").is_some());
@@ -589,6 +618,10 @@ fn codex_and_claude_snippet_run_stays_inline_and_preserves_draft(cx: &mut gpui::
         draw(cx);
         assert!(cx.debug_bounds("snippet-terminal-0").is_some());
         let share = cx.debug_bounds("snippet-share-0").unwrap();
+        assert!(
+            show.bottom() <= share.top(),
+            "Draft action belongs inside output"
+        );
         cx.simulate_click(share.center(), gpui::Modifiers::default());
         draw(cx);
         cx.update(|_, cx| {

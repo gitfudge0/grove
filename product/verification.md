@@ -415,6 +415,16 @@ Windows remain untested. Native/HTML measured parity certification was not run;
 the exploratory mock is not a certified reference. No app installation, restart,
 push or release was performed.
 
+### Compact transcript command cards
+
+The shared Codex and Claude Linux GPUI fixtures exercise a list-nested shell
+fence, real local process execution, the menu and its focus return, collapsed and
+expanded output, and draft-only sharing. The isolated X11 captures cover dark
+and light themes, widths of 540 to 980 logical pixels, and rem 16 and 20. The
+card border and following prose remained visible with output open and closed.
+Live Codex and Claude transports, the native directory picker, macOS, and
+Windows were not exercised in this verification.
+
 ## Usage popup while Settings is open (November 2026)
 
 Removed the Settings-open exclusion from the usage opener. Seven usage-related
