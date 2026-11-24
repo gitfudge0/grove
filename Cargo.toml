@@ -26,7 +26,7 @@ gpui_linux = { path = "vendor/gpui_linux" }
 ignored = ["log"]
 
 [workspace.package]
-version = "1.2.1"
+version = "1.2.2"
 edition = "2021"
 rust-version = "1.95"
 license = "MIT OR Apache-2.0"

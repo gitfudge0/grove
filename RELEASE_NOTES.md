@@ -1,3 +1,22 @@
+# Grove 1.2.2
+
+## Dashboard and sessions
+
+- See clearer status groups, session insights, and review actions in Dashboard Activity, and get desktop notifications when sessions need attention.
+- Open Dashboard launches in the transcript with modified Enter, see when sessions span worktrees, and fork from completed responses while a turn is active.
+- Keep question actions visible above the composer.
+
+## Settings and providers
+
+- Manage projects and worktrees from Settings, with fewer screens for creating projects and sessions.
+- Find provider sign-in and recovery options more easily. The model picker reuses loaded catalogs and hides unavailable providers.
+- See Claude account usage in the provider panel and use claude.ai Artifact tools in Claude sessions.
+
+## Desktop
+
+- Drag macOS windows from a wider title-bar area and double-click the title bar to fill the window.
+- Use more compact Checkout script controls.
+
 # Grove 1.2.1
 
 ## Projects and sessions
