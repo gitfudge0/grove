@@ -772,6 +772,188 @@ fn pending_approval_buttons_are_visible_and_clicks_emit_one_typed_response(
     }
 }
 
+fn long_command_approval(provider: codex::Provider) -> serde_json::Value {
+    let command = format!(
+        "printf '%s' '{}'\nprintf 'done'",
+        "long-command-value ".repeat(95)
+    );
+    let params = json!({"command":command, "cwd":"/tmp/approval-fixture", "reason":"Check the cleanup script before running it."});
+    match provider {
+        codex::Provider::Codex => json!({
+            "id":"command", "method":"item/commandExecution/requestApproval", "params":params,
+        }),
+        codex::Provider::Claude => json!({
+            "id":"command", "method":"item/commandExecution/requestApproval", "params":params,
+            "claudeInput":{"command":command, "description":"Dry-run the cleanup script?"},
+            "claudeRequest":{"tool_name":"Bash"},
+        }),
+    }
+}
+
+#[gpui::test]
+fn command_approval_inspection_keeps_decisions_available_and_routes_decline(
+    cx: &mut gpui::TestAppContext,
+) {
+    let (view, cx, actions, _) = fixture(cx);
+    for (provider, decline_selector, choice, expected_feedback) in [
+        (codex::Provider::Codex, "approval-0-2", "deny", None),
+        (codex::Provider::Codex, "approval-0-1", "cancel", None),
+        (
+            codex::Provider::Claude,
+            "approval-0-1",
+            "deny",
+            Some("Please try a different approach."),
+        ),
+    ] {
+        let mut approval = long_command_approval(provider);
+        if choice == "cancel" {
+            approval["params"]["availableDecisions"] = json!(["accept", "cancel"]);
+        }
+        cx.simulate_resize(gpui::size(gpui::px(600.), gpui::px(480.)));
+        cx.update(|window, cx| {
+            window.set_rem_size(gpui::px(20.));
+            view.update(cx, |view, cx| {
+                view.session.update(cx, |session, cx| {
+                    session.state.saved.provider = provider;
+                    session.state.status = Status::Waiting;
+                    session.state.approvals = vec![approval.clone()];
+                    cx.notify();
+                });
+            });
+        });
+        draw(cx);
+        assert!(cx.debug_bounds("approval-inspection-0").is_none());
+        let inspect = cx.debug_bounds("approval-inspect-0").unwrap();
+        cx.simulate_click(inspect.center(), gpui::Modifiers::default());
+        draw(cx);
+        let details = cx.debug_bounds("approval-inspection-0").unwrap();
+        let controls = cx.debug_bounds("agent-controls").unwrap();
+        let allow = cx.debug_bounds("approval-0-0").unwrap();
+        let decline = cx.debug_bounds(decline_selector).unwrap();
+        assert!(details.bottom() <= allow.top() && details.bottom() <= decline.top());
+        assert!(controls.contains(&allow.center()) && controls.contains(&decline.center()),
+            "{provider:?}: details={details:?}, controls={controls:?}, allow={allow:?}, decline={decline:?}");
+        assert!(!actions
+            .try_iter()
+            .any(|action| matches!(action, Action::Interaction { action, .. }
+            if matches!(*action, Action::RespondApproval { .. }))));
+        cx.simulate_click(decline.center(), gpui::Modifiers::default());
+        draw(cx);
+        let epoch = view.read_with(cx, |view, cx| view.session.read(cx).state.interaction_epoch);
+        let replies: Vec<_> = actions_at_epoch(&actions, epoch)
+            .into_iter()
+            .filter_map(|action| match action {
+                Action::RespondApproval {
+                    id,
+                    choice,
+                    input,
+                    feedback,
+                } => Some((id, choice, input, feedback)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            replies,
+            vec![(
+                json!("command"),
+                choice.into(),
+                None,
+                expected_feedback.map(str::to_owned)
+            )]
+        );
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+#[ignore = "opens an isolated X11 window and captures the native command approval tray"]
+fn command_approval_linux_capture() {
+    assert!(
+        std::env::var_os("GROVE_CONFIG_DIR").is_some(),
+        "use isolated configuration"
+    );
+    let output = std::env::var("GROVE_APPROVAL_CAPTURE").unwrap();
+    let provider = if std::env::var("GROVE_APPROVAL_PROVIDER").as_deref() == Ok("claude") {
+        codex::Provider::Claude
+    } else {
+        codex::Provider::Codex
+    };
+    let mode = std::env::var("GROVE_APPROVAL_STATE").unwrap_or_default();
+    let (width, rem) = if mode == "inspect" {
+        (600., 20.)
+    } else {
+        (840., 16.)
+    };
+    gpui_platform::application().with_assets(crate::assets::Assets).run(move |cx| {
+        gpui_component::init(cx);
+        crate::fonts::register(cx).unwrap();
+        cx.set_global(crate::settings::SettingsState::new(grove_core::storage::Store::default()));
+        cx.set_global(crate::zoom::CurrentPtyDims::default());
+        cx.set_reduce_motion(true);
+        grove_core::theme::set_by_name(if mode == "inspect" { "grove-light" } else { "grove-dark" });
+        c::sync_component_theme(cx);
+        let (handle, actions) = Handle::channel();
+        let (updates, receive) = mpsc::channel();
+        let connection = Connection { handle, updates: receive.into() };
+        let mut state = snapshot();
+        state.saved.provider = provider;
+        state.saved.items = vec![json!({"id":"message","type":"agentMessage","text":"I’ll inspect the cleanup script before running it."})].into();
+        state.status = Status::Waiting;
+        let approval = long_command_approval(provider);
+        let key = CodexView::approval_key(&approval, state.interaction_epoch);
+        state.approvals.push(approval);
+        let mut chat = None;
+        let window = cx.open_window(gpui::WindowOptions {
+            app_id: Some("dev.grove.approval-qa".into()),
+            kind: gpui::WindowKind::PopUp,
+            window_bounds: Some(gpui::WindowBounds::Windowed(gpui::Bounds::new(
+                gpui::point(gpui::px(40.), gpui::px(40.)), gpui::size(gpui::px(width), gpui::px(660.)),
+            ))),
+            ..Default::default()
+        }, |window, cx| {
+            window.set_window_title("Grove approval QA");
+            window.set_rem_size(gpui::px(rem));
+            let session = cx.new(|cx| CodexSession::from_connection(state, connection, cx));
+            let view = cx.new(|cx| CodexView::new(session, window, cx));
+            chat = Some(view.clone());
+            cx.new(|cx| gpui_component::Root::new(view, window, cx))
+        }).unwrap();
+        let chat = chat.unwrap();
+        cx.activate(true);
+        cx.spawn(async move |cx| {
+            let _transport = (actions, updates);
+            let timer = cx.background_executor().clone();
+            timer.timer(std::time::Duration::from_millis(800)).await;
+            if mode == "inspect" {
+                cx.update_window(window.into(), |_, window, cx| {
+                    window.set_rem_size(gpui::px(rem));
+                    chat.update(cx, |view, cx| {
+                        assert!(view.approval_drafts.contains_key(&key));
+                        view.toggle_command_inspection(&key, cx);
+                    });
+                    window.refresh();
+                }).unwrap();
+            }
+            if let Some(helper) = std::env::var_os("GROVE_QA_EXPOSE_HELPER") {
+                for _ in 0..3 {
+                    assert!(std::process::Command::new(&helper).arg("Grove approval QA").status().unwrap().success());
+                    cx.update_window(window.into(), |_, window, _| window.refresh()).unwrap();
+                    timer.timer(std::time::Duration::from_millis(100)).await;
+                }
+            }
+            cx.update_window(window.into(), |_, window, cx| { let _ = window.draw(cx); }).unwrap();
+            timer.timer(std::time::Duration::from_millis(200)).await;
+            assert!(std::process::Command::new("import").args(["-window", "Grove approval QA", &output]).status().unwrap().success());
+            cx.update_window(window.into(), |_, window, _| { window.blur(); window.refresh(); }).unwrap();
+            timer.timer(std::time::Duration::from_millis(200)).await;
+            cx.update_window(window.into(), |_, window, _| window.remove_window()).unwrap();
+            drop(chat);
+            timer.timer(std::time::Duration::from_millis(100)).await;
+            cx.update(|cx| cx.quit());
+        }).detach();
+    });
+}
+
 #[gpui::test]
 fn approval_edits_are_explicit_and_url_completion_is_separate(cx: &mut gpui::TestAppContext) {
     let (view, cx, actions, _) = fixture(cx);

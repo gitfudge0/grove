@@ -2901,3 +2901,13 @@ revision and on the implementation: two Fork message expectations and two
 composer geometry expectations. Native pixel comparison against the approved
 workflow board remains open because the X11 display was unavailable. Live
 Codex and Claude transport, macOS, and Windows were outside this local run.
+
+## Summary-first shell approvals
+
+Linux GPUI fixtures exercised the collapsed and expanded command request,
+long-command bounds at enlarged text, continuing decline, stop as the sole
+rejection choice, and request ownership. Isolated Linux X11 captures showed
+the default and expanded tray for Codex and Claude. The live Codex transport
+smoke cancelled an actual approval and confirmed the command did not run.
+Live Claude remains untested because the installed CLI is signed out. A live
+UI-to-provider round trip and native macOS and Windows renders remain untested.

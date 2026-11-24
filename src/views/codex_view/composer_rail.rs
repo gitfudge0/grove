@@ -19,6 +19,8 @@ use gpui::prelude::{
 use gpui::AnimationExt as _;
 use gpui::{div, Context, Window};
 
+const SINGLE_COMMAND_APPROVAL_VIEWPORT_SHARE: f32 = 0.60;
+
 pub(super) struct ComposerFrame {
     pub(super) placement: ComposerPlacement,
     pub(super) input_locked: bool,
@@ -78,6 +80,17 @@ impl CodexView {
         let has_review = session_review.is_some();
         let tasks_attached = status_attached || has_review;
         let lower_attached = tasks_attached || task_list.is_some();
+        let command_approvals = !state.approvals.is_empty()
+            && state
+                .approvals
+                .iter()
+                .all(|request| grove_core::controls::approval_command(request).is_some());
+        let controls_viewport_share =
+            if command_approvals && state.approvals.len() == 1 && state.elicitations.is_empty() {
+                SINGLE_COMMAND_APPROVAL_VIEWPORT_SHARE
+            } else {
+                APPROVAL_TRAY_VIEWPORT_SHARE
+            };
         let agent_controls = if !state.approvals.is_empty() || !state.elicitations.is_empty() {
             Some(
                 div()
@@ -88,7 +101,7 @@ impl CodexView {
                     .max_h(
                         rpx(QUESTION_PANEL_MAX_H)
                             .to_pixels(window.rem_size())
-                            .min(window.viewport_size().height * APPROVAL_TRAY_VIEWPORT_SHARE),
+                            .min(window.viewport_size().height * controls_viewport_share),
                     )
                     .overflow_y_scroll()
                     .track_scroll(&self.agent_controls_scroll)
@@ -97,7 +110,10 @@ impl CodexView {
                     .flex_col()
                     .gap(rpx(SPACE_LG))
                     .mx(rpx(composer_tray_inset(window)))
-                    .when(!state.approvals.is_empty(), |tray| {
+                    .when(command_approvals, |tray| {
+                        tray.child(self.approval_panel(state, window, cx))
+                    })
+                    .when(!state.approvals.is_empty() && !command_approvals, |tray| {
                         tray.child(
                             composer_tray(window)
                                 .rounded_none()
