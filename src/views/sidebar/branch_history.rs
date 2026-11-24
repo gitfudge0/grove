@@ -36,7 +36,9 @@ const GRAPH_NODE_RADIUS: f32 = 4.0;
 const GRAPH_NODE_STROKE: f32 = 3.0;
 const PREVIEW_MESSAGE_H: f32 = 160.0;
 const PREVIEW_BOTTOM_SPACE: f32 = 320.0;
-const DETAIL_HEADER_MAX_H: f32 = 320.0;
+const DETAIL_HEADER_MAX_H: f32 = 134.0;
+const DETAIL_WRAP_TITLE_W: f32 = 650.0;
+const DETAIL_NARROW_W: f32 = 500.0;
 const DETAIL_FILES_W: f32 = 200.0;
 const DETAIL_FILES_MAX_FRAC: f32 = 0.32;
 const DETAIL_FILES_MIN_W: f32 = 120.0;
@@ -44,6 +46,8 @@ const DETAIL_FILES_RESIZE_MAX_FRAC: f32 = 0.5;
 const DETAIL_FILES_KEY_STEP: f32 = 16.0;
 const FILE_ROW_H: f32 = 40.0;
 const DIFF_NUMBER_W: f32 = 36.0;
+const DIFF_SIGN_W: f32 = 14.0;
+const SPLIT_SCROLL_LABEL_W: f32 = 98.0;
 const METADATA_LINE_H: f32 = 18.0;
 const ROW_SUBJECT_LINE_H: f32 = 16.0;
 const ROW_SHA_W: f32 = 56.0;
@@ -56,6 +60,35 @@ const IDENTITY_METADATA_LINE_H: f32 = 14.0;
 const METADATA_LABEL_W: f32 = 72.0;
 const PREVIEW_ANCHOR_MAX: f32 = 64.0;
 const PREVIEW_MIN_W: f32 = 120.0;
+
+#[derive(Clone)]
+struct HistoryPanHandle {
+    offset: std::rc::Rc<std::cell::Cell<f32>>,
+    extent: f32,
+    scale: f32,
+    width: f32,
+}
+
+impl gpui_component::scroll::ScrollbarHandle for HistoryPanHandle {
+    fn offset(&self) -> gpui::Point<gpui::Pixels> {
+        gpui::point(
+            gpui::px(-self.offset.get().clamp(0., self.extent) * self.scale),
+            gpui::px(0.),
+        )
+    }
+
+    fn set_offset(&self, offset: gpui::Point<gpui::Pixels>) {
+        self.offset
+            .set((-f32::from(offset.x) / self.scale).clamp(0., self.extent));
+    }
+
+    fn content_size(&self) -> gpui::Size<gpui::Pixels> {
+        gpui::size(
+            gpui::px((self.width + self.extent) * self.scale),
+            gpui::px(0.),
+        )
+    }
+}
 
 fn file_register_width(canvas_width: f32, preferred: Option<f32>) -> f32 {
     let max = (canvas_width * DETAIL_FILES_RESIZE_MAX_FRAC).max(1.0);
@@ -330,6 +363,8 @@ fn split_patch_row(row: &grove_core::diff::PairedRow, pan: f32, widest: f32) -> 
     match row {
         grove_core::diff::PairedRow::HunkHeader(text) => diff_hunk(text.clone()).into_any_element(),
         grove_core::diff::PairedRow::Lines { old, new } => div()
+            .debug_selector(|| "history-split-row".into())
+            .w_full()
             .flex()
             .h(rpx(DIFF_BODY_LINE_H))
             .child(
@@ -356,6 +391,7 @@ fn unified_patch_row(row: &grove_core::render_rows::UnifiedRenderRow, width: f32
                 .debug_selector(|| "history-unified-row".into())
                 .h(rpx(DIFF_BODY_LINE_H))
                 .min_w(rpx(width))
+                .w_full()
                 .whitespace_nowrap()
                 .px(rpx(SPACE_LG))
                 .bg(bg)
@@ -387,9 +423,8 @@ fn unified_patch_row(row: &grove_core::render_rows::UnifiedRenderRow, width: f32
 }
 
 fn split_cell(line: Option<&grove_core::diff::Line>, old: bool, pan: f32, width: f32) -> gpui::Div {
-    let (bg, color) = line.map_or((c::BG_RAIL(), c::FG_DIM()), |line| {
-        let (_, bg, color) = line_style(line.kind);
-        (bg, color)
+    let (sign, bg, color) = line.map_or((" ", c::BG_RAIL(), c::FG_DIM()), |line| {
+        line_style(line.kind)
     });
     let number = line
         .and_then(|line| if old { line.old_no } else { line.new_no })
@@ -414,6 +449,13 @@ fn split_cell(line: Option<&grove_core::diff::Line>, old: bool, pan: f32, width:
                 .pr(rpx(SPACE_LG))
                 .text_color(c::FG_DIM())
                 .child(number),
+        )
+        .child(
+            div()
+                .w(rpx(DIFF_SIGN_W))
+                .flex_shrink_0()
+                .text_center()
+                .child(sign),
         )
         .child(
             div()
@@ -756,26 +798,27 @@ impl Sidebar {
                             &commit.message,
                         )),
                 );
+            let mut open_diff = self
+                .control(
+                    "history-open-commit",
+                    "Open changed files and diff",
+                    Action::ExpandCommit,
+                    cx,
+                )
+                .w_full()
+                .h_auto()
+                .min_h(rpx(CONTROL_H))
+                .justify_start()
+                .px(rpx(SPACE_2XL))
+                .py(rpx(SPACE_LG))
+                .border_t_1()
+                .border_color(c::BORDER())
+                .child(icon("chev-right", ICON_SM, c::FG_DIM()));
             if let Some(details) = &state.details {
                 let (added, removed) = details.files.iter().fold((0u64, 0u64), |(a, r), f| {
                     (a + u64::from(f.added), r + u64::from(f.removed))
                 });
-                card = card.child(
-                    self.control(
-                        "history-open-commit",
-                        "Open changed files and diff",
-                        Action::ExpandCommit,
-                        cx,
-                    )
-                    .w_full()
-                    .h_auto()
-                    .min_h(rpx(CONTROL_H))
-                    .justify_start()
-                    .px(rpx(SPACE_2XL))
-                    .py(rpx(SPACE_LG))
-                    .border_t_1()
-                    .border_color(c::BORDER())
-                    .child(icon("chev-right", ICON_SM, c::FG_DIM()))
+                open_diff = open_diff
                     .child(format!(
                         "{} {} changed",
                         details.files.len(),
@@ -786,8 +829,7 @@ impl Sidebar {
                         }
                     ))
                     .child(div().text_color(c::GREEN()).child(format!("+{added}")))
-                    .child(div().text_color(c::RED()).child(format!("−{removed}"))),
-                );
+                    .child(div().text_color(c::RED()).child(format!("−{removed}")));
             } else {
                 card = card.child(
                     div()
@@ -801,7 +843,9 @@ impl Sidebar {
                                 .unwrap_or_else(|| "Loading changed files…".into()),
                         ),
                 );
+                open_diff = open_diff.child("Open changed files");
             }
+            card = card.child(open_diff);
             // The bridge belongs to the row: crossing from subject to card keeps the preview open.
             row = row.child(gpui::deferred(
                 div()
@@ -898,6 +942,15 @@ impl Sidebar {
                             .clone()
                     })
                     .collect();
+                if !state.expanded && self.history_restore_commit_focus.replace(false) {
+                    if let Some(focus) = state
+                        .selected
+                        .as_ref()
+                        .and_then(|id| controls.focus.get(id))
+                    {
+                        focus.focus(window, cx);
+                    }
+                }
                 let focused = focuses.iter().position(|focus| focus.is_focused(window));
                 if let Some(index) = focused {
                     let signature = (
@@ -1025,7 +1078,9 @@ impl Sidebar {
             window,
             cx,
         )
-        .icon(gpui_component::Icon::default().path(format!("icons/{glyph}.svg")))
+        .when(!glyph.is_empty(), |button| {
+            button.icon(gpui_component::Icon::default().path(format!("icons/{glyph}.svg")))
+        })
         .focus_visible(|style| style.bg(c::BG_HOVER()))
         .on_click(cx.listener(move |this, _, window, cx| {
             cx.stop_propagation();
@@ -1040,6 +1095,98 @@ impl Sidebar {
             }),
         )
     }
+    fn history_read_error(
+        title: &'static str,
+        error: &str,
+        retry: gpui_component::button::Button,
+    ) -> AnyElement {
+        div()
+            .p(rpx(SPACE_2XL))
+            .flex()
+            .flex_col()
+            .items_start()
+            .gap(rpx(SPACE_SM))
+            .child(
+                div()
+                    .text_size(rpx(TEXT_BODY))
+                    .font_weight(gpui::FontWeight::MEDIUM)
+                    .child(title),
+            )
+            .child(
+                div()
+                    .text_size(rpx(TEXT_SMALL))
+                    .text_color(c::FG_DIM())
+                    .child(error.to_owned()),
+            )
+            .child(retry.border_1().border_color(c::BORDER()))
+            .into_any_element()
+    }
+
+    fn history_split_scrollbar(
+        &self,
+        state: &BranchHistoryState,
+        pan: f32,
+        extent: f32,
+        width: f32,
+        scale: f32,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement + use<> {
+        use gpui_component::scroll::{Scrollbar, ScrollbarShow};
+        let offset = state.pan_x.clone();
+        let handle = HistoryPanHandle {
+            offset: offset.clone(),
+            extent,
+            scale,
+            width: (width - SPLIT_SCROLL_LABEL_W).max(1.),
+        };
+        div()
+            .id("history-split-scroll")
+            .debug_selector(|| "history-split-scroll".into())
+            .role(gpui::Role::ScrollBar)
+            .aria_label("Horizontal scroll for both diff panes")
+            .aria_min_numeric_value(0.)
+            .aria_max_numeric_value(f64::from(extent))
+            .aria_orientation(gpui::Orientation::Horizontal)
+            .aria_numeric_value(f64::from(pan))
+            .tab_index(0)
+            .flex()
+            .items_center()
+            .flex_shrink_0()
+            .h(rpx(CONTROL_H))
+            .bg(c::SURFACE_RAISED())
+            .border_t_1()
+            .border_color(c::BORDER())
+            .focus_visible(|style| style.bg(c::BG_HOVER()))
+            .child(
+                div()
+                    .w(rpx(SPLIT_SCROLL_LABEL_W))
+                    .flex_shrink_0()
+                    .pl(rpx(SPACE_LG))
+                    .text_size(rpx(TEXT_MICRO))
+                    .text_color(c::FG_DIM())
+                    .child("Horizontal scroll"),
+            )
+            .child(
+                div()
+                    .relative()
+                    .flex_1()
+                    .h_full()
+                    .child(Scrollbar::horizontal(&handle).scrollbar_show(ScrollbarShow::Always)),
+            )
+            .on_key_down(cx.listener(move |_, event: &gpui::KeyDownEvent, _, cx| {
+                let next = match event.keystroke.key.as_str() {
+                    "left" => pan - DETAIL_FILES_KEY_STEP,
+                    "right" => pan + DETAIL_FILES_KEY_STEP,
+                    "home" => 0.,
+                    "end" => extent,
+                    _ => return,
+                };
+                offset.set(next.clamp(0., extent));
+                cx.notify();
+                cx.stop_propagation();
+            }))
+    }
+
     fn render_history_details(&self, window: &gpui::Window, cx: &mut Context<Self>) -> AnyElement {
         use crate::entities::branch_history::HistoryDiffMode;
         let Some(entity) = &self.history else {
@@ -1069,8 +1216,123 @@ impl Sidebar {
                 || Self::logical_window_width(window),
                 |bounds| f32::from(bounds.get().size.width) / scale,
             );
-        let file_width = file_register_width(canvas_width, state.file_width);
-        let half_width = ((canvas_width - file_width) / 2.0 - DIFF_NUMBER_W).max(SPACE_2XL);
+        let file_width = if canvas_width <= DETAIL_NARROW_W {
+            0.
+        } else {
+            file_register_width(canvas_width, state.file_width)
+        };
+        let half_width =
+            ((canvas_width - file_width) / 2.0 - DIFF_NUMBER_W - DIFF_SIGN_W).max(SPACE_2XL);
+        let narrow = canvas_width <= DETAIL_NARROW_W;
+        let subject_on_own_row = canvas_width <= DETAIL_WRAP_TITLE_W;
+        let back = self
+            .history_action(
+                "history-return-graph",
+                "Back to history",
+                "arrow-left",
+                Action::HistoryGraph,
+                window,
+                cx,
+            )
+            .flex_shrink_0();
+        let copy = self
+            .history_action(
+                "history-copy-sha",
+                "Copy SHA",
+                "copy",
+                Action::CopyHistoryCommit,
+                window,
+                cx,
+            )
+            .label("Copy full commit SHA")
+            .icon_only()
+            .flex_shrink_0()
+            .border_1()
+            .border_color(c::BORDER())
+            .child(div().child("Copy SHA"))
+            .child(
+                div()
+                    .text_color(c::FG_DIM())
+                    .child(commit.id.chars().take(7).collect::<String>()),
+            );
+        let subject = div()
+            .debug_selector(|| "history-detail-subject".into())
+            .flex_1()
+            .min_w_0()
+            .text_size(rpx(TEXT_TITLE))
+            .font_weight(gpui::FontWeight::MEDIUM)
+            .child(commit.subject.clone());
+        let title_row = crate::views::components::content_header()
+            .debug_selector(|| "history-detail-title-row".into())
+            .child(back);
+        let title_row = if subject_on_own_row {
+            div()
+                .flex()
+                .flex_col()
+                .gap(rpx(SPACE_SM))
+                .child(title_row.justify_between().child(copy))
+                .child(subject.flex_none())
+                .into_any_element()
+        } else {
+            title_row
+                .child(div().w(gpui::px(1.)).h(rpx(CONTROL_H)).bg(c::BORDER()))
+                .child(subject)
+                .child(copy)
+                .into_any_element()
+        };
+        let metadata_toggle = crate::views::components::focusable_inline_disclosure(
+            "history-metadata-toggle",
+            "Commit metadata",
+        )
+        .w_auto()
+        .gap(rpx(SPACE_SM))
+        .focus_visible(|style| style.bg(c::BG_HOVER()))
+        .aria_expanded(state.metadata_expanded)
+        .child(icon(
+            if state.metadata_expanded {
+                "chev-down"
+            } else {
+                "chev-right"
+            },
+            ICON_SM,
+            c::FG_DIM(),
+        ))
+        .child(div().text_size(rpx(TEXT_SMALL)).child("Commit metadata"))
+        .on_click(
+            cx.listener(|this, _, window, cx| this.act(Action::ToggleHistoryMetadata, window, cx)),
+        )
+        .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
+            if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                cx.stop_propagation();
+                this.act(Action::ToggleHistoryMetadata, window, cx);
+            }
+        }));
+        let byline = div()
+            .flex()
+            .items_center()
+            .min_w_0()
+            .gap(rpx(SPACE_MD))
+            .when(!narrow, |row| row.flex_1())
+            .child(avatar(&commit.author_name, ROW_AVATAR_SIZE))
+            .child(
+                div()
+                    .flex()
+                    .flex_wrap()
+                    .items_baseline()
+                    .min_w_0()
+                    .gap_x(rpx(SPACE_LG))
+                    .child(
+                        div()
+                            .text_size(rpx(TEXT_BODY))
+                            .child(commit.author_name.clone()),
+                    )
+                    .child(
+                        div()
+                            .text_size(rpx(TEXT_MICRO))
+                            .text_color(c::FG_DIM())
+                            .child(readable_date(&commit.author_date, true)),
+                    ),
+            );
         let mut header = div()
             .id("history-detail-header")
             .debug_selector(|| "history-detail-header".into())
@@ -1078,93 +1340,40 @@ impl Sidebar {
             .flex_col()
             .flex_shrink_0()
             .min_w_0()
-            .max_h(rpx(DETAIL_HEADER_MAX_H))
-            .overflow_y_scroll()
-            .p(rpx(SPACE_2XL))
-            .gap(rpx(SPACE_LG))
+            .px(rpx(if narrow { SPACE_LG } else { SPACE_2XL }))
+            .py(rpx(SPACE_MD))
+            .gap(rpx(SPACE_SM))
             .border_b_1()
             .border_color(c::BORDER())
-            .child(self.history_action(
-                "history-return-graph",
-                "Back to history",
-                "arrow-left",
-                Action::HistoryGraph,
-                window,
-                cx,
-            ))
-            .child(
-                div()
-                    .text_size(rpx(TEXT_TITLE))
-                    .font_weight(gpui::FontWeight::MEDIUM)
-                    .child(commit.subject.clone()),
-            )
+            .child(title_row)
             .child(
                 div()
                     .flex()
-                    .flex_wrap()
                     .items_center()
-                    .gap(rpx(SPACE_LG))
-                    .child(avatar(&commit.author_name, IDENTITY_AVATAR_SIZE))
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .child(
-                                div()
-                                    .text_size(rpx(TEXT_BODY))
-                                    .font_weight(gpui::FontWeight::MEDIUM)
-                                    .child(commit.author_name.clone()),
-                            )
-                            .child(
-                                div()
-                                    .text_size(rpx(TEXT_MICRO))
-                                    .text_color(c::FG_DIM())
-                                    .child(readable_date(&commit.author_date, true)),
-                            ),
-                    )
-                    .child(
-                        self.history_action(
-                            "history-copy-sha",
-                            "Copy SHA",
-                            "copy",
-                            Action::CopyHistoryCommit,
-                            window,
-                            cx,
-                        )
-                        .child(
-                            div()
-                                .text_color(c::FG_DIM())
-                                .child(commit.id.chars().take(7).collect::<String>()),
-                        ),
-                    ),
+                    .gap(rpx(SPACE_SM))
+                    .when(narrow, |row| row.flex_col().items_start())
+                    .child(byline)
+                    .child(metadata_toggle),
             );
+        let mut extra = div()
+            .id("history-detail-extra")
+            .max_h(rpx(DETAIL_HEADER_MAX_H))
+            .overflow_y_scroll()
+            .flex()
+            .flex_col()
+            .gap(rpx(SPACE_LG));
         let message = commit_body(&commit.subject, &commit.message);
         if !message.is_empty() {
-            header = header.child(literal_message("history-detail-body", message));
+            extra = extra.child(literal_message("history-detail-body", message));
         }
         if !commit.refs.is_empty() {
-            header = header.child(
+            extra = extra.child(
                 div()
                     .text_size(rpx(TEXT_MICRO))
                     .text_color(c::FG_DIM())
                     .child(refs_label(commit)),
             );
         }
-        header = header.child(
-            self.history_action(
-                "history-metadata-toggle",
-                "Commit metadata",
-                if state.metadata_expanded {
-                    "chev-down"
-                } else {
-                    "chev-right"
-                },
-                Action::ToggleHistoryMetadata,
-                window,
-                cx,
-            )
-            .aria_expanded(state.metadata_expanded),
-        );
         if state.metadata_expanded {
             let mut metadata = div()
                 .id("history-commit-metadata")
@@ -1222,21 +1431,16 @@ impl Sidebar {
                 "Message",
                 commit.message.clone(),
             ));
-            header = header.child(metadata);
+            extra = extra.child(metadata);
         }
-        let semantics = if commit.parents.is_empty() {
-            "Initial commit · compared with empty tree"
-        } else if commit.parents.len() > 1 {
-            "Merge commit · compared with first parent"
-        } else {
-            "Changes compared with parent"
+        if state.metadata_expanded || !message.is_empty() || !commit.refs.is_empty() {
+            header = header.child(extra);
+        }
+        let semantics = match commit.parents.as_slice() {
+            [] => "Compared with empty tree".into(),
+            [parent] => format!("Compared with parent · {}", &parent[..7]),
+            [parent, ..] => format!("Merge · first parent · {}", &parent[..7]),
         };
-        header = header.child(
-            div()
-                .text_size(rpx(TEXT_MICRO))
-                .text_color(c::FG_DIM())
-                .child(semantics),
-        );
         let mut body = div()
             .id("history-details")
             .debug_selector(|| "history-details".into())
@@ -1248,14 +1452,25 @@ impl Sidebar {
             .child(header);
         let Some(details) = &state.details else {
             return body
-                .child(
-                    div().p(rpx(SPACE_2XL)).child(
-                        state
-                            .detail_error
-                            .clone()
-                            .unwrap_or_else(|| "Loading changed files…".into()),
-                    ),
-                )
+                .child(if let Some(error) = &state.detail_error {
+                    Self::history_read_error(
+                        "Couldn’t load changed files",
+                        error,
+                        self.history_action(
+                            "history-retry-files",
+                            "Retry changed files",
+                            "refresh",
+                            Action::RetryHistoryFiles,
+                            window,
+                            cx,
+                        ),
+                    )
+                } else {
+                    div()
+                        .p(rpx(SPACE_2XL))
+                        .child("Loading changed files…")
+                        .into_any_element()
+                })
                 .into_any_element();
         };
         if details.files.is_empty() {
@@ -1263,20 +1478,30 @@ impl Sidebar {
                 .child(
                     div()
                         .p(rpx(SPACE_2XL))
-                        .child("No file changes against this parent."),
+                        .child(
+                            div()
+                                .text_size(rpx(TEXT_MICRO))
+                                .text_color(c::FG_DIM())
+                                .child(semantics),
+                        )
+                        .child("No file changes in this comparison."),
                 )
                 .into_any_element();
         }
         let (added, removed) = details.files.iter().fold((0u64, 0u64), |(a, r), file| {
             (a + u64::from(file.added), r + u64::from(file.removed))
         });
-        let mut files = div()
+        let files = div()
             .id("history-files")
             .debug_selector(|| "history-files".into())
-            .w(rpx(file_width))
+            .when(!narrow, |files| {
+                files.w(rpx(file_width)).overflow_y_scroll()
+            })
+            .when(narrow, |files| {
+                files.w_full().border_b_1().border_color(c::BORDER())
+            })
             .flex_shrink_0()
             .min_h_0()
-            .overflow_y_scroll()
             .bg(c::BG_RAIL())
             .p(rpx(SPACE_LG))
             .child(
@@ -1295,6 +1520,12 @@ impl Sidebar {
             )
             .child(
                 div()
+                    .text_size(rpx(TEXT_MICRO))
+                    .text_color(c::FG_DIM())
+                    .child(semantics),
+            )
+            .child(
+                div()
                     .flex()
                     .gap(rpx(SPACE_LG))
                     .pb(rpx(SPACE_LG))
@@ -1302,6 +1533,11 @@ impl Sidebar {
                     .child(div().text_color(c::GREEN()).child(format!("+{added}")))
                     .child(div().text_color(c::RED()).child(format!("−{removed}"))),
             );
+        let mut file_rows = div()
+            .id("history-file-rows")
+            .flex()
+            .when(narrow, |rows| rows.overflow_x_scroll())
+            .when(!narrow, |rows| rows.flex_col());
         for file in &details.files {
             let (status, identity) = file_identity(
                 &file.status,
@@ -1309,7 +1545,7 @@ impl Sidebar {
                 details.rename_sources.get(&file.path).map(String::as_str),
             );
             let (directory, name) = file.path.rsplit_once('/').unwrap_or(("", &file.path));
-            files = files.child(
+            file_rows = file_rows.child(
                 self.control(
                     format!("history-file-{}", file.path),
                     format!("{status}: {identity}. Open diff"),
@@ -1317,7 +1553,9 @@ impl Sidebar {
                     cx,
                 )
                 .debug_selector(|| "history-file-row".into())
-                .w_full()
+                .when(narrow, |row| row.w(rpx(DETAIL_FILES_MIN_W)))
+                .when(!narrow, |row| row.w_full())
+                .aria_selected(state.selected_file.as_ref() == Some(&file.path))
                 .h_auto()
                 .min_h(rpx(FILE_ROW_H))
                 .justify_start()
@@ -1381,6 +1619,7 @@ impl Sidebar {
                 ),
             );
         }
+        let files = files.child(file_rows);
         let mut diff = div()
             .id("history-diff-area")
             .debug_selector(|| "history-diff-area".into())
@@ -1409,10 +1648,17 @@ impl Sidebar {
             );
             toolbar = toolbar
                 .child(
-                    div().flex_1().min_w_0().child(
-                        crate::views::components::readonly_value("history-selected-file", identity)
+                    div()
+                        .min_w_0()
+                        .when(!narrow, |path| path.flex_1())
+                        .when(narrow, |path| path.w_full())
+                        .child(
+                            crate::views::components::readonly_value(
+                                "history-selected-file",
+                                identity,
+                            )
                             .text_size(rpx(TEXT_SMALL)),
-                    ),
+                        ),
                 )
                 .child(
                     div()
@@ -1423,6 +1669,9 @@ impl Sidebar {
         }
         toolbar = toolbar.child(
             div()
+                .id("history-diff-mode")
+                .role(gpui::Role::Group)
+                .aria_label("Diff layout")
                 .flex()
                 .border_1()
                 .border_color(c::BORDER())
@@ -1431,7 +1680,7 @@ impl Sidebar {
                     self.history_action(
                         "history-mode-unified",
                         "Unified",
-                        "unified",
+                        "",
                         Action::HistoryDiffMode(HistoryDiffMode::Unified),
                         window,
                         cx,
@@ -1442,7 +1691,7 @@ impl Sidebar {
                     self.history_action(
                         "history-mode-split",
                         "Split",
-                        "split",
+                        "",
                         Action::HistoryDiffMode(HistoryDiffMode::Split),
                         window,
                         cx,
@@ -1501,6 +1750,7 @@ impl Sidebar {
                     ),
             );
         }
+        let mut split_scroller = None;
         let mut patch = div()
             .id("history-patch")
             .debug_selector(|| "history-patch".into())
@@ -1510,7 +1760,18 @@ impl Sidebar {
             .overflow_y_scroll()
             .text_size(rpx(TEXT_CODE_SMALL));
         if let Some(error) = &state.patch_error {
-            patch = patch.child(div().p(rpx(SPACE_2XL)).child(error.clone()));
+            patch = patch.child(Self::history_read_error(
+                "Couldn’t load the patch",
+                error,
+                self.history_action(
+                    "history-retry-patch",
+                    "Retry patch",
+                    "refresh",
+                    Action::RetryHistoryPatch,
+                    window,
+                    cx,
+                ),
+            ));
         } else if state.patch_loading {
             patch = patch.child(div().p(rpx(SPACE_2XL)).child("Loading patch…"));
         } else if let Some(value) = &state.patch {
@@ -1574,31 +1835,34 @@ impl Sidebar {
                     };
                     let eager = window.is_a11y_active() || window.is_inspector_picking(cx);
                     if state.diff_mode == HistoryDiffMode::Split {
+                        let extent =
+                            grove_core::render_rows::split_pan_extent(widest, widest, half_width);
                         let pan = grove_core::render_rows::clamp_split_pan(
-                            state.pan_x,
+                            state.pan_x.get(),
                             widest,
                             widest,
                             half_width,
                         );
+                        if extent > 0. {
+                            split_scroller = Some(self.history_split_scrollbar(
+                                &state,
+                                pan,
+                                extent,
+                                (canvas_width - file_width).max(0.),
+                                scale,
+                                cx,
+                            ));
+                        }
+                        let offset = state.pan_x.clone();
                         patch = patch.on_scroll_wheel(cx.listener(
-                            move |this, event: &gpui::ScrollWheelEvent, _, cx| {
+                            move |_, event: &gpui::ScrollWheelEvent, _, cx| {
                                 let delta = match event.delta {
                                     gpui::ScrollDelta::Pixels(p) => f32::from(p.x) / scale,
                                     gpui::ScrollDelta::Lines(p) => p.x * DIFF_BODY_LINE_H,
                                 };
                                 if delta != 0.0 {
-                                    if let Some(history) = &this.history {
-                                        history.update(cx, |history, cx| {
-                                            history.pan_x =
-                                                grove_core::render_rows::clamp_split_pan(
-                                                    history.pan_x - delta,
-                                                    widest,
-                                                    widest,
-                                                    half_width,
-                                                );
-                                            cx.notify();
-                                        });
-                                    }
+                                    offset.set((pan - delta).clamp(0., extent));
+                                    cx.notify();
                                     cx.stop_propagation();
                                 }
                             },
@@ -1652,7 +1916,7 @@ impl Sidebar {
         } else {
             patch = patch.child(div().p(rpx(SPACE_2XL)).child("Loading selected file…"));
         }
-        diff = diff.child(patch);
+        diff = diff.child(patch).children(split_scroller);
         let divider = div()
             .id("history-file-divider")
             .debug_selector(|| "history-file-divider".into())
@@ -1668,6 +1932,7 @@ impl Sidebar {
             .justify_center()
             .cursor_col_resize()
             .child(div().w(gpui::px(1.0)).h_full().bg(c::BORDER()))
+            .hover(|style| style.bg(c::BG_HOVER()))
             .focus_visible(|style| style.bg(c::BG_HOVER()))
             .on_mouse_down(
                 gpui::MouseButton::Left,
@@ -1747,8 +2012,9 @@ impl Sidebar {
                         }
                     }),
                 )
+                .when(narrow, |layout| layout.flex_col())
                 .child(files)
-                .child(divider)
+                .when(!narrow, |layout| layout.child(divider))
                 .child(diff),
         );
         body.into_any_element()
@@ -1987,6 +2253,56 @@ mod virtual_commit_tests {
         assert!(
             cx.debug_bounds("history-unified-row").unwrap().left() < row_before.left(),
             "the full unified text remains horizontally reachable"
+        );
+
+        cx.update(|window, cx| {
+            sidebar.update(cx, |sidebar, cx| {
+                sidebar.act(
+                    Action::HistoryDiffMode(
+                        crate::entities::branch_history::HistoryDiffMode::Split,
+                    ),
+                    window,
+                    cx,
+                );
+            });
+        });
+        cx.simulate_resize(gpui::size(gpui::px(360.), gpui::px(680.)));
+        for _ in 0..3 {
+            cx.run_until_parked();
+            cx.update(|window, cx| window.draw(cx).clear());
+        }
+        let files = cx.debug_bounds("history-files").unwrap();
+        let diff = cx.debug_bounds("history-diff-area").unwrap();
+        assert!(
+            files.bottom() <= diff.top(),
+            "narrow files sit above the diff"
+        );
+        assert!(cx.debug_bounds("history-file-divider").is_none());
+        let title = cx.debug_bounds("history-detail-subject").unwrap();
+        let top = cx.debug_bounds("history-detail-title-row").unwrap();
+        assert!(top.bottom() <= title.top());
+        assert!(title.right() <= files.right());
+        assert!(cx.debug_bounds("history-split-row").unwrap().size.width > gpui::px(300.));
+        let pan = cx.debug_bounds("history-split-scroll").unwrap();
+        cx.simulate_mouse_down(
+            gpui::point(pan.left() + gpui::px(10.), pan.center().y),
+            gpui::MouseButton::Left,
+            gpui::Modifiers::default(),
+        );
+        cx.simulate_keystrokes("right");
+        assert!(history.read_with(cx, |history, _| history.pan_x.get() > 0.));
+        cx.update(|window, cx| {
+            sidebar.update(cx, |sidebar, cx| {
+                sidebar.act(Action::HistoryGraph, window, cx)
+            });
+        });
+        for _ in 0..3 {
+            cx.run_until_parked();
+            cx.update(|window, cx| window.draw(cx).clear());
+        }
+        assert!(
+            cx.update(|window, _| focuses[199].is_focused(window)),
+            "return from details restores the originating commit's focus"
         );
     }
 }

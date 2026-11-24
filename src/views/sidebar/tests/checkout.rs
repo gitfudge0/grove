@@ -856,6 +856,12 @@ fn branch_history_preserves_codex_and_claude_drafts_and_canvas(cx: &mut gpui::Te
                 "expanded metadata starts collapsed at {width} for {provider:?}"
             );
             let header = cx.debug_bounds("history-detail-header").unwrap();
+            if width == 1280.0 {
+                let title_row = cx.debug_bounds("history-detail-title-row").unwrap();
+                let subject = cx.debug_bounds("history-detail-subject").unwrap();
+                assert!(title_row.size.height < gpui::px(34.));
+                assert!((f32::from(title_row.center().y - subject.center().y)).abs() < 1.0);
+            }
             let details = cx.debug_bounds("history-details").unwrap();
             let files = cx.debug_bounds("history-files").unwrap();
             let diff = cx.debug_bounds("history-diff-area").unwrap();

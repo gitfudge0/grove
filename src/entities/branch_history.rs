@@ -34,7 +34,7 @@ pub struct BranchHistoryState {
     pub patch_loading: bool,
     pub expanded: bool,
     pub diff_mode: HistoryDiffMode,
-    pub pan_x: f32,
+    pub pan_x: Rc<std::cell::Cell<f32>>,
     /// User-selected file register width in logical pixels for this history viewer.
     pub file_width: Option<f32>,
     /// Pointer origin in physical pixels and the logical width at drag start.
@@ -73,7 +73,7 @@ impl BranchHistoryState {
             patch_loading: false,
             expanded: false,
             diff_mode: HistoryDiffMode::default(),
-            pan_x: 0.0,
+            pan_x: Rc::default(),
             file_width: None,
             file_resize_drag: None,
             metadata_expanded: false,
@@ -90,7 +90,7 @@ impl BranchHistoryState {
     pub fn dismiss_preview(&mut self, cx: &mut Context<Self>) {
         self.selection_generation += 1;
         self.patch_generation += 1;
-        self.pan_x = 0.0;
+        self.pan_x.set(0.0);
         self.metadata_expanded = false;
         self.selected = None;
         self.details = None;
@@ -109,7 +109,7 @@ impl BranchHistoryState {
         self.generation += 1;
         self.selection_generation += 1;
         self.patch_generation += 1;
-        self.pan_x = 0.0;
+        self.pan_x.set(0.0);
         self.metadata_expanded = false;
         let generation = self.generation;
         self.loading = true;
@@ -155,20 +155,31 @@ impl BranchHistoryState {
         if self.selected.as_ref() == Some(&id) {
             return;
         }
-        self.selection_generation += 1;
         self.patch_generation += 1;
-        self.pan_x = 0.0;
+        self.pan_x.set(0.0);
         self.metadata_expanded = false;
-        let generation = self.selection_generation;
         self.selected = Some(id.clone());
         self.details = None;
-        self.detail_error = None;
         self.selected_file = None;
         self.patch = None;
         self.patch_error = None;
         self.patch_loading = false;
-        self.detail_loading = true;
         self.expanded = false;
+        self.load_details(id, cx);
+    }
+    pub fn retry_details(&mut self, cx: &mut Context<Self>) {
+        if !self.expanded || self.detail_loading || self.detail_error.is_none() {
+            return;
+        }
+        if let Some(id) = self.selected.clone() {
+            self.load_details(id, cx);
+        }
+    }
+    fn load_details(&mut self, id: String, cx: &mut Context<Self>) {
+        self.selection_generation += 1;
+        let generation = self.selection_generation;
+        self.detail_error = None;
+        self.detail_loading = true;
         let checkout = self.checkout.clone();
         cx.spawn(async move |this, cx| {
             let result = cx
@@ -264,13 +275,29 @@ impl BranchHistoryState {
         self.patch = Some(Rc::new(patch));
     }
 
+    pub fn retry_patch(&mut self, cx: &mut Context<Self>) {
+        if !self.expanded || self.patch_loading || self.patch_error.is_none() {
+            return;
+        }
+        let file = self.details.as_ref().and_then(|details| {
+            details
+                .files
+                .iter()
+                .find(|file| Some(file.path.as_str()) == self.selected_file.as_deref())
+                .cloned()
+        });
+        if let Some(file) = file {
+            self.file(file, cx);
+        }
+    }
+
     pub fn file(&mut self, file: FileChange, cx: &mut Context<Self>) {
         let Some(id) = self.selected.clone() else {
             return;
         };
         let generation = self.selection_generation;
         self.patch_generation += 1;
-        self.pan_x = 0.0;
+        self.pan_x.set(0.0);
         let patch_generation = self.patch_generation;
         let checkout = self.checkout.clone();
         let path = file.path.clone();
@@ -397,6 +424,61 @@ mod tests {
     }
 
     #[gpui::test]
+    fn retry_recovers_failed_reads_without_losing_inspector_context(cx: &mut gpui::TestAppContext) {
+        let (dir, id) = checkout();
+        let checkout = dir.path().to_string_lossy().into_owned();
+        let missing_checkout = dir.path().join("missing").to_string_lossy().into_owned();
+        let state = cx.new(|_| BranchHistoryState::initial(missing_checkout.clone(), 100));
+        state.update(cx, |state, cx| {
+            state.select(id.clone(), cx);
+            state.expand(cx);
+            state.set_diff_mode(HistoryDiffMode::Unified, cx);
+            state.toggle_metadata(cx);
+        });
+        cx.run_until_parked();
+        state.update(cx, |state, cx| {
+            assert!(state.detail_error.is_some());
+            state.checkout = checkout.clone();
+            state.retry_details(cx);
+            assert!(state.detail_loading);
+            assert!(state.detail_error.is_none());
+            let retry = state.selection_generation;
+            state.retry_details(cx);
+            assert_eq!(state.selection_generation, retry);
+        });
+        cx.run_until_parked();
+        state.update(cx, |state, cx| {
+            assert_eq!(state.selected_file.as_deref(), Some("alpha.txt"));
+            assert!(state.patch.is_some());
+            let beta = state.details.as_ref().unwrap().files[1].clone();
+            assert_eq!(beta.path, "beta.txt");
+            state.checkout = missing_checkout;
+            state.file(beta, cx);
+        });
+        cx.run_until_parked();
+        state.update(cx, |state, cx| {
+            assert!(state.patch_error.is_some());
+            state.checkout = checkout;
+            state.retry_patch(cx);
+            assert!(state.patch_loading);
+            assert!(state.patch_error.is_none());
+            let retry = state.patch_generation;
+            state.retry_patch(cx);
+            assert_eq!(state.patch_generation, retry);
+        });
+        cx.run_until_parked();
+        state.read_with(cx, |state, _| {
+            assert!(state.expanded);
+            assert!(state.metadata_expanded);
+            assert_eq!(state.diff_mode, HistoryDiffMode::Unified);
+            assert_eq!(state.selected.as_deref(), Some(id.as_str()));
+            assert_eq!(state.selected_file.as_deref(), Some("beta.txt"));
+            assert!(state.patch.is_some());
+            assert!(!state.patch_loading);
+        });
+    }
+
+    #[gpui::test]
     fn stale_a_b_a_patch_cannot_replace_latest_request_or_loading_state(
         cx: &mut gpui::TestAppContext,
     ) {
@@ -435,17 +517,17 @@ mod tests {
             );
             assert!(matches!(state.patch.as_deref(), Some(Patch::Text { .. })));
             assert!(!state.patch_loading);
-            state.pan_x = 100.0;
+            state.pan_x.set(100.0);
             state.select("b".repeat(40), cx);
-            assert_eq!(state.pan_x, 0.0);
+            assert_eq!(state.pan_x.get(), 0.0);
             state.finish_patch(selection, current_a, "a.txt", Ok(Patch::Binary), cx);
             assert!(state.patch.is_none());
             state.file(file("a.txt"), cx);
             let pending_selection = state.selection_generation;
             let pending_patch = state.patch_generation;
-            state.pan_x = 100.0;
+            state.pan_x.set(100.0);
             state.reload(cx);
-            assert_eq!(state.pan_x, 0.0);
+            assert_eq!(state.pan_x.get(), 0.0);
             state.finish_patch(
                 pending_selection,
                 pending_patch,

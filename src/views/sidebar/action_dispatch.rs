@@ -66,6 +66,8 @@ pub(super) enum Action {
     ToggleHistoryMetadata,
     CopyHistoryCommit,
     SelectHistoryFile(String),
+    RetryHistoryFiles,
+    RetryHistoryPatch,
     CloseDiff,
     SelectDiffFile(String),
     RefreshDiff,
@@ -873,6 +875,7 @@ impl Sidebar {
                 }
             }
             Action::OpenHistory(path) => {
+                self.history_restore_commit_focus.set(false);
                 self.history_hover = branch_history::HistoryHover::default();
                 self.dismiss_branch_peek(window, cx);
                 self.dismiss_agent_peek(window, cx);
@@ -895,6 +898,7 @@ impl Sidebar {
             }
             Action::HistoryGraph => {
                 if let Some(history) = &self.history {
+                    self.history_restore_commit_focus.set(true);
                     history.update(cx, BranchHistoryState::collapse);
                     self.history_focus.focus(window, cx);
                 }
@@ -940,6 +944,19 @@ impl Sidebar {
                     .and_then(|history| history.read(cx).selected.clone())
                 {
                     cx.write_to_clipboard(gpui::ClipboardItem::new_string(id));
+                    self.runtime.read(cx).toast.clone().update(cx, |toast, cx| {
+                        toast.set_toast("Full SHA copied", cx);
+                    });
+                }
+            }
+            Action::RetryHistoryFiles => {
+                if let Some(history) = &self.history {
+                    history.update(cx, BranchHistoryState::retry_details);
+                }
+            }
+            Action::RetryHistoryPatch => {
+                if let Some(history) = &self.history {
+                    history.update(cx, BranchHistoryState::retry_patch);
                 }
             }
             Action::SelectHistoryFile(path) => {
