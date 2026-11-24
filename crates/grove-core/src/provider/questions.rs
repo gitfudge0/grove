@@ -32,6 +32,46 @@ pub struct Question {
     pub placeholder: Option<String>,
     pub description: Option<String>,
 }
+impl Question {
+    pub fn validate_answer(&self, values: Option<&[String]>) -> Result<(), String> {
+        let values = values.ok_or("Answer every question before submitting")?;
+        if values.is_empty()
+            || (!self.multiple && values.len() != 1)
+            || values.iter().enumerate().any(|(i, value)| {
+                value.trim().is_empty()
+                    || values[..i].contains(value)
+                    || (!self.allow_custom && !self.options.iter().any(|o| o.label == *value))
+            })
+        {
+            return Err("Choose or enter a valid answer for every question".into());
+        }
+        if let QuestionKind::Number(number) = &self.kind {
+            let text = values[0].trim();
+            let unsigned = text.strip_prefix('-').unwrap_or(text);
+            let mut pieces = unsigned.split('.');
+            let whole = pieces.next().unwrap_or_default();
+            let fraction = pieces.next();
+            let decimal = !whole.is_empty()
+                && whole.bytes().all(|byte| byte.is_ascii_digit())
+                && fraction.is_none_or(|part| {
+                    !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit())
+                })
+                && pieces.next().is_none();
+            let valid = decimal
+                && text.parse::<f64>().ok().is_some_and(|value| {
+                    value.is_finite() && value >= number.min && value <= number.max
+                });
+            if !valid {
+                return Err(format!(
+                    "Enter a number between {} and {}",
+                    number.min, number.max
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+
 #[derive(Clone, Debug)]
 pub enum QuestionKind {
     Choice,
@@ -229,43 +269,7 @@ impl QuestionRequest {
             return Err("Answer every question before submitting".into());
         }
         for question in &self.questions {
-            let values = answers
-                .get(&question.id)
-                .ok_or("Answer every question before submitting")?;
-            if values.is_empty()
-                || (!question.multiple && values.len() != 1)
-                || values.iter().enumerate().any(|(i, value)| {
-                    value.trim().is_empty()
-                        || values[..i].contains(value)
-                        || (!question.allow_custom
-                            && !question.options.iter().any(|o| o.label == *value))
-                })
-            {
-                return Err("Choose or enter a valid answer for every question".into());
-            }
-            if let QuestionKind::Number(number) = &question.kind {
-                let text = values[0].trim();
-                let unsigned = text.strip_prefix('-').unwrap_or(text);
-                let mut pieces = unsigned.split('.');
-                let whole = pieces.next().unwrap_or_default();
-                let fraction = pieces.next();
-                let decimal = !whole.is_empty()
-                    && whole.bytes().all(|byte| byte.is_ascii_digit())
-                    && fraction.is_none_or(|part| {
-                        !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit())
-                    })
-                    && pieces.next().is_none();
-                let valid = decimal
-                    && text.parse::<f64>().ok().is_some_and(|value| {
-                        value.is_finite() && value >= number.min && value <= number.max
-                    });
-                if !valid {
-                    return Err(format!(
-                        "Enter a number between {} and {}",
-                        number.min, number.max
-                    ));
-                }
-            }
+            question.validate_answer(answers.get(&question.id).map(Vec::as_slice))?;
         }
         Ok(())
     }

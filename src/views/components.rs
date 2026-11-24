@@ -951,7 +951,6 @@ pub fn question_choice(
     div()
         .id(id)
         .cursor_pointer()
-        .group("neutral-control")
         .role(if multiple {
             gpui::Role::CheckBox
         } else {
@@ -974,10 +973,9 @@ pub fn question_choice(
         .gap(rpx(SPACE_LG))
         .p(rpx(SPACE_LG))
         .rounded(rpx(RADIUS_CONTROL))
-        .text_color(c::FG_DIM())
+        .text_color(c::FG())
         .bg(if selected { c::BG_HL() } else { c::BG_RAIL() })
-        .when(selected, |row| row.text_color(c::FG()))
-        .hover(|style| style.bg(c::BG_HOVER()).text_color(c::FG()))
+        .hover(|style| style.bg(c::BG_HOVER()))
         .focus_visible(|style| style.bg(c::BG_HOVER()).border_color(c::BORDER_STRONG()))
         .border_1()
         .border_color(c::BORDER_SOFT())
@@ -1013,8 +1011,7 @@ pub fn question_choice(
                     row.child(
                         div()
                             .text_size(rpx(TEXT_SMALL))
-                            .text_color(if selected { c::FG() } else { c::FG_DIM() })
-                            .group_hover("neutral-control", |text| text.text_color(c::FG()))
+                            .text_color(c::FG_DIM())
                             .child(description),
                     )
                 }),

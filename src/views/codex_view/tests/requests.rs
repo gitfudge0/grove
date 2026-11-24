@@ -114,6 +114,13 @@ fn extended_number_and_text_questions_render_defaults_validate_and_cancel(
         .into_iter()
         .all(|action| !matches!(action, Action::AnswerQuestions(_, _))));
     assert!(cx.debug_bounds("questions-validation-0").is_some());
+    let next = cx.debug_bounds("questions-next-0").unwrap();
+    cx.simulate_click(next.center(), gpui::Modifiers::default());
+    cx.update(|window, cx| {
+        view.update(cx, |view, _| {
+            assert!(view.question_drafts[&key].row_focus[0].is_focused(window));
+        });
+    });
     cx.update(|window, cx| {
         view.update(cx, |view, cx| {
             let input = view.question_drafts[&key].questions[0].input.clone();

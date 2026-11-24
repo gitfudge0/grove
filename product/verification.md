@@ -545,6 +545,14 @@ These images establish no visual fidelity. macOS and Windows runtime, browser
 completion and elicitation live boundaries remain untested. Evidence is retained
 in the original checkout under `.grove-artifacts/question-shipping/`.
 
+
+The follow-up for question choice contrast, answer readiness and MCP form
+layout was checked with shared Codex and Claude question fixtures. These use
+typed requests and do not exercise either live provider. An isolated Linux
+question capture again produced black images and failed during teardown with
+the existing InputState handle leak. Native visual acceptance for the follow-up
+remains open, including light/dark, narrow and enlarged-rem layouts.
+
 # Verification and known gaps
 
 ## Pending transcript message ordering (November 2026)

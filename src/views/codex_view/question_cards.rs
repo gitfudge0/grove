@@ -462,18 +462,16 @@ impl CodexView {
         let draft = &self.question_drafts[&key];
         let submitting = draft.submitting;
         let answers = self.question_answers(&key, request, cx);
-        let answered = request
+        let answer_checks: Vec<_> = request
             .questions
             .iter()
-            .filter(|question| question_has_answer(question, &answers))
-            .count();
+            .map(|question| question.validate_answer(answers.get(&question.id).map(Vec::as_slice)))
+            .collect();
+        let ready_count = answer_checks.iter().filter(|check| check.is_ok()).count();
         let validation = request.validate(&answers);
         let ready = !submitting && validation.is_ok();
         let reviewing = draft.reviewing;
-        let next_index = request
-            .questions
-            .iter()
-            .position(|question| !question_has_answer(question, &answers));
+        let next_index = answer_checks.iter().position(Result::is_err);
         let next_key = key.clone();
         let mut group = div()
             .id(("agent-question-group", request_index))
@@ -531,7 +529,7 @@ impl CodexView {
                             .text_size(rpx(TEXT_SMALL))
                             .text_color(c::FG_DIM())
                             .child(format!(
-                                "{answered} of {} answered · {}",
+                                "{ready_count} of {} ready · {}",
                                 request.questions.len(),
                                 if reviewing { "review" } else { "draft" }
                             )),
@@ -539,7 +537,7 @@ impl CodexView {
                     .child(
                         transcript_action(
                             gpui::SharedString::from(format!("questions-next-{request_index}")),
-                            "Next unanswered",
+                            "Next incomplete",
                             false,
                             window,
                             cx,
@@ -571,6 +569,24 @@ impl CodexView {
         for (question_index, question) in request.questions.iter().enumerate() {
             let question_draft = &draft.questions[question_index];
             if reviewing {
+                let mut summary = div().flex().flex_col().gap(rpx(SPACE_XS));
+                if question.multiple && !question.secret {
+                    if let Some(values) = answers.get(&question.id) {
+                        for (index, value) in values.iter().enumerate() {
+                            if question_draft.custom && index + 1 == values.len() {
+                                summary = summary.child(
+                                    div()
+                                        .text_size(rpx(TEXT_SMALL))
+                                        .text_color(c::FG_DIM())
+                                        .child("Custom answer"),
+                                );
+                            }
+                            summary = summary.child(div().child(value.clone()));
+                        }
+                    }
+                } else {
+                    summary = summary.child(question_answer_summary(question, &answers));
+                }
                 group = group.child(
                     div()
                         .flex()
@@ -585,7 +601,7 @@ impl CodexView {
                                 .text_color(c::FG_DIM())
                                 .child(question.text.clone()),
                         )
-                        .child(div().child(question_answer_summary(question, &answers))),
+                        .child(summary),
                 );
                 continue;
             }
@@ -628,14 +644,31 @@ impl CodexView {
                 .tab_index(0)
                 .debug_selector(move || format!("question-row-{request_index}-{question_index}"))
                 .focus_visible(|style| style.bg(c::BG_HOVER()))
-                .when(!question.header.is_empty(), |field| {
-                    field.child(
-                        div()
-                            .text_size(rpx(TEXT_SMALL))
-                            .text_color(c::FG_DIM())
-                            .child(question.header.clone()),
-                    )
-                });
+                .when(
+                    !question.header.is_empty() || !question.options.is_empty(),
+                    |field| {
+                        let instruction = if question.options.is_empty() {
+                            ""
+                        } else if question.multiple {
+                            "Select all that apply"
+                        } else {
+                            "Select one"
+                        };
+                        let supporting = if question.header.is_empty() {
+                            instruction.to_owned()
+                        } else if instruction.is_empty() {
+                            question.header.clone()
+                        } else {
+                            format!("{} · {instruction}", question.header)
+                        };
+                        field.child(
+                            div()
+                                .text_size(rpx(TEXT_SMALL))
+                                .text_color(c::FG_DIM())
+                                .child(supporting),
+                        )
+                    },
+                );
             if let Some(description) = &question.description {
                 field = field.child(
                     div()
@@ -657,14 +690,6 @@ impl CodexView {
                         .text_size(rpx(TEXT_SMALL))
                         .text_color(c::FG_DIM())
                         .child(hint),
-                );
-            }
-            if question.multiple {
-                field = field.child(
-                    div()
-                        .text_size(rpx(TEXT_SMALL))
-                        .text_color(c::FG_DIM())
-                        .child("Select all that apply"),
                 );
             }
             for (option_index, option) in question.options.iter().enumerate() {
@@ -746,77 +771,77 @@ impl CodexView {
                 let multiple = question.multiple;
                 let choice_count = question.options.len();
                 field = field.child(
-                    transcript_action(
-                        gpui::SharedString::from(format!(
-                            "question-other-{request_index}-{question_index}"
-                        )),
-                        if question_draft.custom {
-                            "Use suggested answers"
-                        } else {
-                            "Write my own answer"
-                        },
-                        false,
-                        window,
-                        cx,
-                    )
-                    .icon(
-                        gpui_component::Icon::default()
-                            .path("icons/edit.svg")
-                            .size(rpx(ICON_SM)),
-                    )
-                    .disabled(submitting)
-                    .with_focus_handle(question_draft.choice_focus[question.options.len()].clone())
-                    .when(submitting, |row| {
-                        row.cursor_default().opacity(OPACITY_DISABLED)
-                    })
-                    .debug_selector(move || {
-                        format!("question-other-{request_index}-{question_index}")
-                    })
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        this.select_question_choice(
-                            &click_key,
-                            question_index,
-                            None,
-                            multiple,
+                    div().flex().pl(rpx(SPACE_3XL + SPACE_LG)).child(
+                        transcript_action(
+                            gpui::SharedString::from(format!(
+                                "question-other-{request_index}-{question_index}"
+                            )),
+                            match (question_draft.custom, question.multiple) {
+                                (true, true) => "Remove custom answer",
+                                (true, false) => "Return to suggested answers",
+                                (false, true) => "Add a custom answer",
+                                (false, false) => "Use a custom answer instead",
+                            },
+                            false,
                             window,
                             cx,
-                        );
-                    }))
-                    .on_key_down(cx.listener(
-                        move |this, event: &gpui::KeyDownEvent, window, cx| {
-                            if event.is_held {
-                                return;
-                            }
-                            let choice = match event.keystroke.key.as_str() {
-                                "enter" | "space" => Some(None),
-                                "up" | "left" if !multiple => Some(Some(choice_count - 1)),
-                                "down" | "right" if !multiple => Some(Some(0)),
-                                _ => None,
-                            };
-                            if let Some(choice) = choice {
-                                this.select_question_choice(
-                                    &keyboard_key,
-                                    question_index,
-                                    choice,
-                                    multiple,
-                                    window,
-                                    cx,
-                                );
-                                cx.stop_propagation();
-                            }
-                        },
-                    )),
+                        )
+                        .icon(
+                            gpui_component::Icon::default()
+                                .path("icons/edit.svg")
+                                .size(rpx(ICON_SM)),
+                        )
+                        .disabled(submitting)
+                        .with_focus_handle(
+                            question_draft.choice_focus[question.options.len()].clone(),
+                        )
+                        .when(submitting, |row| {
+                            row.cursor_default().opacity(OPACITY_DISABLED)
+                        })
+                        .debug_selector(move || {
+                            format!("question-other-{request_index}-{question_index}")
+                        })
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.select_question_choice(
+                                &click_key,
+                                question_index,
+                                None,
+                                multiple,
+                                window,
+                                cx,
+                            );
+                        }))
+                        .on_key_down(cx.listener(
+                            move |this, event: &gpui::KeyDownEvent, window, cx| {
+                                if event.is_held {
+                                    return;
+                                }
+                                let choice = match event.keystroke.key.as_str() {
+                                    "enter" | "space" => Some(None),
+                                    "up" | "left" if !multiple => Some(Some(choice_count - 1)),
+                                    "down" | "right" if !multiple => Some(Some(0)),
+                                    _ => None,
+                                };
+                                if let Some(choice) = choice {
+                                    this.select_question_choice(
+                                        &keyboard_key,
+                                        question_index,
+                                        choice,
+                                        multiple,
+                                        window,
+                                        cx,
+                                    );
+                                    cx.stop_propagation();
+                                }
+                            },
+                        )),
+                    ),
                 );
             }
             if question_draft.custom {
-                let mut single = request.clone();
-                single.questions = vec![question.clone()];
-                let own_answers = answers
-                    .iter()
-                    .filter(|(id, _)| **id == question.id)
-                    .map(|(id, values)| (id.clone(), values.clone()))
-                    .collect();
-                let field_error = single.validate(&own_answers).err();
+                let field_error = question_has_answer(question, &answers)
+                    .then(|| answer_checks[question_index].as_ref().err())
+                    .flatten();
                 let focused = question_draft.input.focus_handle(cx).is_focused(window);
                 field = field.child(attached_validation(
                     gpui::SharedString::from(format!(
@@ -837,7 +862,7 @@ impl CodexView {
                                 .text_color(c::FG())
                                 .p_0(),
                         ),
-                    field_error.as_deref(),
+                    field_error.map(String::as_str),
                 ));
             }
             group = group.child(field);

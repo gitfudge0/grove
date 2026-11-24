@@ -335,7 +335,12 @@ impl CodexView {
                 ElicitationMode::Url { url, .. } => {
                     let open_url = url.clone();
                     group = group
-                        .child(div().text_size(rpx(TEXT_SMALL)).child(url.clone()))
+                        .child(
+                            div()
+                                .text_size(rpx(TEXT_SMALL))
+                                .text_color(c::FG_DIM())
+                                .child(url.clone()),
+                        )
                         .child(
                             form_action(
                                 gpui::SharedString::from(format!(
@@ -421,6 +426,53 @@ impl CodexView {
                             ));
                         }
                         if field_draft.included {
+                            let limit = match &field.kind {
+                                ElicitationKind::MultiSelect {
+                                    min_items,
+                                    max_items,
+                                    ..
+                                } => match (min_items, max_items) {
+                                    (Some(min), Some(max)) if min == max => {
+                                        Some(format!("Select {min}"))
+                                    }
+                                    (Some(min), Some(max)) => Some(format!("Select {min}–{max}")),
+                                    (Some(min), None) => Some(format!("Select at least {min}")),
+                                    (None, Some(max)) => Some(format!("Select up to {max}")),
+                                    (None, None) => Some("Select all that apply".to_owned()),
+                                },
+                                ElicitationKind::Number {
+                                    minimum,
+                                    maximum,
+                                    integer,
+                                } => {
+                                    let kind = if *integer {
+                                        "a whole number"
+                                    } else {
+                                        "a number"
+                                    };
+                                    match (minimum, maximum) {
+                                        (Some(min), Some(max)) => {
+                                            Some(format!("Enter {kind} from {min} to {max}"))
+                                        }
+                                        (Some(min), None) => {
+                                            Some(format!("Enter {kind} of at least {min}"))
+                                        }
+                                        (None, Some(max)) => {
+                                            Some(format!("Enter {kind} up to {max}"))
+                                        }
+                                        (None, None) => None,
+                                    }
+                                }
+                                _ => None,
+                            };
+                            if let Some(limit) = limit {
+                                row = row.child(
+                                    div()
+                                        .text_size(rpx(TEXT_SMALL))
+                                        .text_color(c::FG_DIM())
+                                        .child(limit),
+                                );
+                            }
                             match &field.kind {
                                 ElicitationKind::Boolean => {
                                     row = row.child(self.elicitation_choice(
@@ -428,7 +480,7 @@ impl CodexView {
                                         index,
                                         request_index,
                                         ElicitationChoice::Boolean,
-                                        field.title.clone(),
+                                        "Yes".to_owned(),
                                         field_draft.boolean,
                                         draft.submitting,
                                         cx,
@@ -503,8 +555,11 @@ impl CodexView {
                     }
                 }
             }
-            let mut buttons = div().flex().flex_wrap().gap(rpx(SPACE_LG));
+            let mut secondary = div().flex().flex_wrap().gap(rpx(SPACE_LG));
+            let mut primary = None;
             for (action, label) in [
+                ("cancel", "Cancel request"),
+                ("decline", "Decline"),
                 (
                     "accept",
                     if matches!(request.mode, ElicitationMode::Url { .. }) {
@@ -516,34 +571,49 @@ impl CodexView {
                         "Submit"
                     },
                 ),
-                ("decline", "Decline"),
-                ("cancel", "Cancel request"),
             ] {
                 let click_key = key.clone();
                 let id = request.id.clone();
-                buttons = buttons.child(
-                    form_action(
-                        gpui::SharedString::from(format!("elicitation-{request_index}-{action}")),
-                        label,
-                        action == "accept",
-                        window,
-                        cx,
-                    )
-                    .icon(
-                        gpui_component::Icon::default()
-                            .path(gpui::SharedString::from(format!(
-                                "icons/{}.svg",
-                                if action == "accept" { "check" } else { "close" }
-                            )))
-                            .size(rpx(ICON_SM)),
-                    )
-                    .disabled(draft.submitting || (action == "accept" && valid.is_err()))
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.respond_elicitation(&click_key, id.clone(), action, cx);
-                    })),
-                );
+                let button = form_action(
+                    gpui::SharedString::from(format!("elicitation-{request_index}-{action}")),
+                    label,
+                    action == "accept",
+                    window,
+                    cx,
+                )
+                .icon(
+                    gpui_component::Icon::default()
+                        .path(gpui::SharedString::from(format!(
+                            "icons/{}.svg",
+                            if action == "accept" { "check" } else { "close" }
+                        )))
+                        .size(rpx(ICON_SM)),
+                )
+                .disabled(draft.submitting || (action == "accept" && valid.is_err()))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.respond_elicitation(&click_key, id.clone(), action, cx);
+                }));
+                if action == "accept" {
+                    primary = Some(button);
+                } else {
+                    secondary = secondary.child(button);
+                }
             }
-            panel = panel.child(group.child(buttons));
+            panel = panel.child(
+                group.child(
+                    div()
+                        .flex()
+                        .flex_wrap()
+                        .justify_between()
+                        .items_center()
+                        .border_t_1()
+                        .border_color(c::BORDER_SOFT())
+                        .pt(rpx(SPACE_LG))
+                        .gap(rpx(SPACE_LG))
+                        .child(secondary)
+                        .children(primary),
+                ),
+            );
         }
         panel
     }
@@ -607,6 +677,11 @@ impl CodexView {
     ) -> gpui::Stateful<gpui::Div> {
         let click_key = key.to_owned();
         let keyboard_key = key.to_owned();
+        let description = if matches!(&choice, ElicitationChoice::Boolean) {
+            "Unchecked sends No.".to_owned()
+        } else {
+            String::new()
+        };
         let (value, multiple, include) = match choice {
             ElicitationChoice::Include => (None, true, true),
             ElicitationChoice::Boolean => (None, true, false),
@@ -628,7 +703,7 @@ impl CodexView {
         question_choice(
             gpui::SharedString::from(identity),
             label,
-            String::new(),
+            description,
             multiple,
             selected,
         )
