@@ -5,9 +5,12 @@ use super::{
 };
 use crate::{
     entities::provider_updates::ProviderRow,
-    views::tokens::{
-        FIELD_LABEL_COL_W, ICON_SM, RADIUS_PANEL, SPACE_2XL, SPACE_LG, SPACE_SM, TEXT_BODY,
-        TEXT_SMALL,
+    views::{
+        connections_panel::provider_detail_fields,
+        tokens::{
+            FIELD_LABEL_COL_W, ICON_SM, RADIUS_PANEL, SPACE_2XL, SPACE_LG, SPACE_SM, TEXT_BODY,
+            TEXT_SMALL,
+        },
     },
 };
 use gpui::prelude::{
@@ -391,6 +394,19 @@ impl SettingsPanel {
                 (StatusKind::Unknown, "Version not checked".into()),
                 version_summary,
             );
+            let version_cell = if version_kind == StatusKind::Idle
+                && row.is_some_and(|row| row.status.installed.as_deref() == Some(version.as_ref()))
+            {
+                div().text_color(c::FG_DIM()).child(version)
+            } else {
+                status::label(
+                    format!("{id}-version-status"),
+                    version_kind,
+                    version,
+                    ICON_SM,
+                    cx,
+                )
+            };
             let identity = div()
                 .flex()
                 .items_center()
@@ -423,13 +439,7 @@ impl SettingsPanel {
                     div()
                         .flex_1()
                         .min_w(rpx(FIELD_LABEL_COL_W))
-                        .child(status::label(
-                            format!("{id}-version-status"),
-                            version_kind,
-                            version,
-                            ICON_SM,
-                            cx,
-                        )),
+                        .child(version_cell),
                 );
             let row_header = if compact {
                 div()
@@ -505,8 +515,6 @@ impl SettingsPanel {
         let mut value = div()
             .flex()
             .flex_col()
-            .flex_1()
-            .min_w(rpx(FIELD_LABEL_COL_W))
             .gap(rpx(SPACE_SM))
             .text_size(rpx(TEXT_SMALL))
             .text_color(c::FG_DIM());
@@ -514,11 +522,19 @@ impl SettingsPanel {
         if let Some(row) = row {
             let guidance = match &row.status.installer {
                 Installer::Npm { .. } => "npm",
-                Installer::ClaudeNative => "Native updater · configured channel",
+                Installer::ClaudeNative => "Native updater",
                 Installer::External { guidance } if row.status.executable.is_some() => guidance,
                 Installer::External { .. } => "Install the provider CLI, then check again.",
             };
-            value = value.child(div().child(guidance.to_owned()));
+            if matches!(row.status.installer, Installer::ClaudeNative) {
+                value = value
+                    .child(div().text_size(rpx(TEXT_BODY)).text_color(c::FG()).child(guidance.to_owned()))
+                    .child(div().child(
+                        "Installs any update available on your configured Claude Code release channel.",
+                    ));
+            } else {
+                value = value.child(div().child(guidance.to_owned()));
+            }
             if let Some(latest) = row
                 .status
                 .latest
@@ -587,7 +603,7 @@ impl SettingsPanel {
                     if row.update_error().is_some() {
                         "Retry update"
                     } else if matches!(row.status.installer, Installer::ClaudeNative) {
-                        "Run Claude updater"
+                        "Check and update"
                     } else {
                         "Update"
                     },
@@ -604,30 +620,10 @@ impl SettingsPanel {
         div()
             .id(format!("{id}-version-actions"))
             .debug_selector(move || format!("{id}-version-actions"))
-            .flex()
-            .items_start()
-            .flex_wrap()
-            .gap(rpx(SPACE_LG))
             .py(rpx(SPACE_2XL))
             .when(agent != Agent::OpenCode, |el| {
                 el.border_t_1().border_color(c::BORDER_SOFT())
             })
-            .child(
-                div()
-                    .w(rpx(FIELD_LABEL_COL_W))
-                    .font_weight(FontWeight::MEDIUM)
-                    .child("Installation"),
-            )
-            .child(
-                div()
-                    .flex_1()
-                    .min_w(rpx(FIELD_LABEL_COL_W))
-                    .flex()
-                    .flex_wrap()
-                    .items_start()
-                    .gap(rpx(SPACE_LG))
-                    .child(value)
-                    .child(actions),
-            )
+            .child(provider_detail_fields("Installation", value, actions))
     }
 }

@@ -201,7 +201,7 @@ impl SettingsPanel {
                             status: ProviderStatus {
                                 agent,
                                 installed: Some("1.0.0".into()),
-                                latest: Some("1.1.0".into()),
+                                latest: (agent == Agent::Codex).then(|| "1.1.0".into()),
                                 executable: Some("/fixture/provider".into()),
                                 error: None,
                                 installer: if agent == Agent::Claude {
@@ -340,11 +340,33 @@ fn provider_actions_fit_native_widths_and_zoom(cx: &mut gpui::TestAppContext) {
         panel.update(cx, |panel, cx| {
             panel.open_provider_updates(window, cx);
             panel.fixture_providers(window, cx);
-            panel.managed_provider = Some(Agent::Codex);
         });
     });
-    for width in [900., 500., 320.] {
-        for rem in [16., 24.] {
+    for (index, (agent, card, installation, header_actions)) in [
+        (
+            Agent::Codex,
+            "settings-provider-codex-management",
+            "settings-provider-codex-version-actions",
+            "settings-provider-codex-actions",
+        ),
+        (
+            Agent::Claude,
+            "settings-provider-claude-management",
+            "settings-provider-claude-version-actions",
+            "settings-provider-claude-actions",
+        ),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        cx.update(|window, cx| {
+            panel.update(cx, |panel, cx| {
+                panel.managed_provider = Some(agent);
+                panel.provider_accounts[index]
+                    .update(cx, |account, cx| account.fixture("connected", window, cx));
+            });
+        });
+        for (width, rem) in [(900., 16.), (620., 16.), (500., 24.), (320., 24.)] {
             cx.simulate_resize(gpui::size(gpui::px(width), gpui::px(1200.)));
             cx.update(|window, cx| {
                 window.set_rem_size(gpui::px(rem));
@@ -352,16 +374,27 @@ fn provider_actions_fit_native_widths_and_zoom(cx: &mut gpui::TestAppContext) {
             });
             draw(cx);
             let body = cx.debug_bounds("settings-body").unwrap();
-            for name in [
-                "settings-provider-codex-actions",
-                "provider-account-actions",
-                "settings-provider-codex-version-actions",
-            ] {
-                let action = cx.debug_bounds(name).unwrap();
+            let card = cx.debug_bounds(card).unwrap();
+            let account_actions = cx.debug_bounds("provider-account-actions").unwrap();
+            let installation = cx.debug_bounds(installation).unwrap();
+            let header_actions = cx.debug_bounds(header_actions).unwrap();
+            for action in [header_actions, account_actions, installation] {
                 assert!(
                     action.left() >= body.left() && action.right() <= body.right(),
-                    "{name} outside body at {width}/{rem}: {action:?}, {body:?}"
+                    "{agent:?} action outside body at {width}/{rem}: {action:?}, {body:?}"
                 );
+            }
+            assert!(
+                account_actions.top() > card.top() && account_actions.bottom() < installation.top()
+            );
+            if agent == Agent::Claude {
+                let update = cx
+                    .debug_bounds("settings-provider-claude-version-update")
+                    .expect("Claude native updater belongs in Installation");
+                assert!(update.left() >= card.left() && update.right() <= card.right());
+                if width == 900. {
+                    assert_eq!(update.right(), account_actions.right());
+                }
             }
         }
     }
@@ -569,9 +602,11 @@ fn providers_review_linux_capture() {
                         "collapsed",
                         "codex",
                         "claude",
+                        "claude-connected",
                         "browser",
                         "waiting",
                         "confirm",
+                        "claude-confirm",
                         "external",
                     ] {
                         cx.update(|cx| {
@@ -587,15 +622,22 @@ fn providers_review_linux_capture() {
                                 panel.fixture_providers(window, cx);
                                 panel.managed_provider = match scenario {
                                     "collapsed" => None,
-                                    "claude" | "external" => Some(Agent::Claude),
+                                    "claude" | "claude-connected" | "claude-confirm"
+                                    | "external" => Some(Agent::Claude),
                                     _ => Some(Agent::Codex),
                                 };
                                 let index =
                                     usize::from(panel.managed_provider == Some(Agent::Claude));
-                                if ["browser", "waiting", "confirm", "external"].contains(&scenario)
+                                let account_scenario = match scenario {
+                                    "claude-connected" => "connected",
+                                    "claude-confirm" => "confirm",
+                                    _ => scenario,
+                                };
+                                if ["connected", "browser", "waiting", "confirm", "external"]
+                                    .contains(&account_scenario)
                                 {
                                     panel.provider_accounts[index].update(cx, |account, cx| {
-                                        account.fixture(scenario, window, cx);
+                                        account.fixture(account_scenario, window, cx);
                                     });
                                 }
                                 cx.notify();

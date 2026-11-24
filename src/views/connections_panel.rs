@@ -17,6 +17,48 @@ use grove_core::{
 };
 use std::time::Duration;
 
+// Keep enough room for a detail value before placing actions alongside it.
+const PROVIDER_DETAIL_VALUE_W: f32 = 208.0;
+const REFRESH_ACCOUNT: &str = "Refresh account";
+
+pub(super) fn provider_detail_fields(
+    label: &'static str,
+    value: gpui::Div,
+    actions: impl IntoElement,
+) -> gpui::Div {
+    div()
+        .flex()
+        .flex_wrap()
+        .items_start()
+        .gap(rpx(SPACE_LG))
+        .child(
+            div()
+                .w(rpx(FIELD_LABEL_COL_W))
+                .flex_shrink_0()
+                .pt(rpx(SPACE_XS))
+                .font_weight(FontWeight::MEDIUM)
+                .child(label),
+        )
+        .child(
+            div()
+                .flex()
+                .flex_wrap()
+                .items_start()
+                .gap(rpx(SPACE_LG))
+                .flex_basis(rpx(PROVIDER_DETAIL_VALUE_W))
+                .flex_grow_1()
+                .min_w_0()
+                .child(
+                    value
+                        .flex_basis(rpx(PROVIDER_DETAIL_VALUE_W))
+                        .flex_grow_1()
+                        .min_w_0()
+                        .pt(rpx(SPACE_XS)),
+                )
+                .child(actions),
+        )
+}
+
 pub struct ConnectionChanged(pub Provider);
 impl gpui::EventEmitter<ConnectionChanged> for ConnectionsPanel {}
 
@@ -517,6 +559,7 @@ impl ConnectionsPanel {
             .min_w_0()
             .flex()
             .flex_col()
+            .py(rpx(SPACE_2XL))
             .gap(rpx(SPACE_SM));
         if self.account_in_progress() {
             return body.child(self.render_provider_auth(window, cx));
@@ -526,7 +569,9 @@ impl ConnectionsPanel {
             _ if self.checking => ("Checking account…".into(), None, false),
             Some(Ok(AccountStatus::Connected { identity, method })) => (
                 identity.as_deref().unwrap_or(method).to_owned(),
-                Some(if identity.is_some() {
+                Some(if self.provider == Provider::Claude {
+                    "Shared by Grove and the Claude Code CLI.".into()
+                } else if identity.is_some() {
                     format!("{method} · Shared CLI login")
                 } else {
                     "Shared CLI login".into()
@@ -547,31 +592,21 @@ impl ConnectionsPanel {
             ),
             None => ("Sign-in not checked".into(), None, false),
         };
-        let label = div()
-            .w(rpx(FIELD_LABEL_COL_W))
-            .flex_shrink_0()
-            .font_weight(FontWeight::MEDIUM)
-            .child("CLI account");
-        let mut values = div()
-            .flex_1()
-            .min_w(rpx(FIELD_LABEL_COL_W))
-            .child(value)
-            .when_some(note, |cell, note| {
-                cell.child(
-                    div()
-                        .text_size(rpx(TEXT_SMALL))
-                        .text_color(c::FG_DIM())
-                        .child(note),
-                )
-            });
+        let mut values = div().child(value).when_some(note, |cell, note| {
+            cell.child(
+                div()
+                    .text_size(rpx(TEXT_SMALL))
+                    .text_color(c::FG_DIM())
+                    .child(note),
+            )
+        });
         let mut actions = components::form_actions()
             .w_auto()
             .max_w_full()
-            .flex_shrink_1()
             .id("provider-account-actions")
             .debug_selector(|| "provider-account-actions".into());
         if self.confirmation.is_some() {
-            values = div().flex_1().min_w(rpx(FIELD_LABEL_COL_W)).child(
+            values = div().child(
                 div()
                     .id("connections-confirmation")
                     .debug_selector(|| "connections-confirmation".into())
@@ -623,7 +658,7 @@ impl ConnectionsPanel {
             actions = actions.child(
                 Self::button(
                     "connections-refresh",
-                    "Refresh",
+                    REFRESH_ACCOUNT,
                     "refresh",
                     !busy,
                     false,
@@ -651,36 +686,16 @@ impl ConnectionsPanel {
                 );
             }
         }
-        body.child(
-            div()
-                .w_full()
-                .min_w_0()
-                .flex()
-                .flex_wrap()
-                .items_start()
-                .gap(rpx(SPACE_LG))
-                .child(label)
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w(rpx(FIELD_LABEL_COL_W))
-                        .flex()
-                        .flex_wrap()
-                        .items_start()
-                        .gap(rpx(SPACE_LG))
-                        .child(values)
-                        .child(actions),
-                ),
-        )
-        .when_some(self.message.as_ref(), |body, (kind, message)| {
-            body.child(status::label(
-                "connections-result",
-                *kind,
-                message.clone(),
-                ICON_SM,
-                cx,
-            ))
-        })
+        body.child(provider_detail_fields("CLI account", values, actions))
+            .when_some(self.message.as_ref(), |body, (kind, message)| {
+                body.child(status::label(
+                    "connections-result",
+                    *kind,
+                    message.clone(),
+                    ICON_SM,
+                    cx,
+                ))
+            })
     }
     fn render_provider_auth(&self, window: &Window, cx: &mut Context<Self>) -> gpui::Div {
         let snapshot = self.job_snapshot.as_ref();
@@ -794,7 +809,20 @@ impl ConnectionsPanel {
         window: &Window,
         cx: &Context<Self>,
     ) -> gpui_component::button::Button {
-        components::form_action(id, label, primary, window, cx)
+        let button = if label == "Confirm sign-out" {
+            components::dense_action_with_colors(
+                id,
+                label,
+                c::FIELD_FILL(),
+                c::STATUS_ERROR(),
+                c::BG_HOVER(),
+                window,
+                cx,
+            )
+        } else {
+            components::form_action(id, label, primary, window, cx)
+        };
+        button
             .icon(
                 gpui_component::Icon::default()
                     .path(format!("icons/{glyph}.svg"))
@@ -825,7 +853,7 @@ impl ConnectionsPanel {
                         return;
                     }
                     if ![
-                        "Refresh",
+                        REFRESH_ACCOUNT,
                         "Sign in",
                         "Sign out",
                         "Cancel",
@@ -841,7 +869,7 @@ impl ConnectionsPanel {
                     window.prevent_default();
                     cx.stop_propagation();
                     match label {
-                        "Refresh" => this.refresh(false, cx),
+                        REFRESH_ACCOUNT => this.refresh(false, cx),
                         "Sign in" => this.start(ConnectionAction::Login, window, cx),
                         "Sign out" => this.confirm_account_sign_out(window, cx),
                         "Cancel" => {
