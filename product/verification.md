@@ -559,6 +559,14 @@ These images establish no visual fidelity. macOS and Windows runtime, browser
 completion and elicitation live boundaries remain untested. Evidence is retained
 in the original checkout under `.grove-artifacts/question-shipping/`.
 
+Compact question receipts passed native GPUI fixtures for Codex and Claude at
+wide and narrow widths and at enlarged rem. The fixtures exercise the collapsed
+five-question summary, pointer expansion, keyboard collapse, wrapped details,
+acknowledgment, secret redaction and async echo handling. Live provider delivery
+was not rerun. The isolated Linux receipt capture produced blank frames for both
+provider fixtures and hit the existing InputState handle leak at teardown.
+Native visual comparison, including macOS and Windows, remains unverified.
+
 
 The follow-up for question choice contrast, answer readiness and MCP form
 layout was checked with shared Codex and Claude question fixtures. These use

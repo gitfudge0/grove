@@ -463,7 +463,16 @@ struct QuestionReceipt {
     echo_text: Option<String>,
     echo_after: usize,
     title: Option<String>,
-    answers: Vec<(String, String)>,
+    answers: Vec<QuestionReceiptAnswer>,
+    expanded: bool,
+    details_focus: FocusHandle,
+}
+
+#[derive(Clone, Debug)]
+struct QuestionReceiptAnswer {
+    header: String,
+    prompt: String,
+    values: Vec<String>,
 }
 
 struct QuestionGroupDraft {
@@ -486,23 +495,31 @@ fn question_has_answer(question: &codex::Question, answers: &codex::QuestionAnsw
 }
 
 fn question_answer_summary(question: &codex::Question, answers: &codex::QuestionAnswers) -> String {
+    question_answer_values(question, answers).join(", ")
+}
+
+fn question_answer_values(
+    question: &codex::Question,
+    answers: &codex::QuestionAnswers,
+) -> Vec<String> {
     if !question_has_answer(question, answers) {
-        "Not answered".into()
+        vec!["Not answered".into()]
     } else if question.secret {
-        "Provided securely".into()
+        vec!["Provided securely".into()]
     } else {
-        let mut summary = answers[&question.id]
+        let mut values = answers[&question.id]
             .iter()
             .filter(|value| !value.trim().is_empty())
             .cloned()
-            .collect::<Vec<_>>()
-            .join(", ");
+            .collect::<Vec<_>>();
         if let codex::QuestionKind::Number(number) = &question.kind {
             if let Some(unit) = &number.unit {
-                let _ = write!(summary, " {unit}");
+                for value in &mut values {
+                    let _ = write!(value, " {unit}");
+                }
             }
         }
-        summary
+        values
     }
 }
 

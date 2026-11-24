@@ -795,6 +795,7 @@ fn plan_composer_linux_capture() {
         "use isolated configuration"
     );
     let output = std::env::var("GROVE_PLAN_CAPTURE_DIR").expect("capture directory");
+    let capture_receipt = std::env::var_os("GROVE_QUESTION_RECEIPT_CAPTURE").is_some();
     fs_err::create_dir_all(&output).unwrap();
     gpui_platform::application().with_assets(crate::assets::Assets).run(move |cx| {
             gpui_component::init(cx);
@@ -816,7 +817,11 @@ fn plan_composer_linux_capture() {
             }, |window,cx| {
                 window.set_window_title("Grove plans QA");
                 let provider = if std::env::var("GROVE_PLAN_CAPTURE_PROVIDER").as_deref() == Ok("claude") { codex::Provider::Claude } else { codex::Provider::Codex };
-                let state = if std::env::var_os("GROVE_QUESTION_CAPTURE").is_some() { question_review_snapshot(provider) } else if std::env::var_os("GROVE_PLAN_BEHAVIOR_CAPTURE").is_some() { behavior_plan_snapshot(provider) } else if std::env::var_os("GROVE_PLAN_OVERVIEW_CAPTURE").is_some() { overview_plan_snapshot(provider) } else if std::env::var_os("GROVE_PLAN_REQUEST_CAPTURE").is_some() { plan_request_snapshot(provider) } else { decision_plan_snapshot(provider) };
+                let state = if capture_receipt {
+                    let mut state = snapshot();
+                    state.saved.provider = provider;
+                    state
+                } else if std::env::var_os("GROVE_QUESTION_CAPTURE").is_some() { question_review_snapshot(provider) } else if std::env::var_os("GROVE_PLAN_BEHAVIOR_CAPTURE").is_some() { behavior_plan_snapshot(provider) } else if std::env::var_os("GROVE_PLAN_OVERVIEW_CAPTURE").is_some() { overview_plan_snapshot(provider) } else if std::env::var_os("GROVE_PLAN_REQUEST_CAPTURE").is_some() { plan_request_snapshot(provider) } else { decision_plan_snapshot(provider) };
                 let session=cx.new(|cx|CodexSession::from_connection(state,connection,cx));
                 let view=cx.new(|cx|CodexView::new(session,window,cx));
                 chat=Some(view.clone());
@@ -833,7 +838,15 @@ fn plan_composer_linux_capture() {
                     cx.update_window(window.into(),|_,window,cx| {
                         window.resize(gpui::size(gpui::px(width),gpui::px(900.)));
                         window.set_rem_size(gpui::px(rem));
-                        if custom && std::env::var_os("GROVE_PLAN_BEHAVIOR_CAPTURE").is_none() && std::env::var_os("GROVE_PLAN_REQUEST_CAPTURE").is_none() && std::env::var_os("GROVE_QUESTION_CAPTURE").is_none() {chat.update(cx,|view,cx| {
+                        if capture_receipt {
+                            chat.update(cx, |view,cx| {
+                                let mut receipt = wrapped_question_receipt(cx);
+                                receipt.expanded = custom;
+                                view.question_receipts = vec![receipt];
+                                view.scroll.scroll_to_top_of_item(0);
+                                cx.notify();
+                            });
+                        } else if custom && std::env::var_os("GROVE_PLAN_BEHAVIOR_CAPTURE").is_none() && std::env::var_os("GROVE_PLAN_REQUEST_CAPTURE").is_none() && std::env::var_os("GROVE_QUESTION_CAPTURE").is_none() {chat.update(cx,|view,cx| {
                             view.begin_plan_composer(crate::views::native_plan::NativePlanEvent::Compose {
                                 plan_id:"invites".into(),revision_id:"r1".into(),target:crate::views::native_plan::PlanComposerTarget::CustomAnswer{decision_id:"access".into(),prompt:"Who can invite?".into()}
                             },window,cx);

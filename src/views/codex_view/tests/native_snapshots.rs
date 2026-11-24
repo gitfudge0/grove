@@ -1016,7 +1016,7 @@ fn question_receipt_native_snapshots() {
             cx.update_window(window.into(), |_, window, cx| {
                 let _ = window.draw(cx);
                 retained.as_ref().unwrap().update(cx, |view, cx| {
-                    view.question_receipts = vec![wrapped_question_receipt()];
+                    view.question_receipts = vec![wrapped_question_receipt(cx)];
                     cx.notify();
                 });
             })

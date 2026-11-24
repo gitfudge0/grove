@@ -372,16 +372,41 @@ fn seed_next_reply(
     view.next_reply.resolve(vec![proposal.into()]);
 }
 
-fn wrapped_question_receipt() -> QuestionReceipt {
+fn wrapped_question_receipt(cx: &mut App) -> QuestionReceipt {
     QuestionReceipt {
         anchor: 0,
         echo_text: None,
         echo_after: 0,
-        title: None,
+        title: Some("Speeding up make verify in CI".into()),
         answers: vec![
-            ("Which web (care-convoy-ai-web) SHA is in prod now, to use as the CC_AI_R5_2 baseline? There's no CC_AI_R5_2 branch in careconvoy-ai-core, so I'm treating this as a web-only release. CC_AI_R5_1 tip 909b3b6 is an ancestor of R5_2, and R5_2 adds just one commit on top of it (d213549, AVA-209 Bun pin).".into(), "909b3b6 (CC_AI_R5_1 tip)".into()),
-            ("Is careconvoy-ai-core really out of scope for this release? It has no CC_AI_R5_2 branch.".into(), "Web only (Recommended)".into()),
+            QuestionReceiptAnswer {
+                header: "CI speed-ups".into(),
+                prompt: "The 9-minute suite runs 6 test workers on the 2-CPU runner, alongside MySQL, OpenSearch and Bruno. Which speed-ups should I make on the SIP-411 PR?".into(),
+                values: vec!["Cache the dev image".into(), "Split into parallel jobs".into()],
+            },
+            QuestionReceiptAnswer {
+                header: "Workers per parallel job".into(),
+                prompt: "How many workers should each parallel job use on the 2-CPU runner?".into(),
+                values: vec!["2 workers".into()],
+            },
+            QuestionReceiptAnswer {
+                header: String::new(),
+                prompt: "Are there any checks that should stay in the default PR workflow?".into(),
+                values: vec!["Keep the Bruno smoke flows on every PR, and record their duration to compare against the baseline.".into()],
+            },
+            QuestionReceiptAnswer {
+                header: "Rollout scope".into(),
+                prompt: "Should I roll this out across other branches or start with the SIP-411 PR?".into(),
+                values: vec!["SIP-411 only".into()],
+            },
+            QuestionReceiptAnswer {
+                header: "Reporting".into(),
+                prompt: "How should I report whether CI got faster?".into(),
+                values: vec!["Post the before-and-after run times in the PR.".into()],
+            },
         ],
+        expanded: false,
+        details_focus: cx.focus_handle(),
     }
 }
 

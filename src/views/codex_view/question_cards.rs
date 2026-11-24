@@ -1,14 +1,16 @@
 //! Question cards, review and answer delivery.
 
 use super::{
-    activity_request, attached_validation, c, codex, project_field_well, question_answer_summary,
-    question_choice, question_has_answer, question_key, rpx, status, transcript_action, Action,
-    CodexView, Disableable, HashMap, HashSet, Input, InputEvent, InputState, QuestionDraft,
-    QuestionGroupDraft, QuestionReceipt, StatusKind, CHAT_MAX_W,
+    action_key, activity_request, attached_validation, c, codex, project_field_well,
+    question_answer_summary, question_answer_values, question_choice, question_has_answer,
+    question_key, rpx, status, transcript_action, Action, CodexView, Disableable, HashMap, HashSet,
+    Input, InputEvent, InputState, QuestionDraft, QuestionGroupDraft, QuestionReceipt,
+    QuestionReceiptAnswer, StatusKind, CHAT_MAX_W,
 };
+use crate::views::components::focusable_inline_disclosure;
 use crate::views::tokens::{
-    ICON_SM, OPACITY_DISABLED, RADIUS_GROUP, SPACE_2XL, SPACE_3XL, SPACE_LG, SPACE_SM, SPACE_XS,
-    TEXT_BODY, TEXT_SMALL,
+    CONTROL_H, ICON_SM, OPACITY_DISABLED, RADIUS_GROUP, SPACE_2XL, SPACE_3XL, SPACE_LG, SPACE_SM,
+    SPACE_XS, TEXT_BODY, TEXT_SMALL,
 };
 use gpui::prelude::{
     FluentBuilder, InteractiveElement, IntoElement, ParentElement, StatefulInteractiveElement,
@@ -284,13 +286,14 @@ impl CodexView {
             answers: request
                 .questions
                 .iter()
-                .map(|question| {
-                    (
-                        question.text.clone(),
-                        question_answer_summary(question, answers),
-                    )
+                .map(|question| QuestionReceiptAnswer {
+                    header: question.header.clone(),
+                    prompt: question.text.clone(),
+                    values: question_answer_values(question, answers),
                 })
                 .collect(),
+            expanded: false,
+            details_focus: cx.focus_handle(),
         });
         let ack_after = state
             .question_answer_acks
@@ -360,6 +363,87 @@ impl CodexView {
             .enumerate()
             .filter(|(_, receipt)| receipt.anchor == anchor)
         {
+            let mut header = div()
+                .flex()
+                .flex_col()
+                .gap(rpx(SPACE_SM))
+                .pb(rpx(SPACE_LG))
+                .border_b_1()
+                .border_color(c::BORDER_SOFT())
+                .child(
+                    status::label(
+                        format!("question-receipt-status-{index}"),
+                        StatusKind::Success,
+                        "Answers sent",
+                        ICON_SM,
+                        cx,
+                    )
+                    .text_size(rpx(TEXT_SMALL)),
+                );
+            if let Some(title) = &receipt.title {
+                header = header.child(
+                    div()
+                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                        .child(title.clone()),
+                );
+            }
+            let mut summary = div()
+                .debug_selector(move || format!("question-receipt-summary-{index}"))
+                .flex()
+                .flex_col()
+                .gap(rpx(SPACE_SM))
+                .child(
+                    div()
+                        .text_size(rpx(TEXT_SMALL))
+                        .text_color(c::FG_DIM())
+                        .child("Summary of your answers"),
+                );
+            for answer in &receipt.answers {
+                let label = if answer.header.trim().is_empty() {
+                    &answer.prompt
+                } else {
+                    &answer.header
+                };
+                summary = summary.child(
+                    div()
+                        .flex()
+                        .items_start()
+                        .gap(rpx(SPACE_LG))
+                        .child(div().text_color(c::FG_DIM()).child("•"))
+                        .child(
+                            div()
+                                .min_w_0()
+                                .flex_1()
+                                .flex()
+                                .flex_col()
+                                .child(
+                                    div()
+                                        .min_w_0()
+                                        .text_size(rpx(TEXT_SMALL))
+                                        .text_color(c::FG_DIM())
+                                        .line_clamp(1)
+                                        .text_ellipsis()
+                                        .child(label.clone()),
+                                )
+                                .child(
+                                    div()
+                                        .min_w_0()
+                                        .line_clamp(2)
+                                        .text_ellipsis()
+                                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                                        .child(answer.values.join(", ")),
+                                ),
+                        ),
+                );
+            }
+            let expanded = receipt.expanded;
+            let disclosure_label = if expanded {
+                "Hide questions and answers".into()
+            } else if receipt.answers.len() == 1 {
+                "View question and answer".into()
+            } else {
+                format!("View all {} questions and answers", receipt.answers.len())
+            };
             let mut group = div()
                 .id(("question-receipt", index))
                 .debug_selector(move || format!("question-receipt-{index}"))
@@ -377,20 +461,49 @@ impl CodexView {
                 .border_1()
                 .border_color(c::BORDER())
                 .bg(c::BG_RAIL())
+                .child(header)
+                .child(summary)
                 .child(
                     div()
-                        .text_size(rpx(TEXT_SMALL))
-                        .text_color(c::FG_DIM())
-                        .child("Answers sent"),
+                        .border_t_1()
+                        .border_color(c::BORDER_SOFT())
+                        .pt(rpx(SPACE_SM))
+                        .child(
+                            focusable_inline_disclosure(
+                                ("question-receipt-toggle", index),
+                                disclosure_label.clone(),
+                            )
+                            .track_focus(&receipt.details_focus)
+                            .aria_expanded(expanded)
+                            .debug_selector(move || format!("question-receipt-toggle-{index}"))
+                            .w_auto()
+                            .h_auto()
+                            .min_h(rpx(CONTROL_H))
+                            .justify_start()
+                            .gap(rpx(SPACE_SM))
+                            .text_size(rpx(TEXT_SMALL))
+                            .focus_visible(|style| style.bg(c::BG_HOVER()))
+                            .child(crate::icons::icon(
+                                if expanded { "chev-down" } else { "chev-right" },
+                                ICON_SM,
+                                c::FG_DIM(),
+                            ))
+                            .child(div().min_w_0().child(disclosure_label))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.toggle_question_receipt(index, cx);
+                            }))
+                            .on_key_down(cx.listener(
+                                move |this, event, window, cx| {
+                                    if action_key(event) {
+                                        this.toggle_question_receipt(index, cx);
+                                        window.prevent_default();
+                                        cx.stop_propagation();
+                                    }
+                                },
+                            )),
+                        ),
                 );
-            if let Some(title) = &receipt.title {
-                group = group.child(
-                    div()
-                        .font_weight(gpui::FontWeight::SEMIBOLD)
-                        .child(title.clone()),
-                );
-            }
-            for (answer_index, (question, answer)) in receipt.answers.iter().enumerate() {
+            for (answer_index, answer) in receipt.answers.iter().enumerate().filter(|_| expanded) {
                 group = group.child(
                     div()
                         .flex()
@@ -404,7 +517,7 @@ impl CodexView {
                                 })
                                 .text_size(rpx(TEXT_SMALL))
                                 .text_color(c::FG_DIM())
-                                .child(question.clone()),
+                                .child(answer.prompt.clone()),
                         )
                         .child(
                             div()
@@ -412,7 +525,15 @@ impl CodexView {
                                 .debug_selector(move || {
                                     format!("question-receipt-{index}-answer-{answer_index}")
                                 })
-                                .child(answer.clone()),
+                                .flex()
+                                .flex_col()
+                                .children(
+                                    answer
+                                        .values
+                                        .iter()
+                                        .cloned()
+                                        .map(|value| div().child(value)),
+                                ),
                         ),
                 );
             }
@@ -448,6 +569,13 @@ impl CodexView {
             }
         }
         blocks
+    }
+
+    fn toggle_question_receipt(&mut self, index: usize, cx: &mut Context<Self>) {
+        if let Some(receipt) = self.question_receipts.get_mut(index) {
+            receipt.expanded = !receipt.expanded;
+            cx.notify();
+        }
     }
 
     fn question_group(

@@ -173,15 +173,22 @@ fn codex_and_claude_question_receipts_contain_wrapped_answers(cx: &mut gpui::Tes
                     view.session.update(cx, |session, _| {
                         session.state.saved.provider = provider;
                     });
-                    view.question_receipts = vec![wrapped_question_receipt()];
+                    view.question_receipts = vec![wrapped_question_receipt(cx)];
                     cx.notify();
                 });
             });
             draw(cx);
             cx.update(|window, _| assert_eq!(window.rem_size(), gpui::px(rem)));
+            let collapsed = cx.debug_bounds("question-receipt-0").unwrap();
+            assert!(cx.debug_bounds("question-receipt-summary-0").is_some());
+            assert!(cx.debug_bounds("question-receipt-0-question-0").is_none());
+            let toggle = cx.debug_bounds("question-receipt-toggle-0").unwrap();
+            cx.simulate_click(toggle.center(), gpui::Modifiers::default());
+            draw(cx);
             let receipt = cx.debug_bounds("question-receipt-0").unwrap();
+            assert!(receipt.size.height > collapsed.size.height);
             let mut previous_bottom = receipt.top();
-            for (question_selector, answer_selector) in [
+            for (question, answer) in [
                 (
                     "question-receipt-0-question-0",
                     "question-receipt-0-answer-0",
@@ -190,9 +197,21 @@ fn codex_and_claude_question_receipts_contain_wrapped_answers(cx: &mut gpui::Tes
                     "question-receipt-0-question-1",
                     "question-receipt-0-answer-1",
                 ),
+                (
+                    "question-receipt-0-question-2",
+                    "question-receipt-0-answer-2",
+                ),
+                (
+                    "question-receipt-0-question-3",
+                    "question-receipt-0-answer-3",
+                ),
+                (
+                    "question-receipt-0-question-4",
+                    "question-receipt-0-answer-4",
+                ),
             ] {
-                let question = cx.debug_bounds(question_selector).unwrap();
-                let answer = cx.debug_bounds(answer_selector).unwrap();
+                let question = cx.debug_bounds(question).unwrap();
+                let answer = cx.debug_bounds(answer).unwrap();
                 assert!(
                     question.top() >= previous_bottom,
                     "question must follow preceding content"
@@ -208,6 +227,14 @@ fn codex_and_claude_question_receipts_contain_wrapped_answers(cx: &mut gpui::Tes
                     previous_bottom + bottom_padding <= receipt.bottom(),
                     "{provider:?} width={width} rem={rem}: final answer bottom {previous_bottom:?} must stay within receipt {receipt:?} with bottom padding"
                 );
+            cx.update(|window, cx| {
+                let focus = view.read(cx).question_receipts[0].details_focus.clone();
+                focus.focus(window, cx);
+            });
+            cx.simulate_keystrokes("space");
+            draw(cx);
+            assert!(cx.debug_bounds("question-receipt-0-question-0").is_none());
+            assert!(cx.debug_bounds("question-receipt-summary-0").is_some());
         }
     }
     cx.update(|_, cx| gpui_component::Theme::global_mut(cx).font_size = previous_rem);
@@ -312,7 +339,8 @@ fn long_question_actions_and_receipts_stay_above_the_composer(cx: &mut gpui::Tes
             });
         });
         draw(cx);
-        assert_above_composer("question-receipt-0-answer-7", cx);
+        assert_above_composer("question-receipt-toggle-0", cx);
+        assert!(cx.debug_bounds("question-receipt-0-answer-7").is_none());
     }
 }
 
@@ -356,7 +384,7 @@ fn question_receipts_require_ack_and_redact_secrets(cx: &mut gpui::TestAppContex
             );
             view.answer_questions(&key, request.id.clone(), false, cx);
             let pending = view.question_drafts[&key].pending_receipt.as_ref().unwrap();
-            assert_eq!(pending.answers[0].1, "Provided securely");
+            assert_eq!(pending.answers[0].values, ["Provided securely"]);
             assert!(view.question_receipts.is_empty());
         });
     });
@@ -419,7 +447,10 @@ fn question_receipts_require_ack_and_redact_secrets(cx: &mut gpui::TestAppContex
         assert!(view.question_drafts.is_empty());
         assert_eq!(view.question_receipts.len(), 1);
         assert_eq!(view.question_receipts[0].anchor, anchor);
-        assert_eq!(view.question_receipts[0].answers[0].1, "Provided securely");
+        assert_eq!(
+            view.question_receipts[0].answers[0].values,
+            ["Provided securely"]
+        );
     });
 }
 
