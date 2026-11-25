@@ -1145,11 +1145,17 @@ fn provider_failures_native_capture() {
             let view = retained.unwrap();
             cx.activate(true);
             cx.spawn(async move |cx| {
-                for (name, expanded, light, rem) in [("collapsed-dark", false, false, 16.), ("expanded-dark", true, false, 16.), ("expanded-light-zoom", true, true, 20.)] {
+                for (name, expanded, light, rem, width) in [
+                    ("collapsed-dark", false, false, 16., 900.),
+                    ("expanded-dark", true, false, 16., 900.),
+                    ("collapsed-narrow-dark", false, false, 16., 350.),
+                    ("expanded-narrow-light-zoom", true, true, 20., 440.),
+                ] {
                     cx.update_window(window.into(), |_, window, cx| {
                         grove_core::theme::set_by_name(if light { "grove-light" } else { "grove-dark" });
                         c::sync_component_theme(cx);
                         window.set_rem_size(gpui::px(rem));
+                        window.resize(gpui::size(gpui::px(width), gpui::px(750.)));
                         view.update(cx, |view, cx| {
                             let state = &view.session.read(cx).state;
                             let key = format!("provider-notices:{}:failure-0", state.saved.thread_id.as_deref().unwrap_or_default());
@@ -1176,7 +1182,17 @@ fn provider_failures_native_capture() {
 #[gpui::test]
 fn provider_failures_group_and_expand_for_both_providers(cx: &mut gpui::TestAppContext) {
     let (view, cx, _, _) = fixture(cx);
+    let opened = Rc::new(std::cell::RefCell::new(None));
+    let observed = opened.clone();
+    let _subscription = cx.update(|_, cx| {
+        cx.subscribe(&view, move |_, event, _| {
+            if let CodexViewEvent::OpenConnections(provider, cwd, args, focus) = event {
+                *observed.borrow_mut() = Some((*provider, cwd.clone(), args.clone(), focus.clone()));
+            }
+        })
+    });
     for provider in [codex::Provider::Codex, codex::Provider::Claude] {
+        cx.simulate_resize(gpui::size(gpui::px(850.), gpui::px(750.)));
         cx.update(|_, cx| view.update(cx, |view, cx| {
                 view.expanded.clear();
                 view.session.update(cx, |session, cx| {
@@ -1196,9 +1212,15 @@ fn provider_failures_group_and_expand_for_both_providers(cx: &mut gpui::TestAppC
         assert!(cx.debug_bounds("provider-notice-1").is_none());
         assert!(cx.debug_bounds("provider-notice-3").is_some());
         assert!(cx.debug_bounds("provider-notice-text-1-line-0").is_none());
+        assert!(cx.debug_bounds("affected-tools-0").is_none());
         let toggle = cx.debug_bounds("provider-notice-toggle-0").unwrap();
+        let action = cx.debug_bounds("provider-connections-0").unwrap();
+        assert!(toggle.right() <= action.left());
+        assert!(action.top() < toggle.bottom());
         cx.simulate_click(toggle.center(), gpui::Modifiers::default());
         draw(cx);
+        assert_eq!(cx.debug_bounds("provider-connections-0"), Some(action));
+        assert!(cx.debug_bounds("affected-tools-0").is_some());
         // Shared recovery guidance appears once; source diagnostics stay intact.
         assert!(cx.debug_bounds("provider-notice-text-0-line-0").is_none());
         assert!(cx.debug_bounds("provider-notice-text-1-line-0").is_some());
@@ -1208,6 +1230,43 @@ fn provider_failures_group_and_expand_for_both_providers(cx: &mut gpui::TestAppC
         cx.simulate_keystrokes("enter");
         draw(cx);
         assert!(cx.debug_bounds("provider-notice-text-1-line-0").is_some());
+        cx.update(|window, cx| window.focus_next(cx));
+        draw(cx);
+        cx.update(|window, cx| {
+            let view = view.read(cx);
+            let saved = &view.session.read(cx).state.saved;
+            let thread = saved.thread_id.as_deref().unwrap_or_default();
+            let key = format!("provider-notices:{thread}:a:connections");
+            assert!(view.message_focus[&key].is_focused(window), "{provider:?}");
+        });
+        cx.update(|window, cx| {
+            let keystroke = gpui::Keystroke::parse("enter").unwrap();
+            window.dispatch_event(
+                gpui::PlatformInput::KeyDown(gpui::KeyDownEvent {
+                    keystroke: keystroke.clone(),
+                    is_held: false,
+                    prefer_character_input: false,
+                }),
+                cx,
+            );
+            window.dispatch_event(gpui::PlatformInput::KeyUp(gpui::KeyUpEvent { keystroke }), cx);
+        });
+        draw(cx);
+        let (opened_provider, cwd, args, focus) = opened.borrow_mut().take().unwrap();
+        assert_eq!(opened_provider, provider);
+        cx.update(|window, cx| {
+            let snapshot = &view.read(cx).session.read(cx).state.saved;
+            assert_eq!(cwd, snapshot.cwd);
+            assert_eq!(args, snapshot.config_args);
+            assert!(focus.unwrap().is_focused(window));
+        });
+        assert!(cx.debug_bounds("affected-tools-0").is_some());
+        cx.simulate_resize(gpui::size(gpui::px(335.), gpui::px(750.)));
+        draw(cx);
+        let toggle = cx.debug_bounds("provider-notice-toggle-0").unwrap();
+        let action = cx.debug_bounds("provider-connections-0").unwrap();
+        assert!(action.top() >= toggle.bottom(), "{provider:?}");
+        assert!(action.right() <= toggle.right(), "{provider:?}");
         view.read_with(cx, |view, cx| {
             assert_eq!(view.session.read(cx).state.saved.items.len(), 4);
         });

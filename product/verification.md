@@ -1,3 +1,12 @@
+## Transcript tool connection warnings
+
+Codex and Claude GPUI transcript fixtures verified the disclosure, responsive
+action placement, and keyboard activation with the originating session's
+Connections context. Both providers' event fixtures preserved a usable turn
+when a server failed. Isolated Linux X11 captures covered collapsed and
+expanded states, narrow panes, and a light appearance with enlarged rem.
+Live authorization and reconnect were not exercised for either provider.
+
 ## Formatted transcript copy
 
 Linux X11 native windows with Codex and Claude transcript fixtures copied a

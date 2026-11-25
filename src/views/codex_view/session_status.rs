@@ -6,13 +6,14 @@ use super::{
     TASK_MARK_INSET, TASK_STRIP_HEAD_H, TOOL_DETAIL_MAX_H,
 };
 use crate::views::tokens::{
-    CHROME_CONTROL_H, CONTROL_H, ICON_MD, ICON_SM, SPACE_LG, SPACE_MD, SPACE_SM, TEXT_SMALL,
+    CHROME_CONTROL_H, CONTROL_H, ICON_MD, ICON_SM, RADIUS_CONTROL, SPACE_3XL, SPACE_LG, SPACE_MD,
+    SPACE_SM, SPACE_XS, TEXT_BODY, TEXT_MICRO, TEXT_SMALL,
 };
 use gpui::prelude::{
     FluentBuilder, InteractiveElement, IntoElement, ParentElement, StatefulInteractiveElement,
     Styled,
 };
-use gpui::{div, Context, Focusable, Window};
+use gpui::{div, Context, Focusable, FontWeight, ScrollHandle, Window};
 
 /// Context share, in whole percent, at which the meter switches to the warning colour.
 const CONTEXT_WARN_PERCENT: u32 = 80;
@@ -20,6 +21,89 @@ const CONTEXT_WARN_PERCENT: u32 = 80;
 const CONTEXT_RING_STROKE: f32 = 1.5;
 /// Polyline segments per full turn of the context ring.
 const CONTEXT_RING_SEGMENTS: f32 = 48.0;
+const TOOL_WARNING_COPY_BASIS: f32 = 270.0;
+const TOOL_WARNING_LIST_MAX_H: f32 = 90.0;
+const TOOL_WARNING_INSET: f32 = ICON_SM + ICON_MD + 2.0 * SPACE_SM;
+
+struct ToolWarnings<'a> {
+    servers: Vec<(&'a str, bool)>,
+    sign_in_count: usize,
+}
+
+impl<'a> ToolWarnings<'a> {
+    fn from_notices(notices: &'a [codex::TranscriptItem]) -> Option<Self> {
+        let mut servers = Vec::<(&str, bool)>::new();
+        for notice in notices {
+            let name = notice["title"]
+                .as_str()?
+                .strip_prefix("MCP server ")?
+                .strip_suffix(" is unavailable")?;
+            let needs_sign_in = notice["text"]
+                .as_str()
+                .and_then(|text| text.rsplit("\n\n").next())
+                .is_some_and(|guidance| guidance.starts_with("Authenticate this MCP server"));
+            if let Some((_, sign_in)) = servers.iter_mut().find(|(server, _)| *server == name) {
+                *sign_in = needs_sign_in;
+            } else {
+                servers.push((name, needs_sign_in));
+            }
+        }
+        let sign_in_count = servers.iter().filter(|(_, sign_in)| *sign_in).count();
+        Some(Self {
+            servers,
+            sign_in_count,
+        })
+    }
+
+    fn label(&self) -> String {
+        let count = self.servers.len();
+        if count == 1 && self.sign_in_count == 1 {
+            "1 tool connection needs sign-in".into()
+        } else if count == 1 {
+            "1 tool connection unavailable".into()
+        } else if self.sign_in_count == count {
+            format!("{count} tool connections need sign-in")
+        } else if self.sign_in_count == 0 {
+            format!("{count} tool connections unavailable")
+        } else {
+            let verb = if self.sign_in_count == 1 {
+                "needs"
+            } else {
+                "need"
+            };
+            format!(
+                "{count} tool connections unavailable · {} {verb} sign-in",
+                self.sign_in_count
+            )
+        }
+    }
+}
+
+#[test]
+fn tool_warnings_count_distinct_servers_and_latest_sign_in_reason() {
+    use serde_json::json;
+
+    let notices = [
+        json!({"title":"MCP server Docs is unavailable", "text":"Authenticate this MCP server"}),
+        json!({"title":"MCP server Drive is unavailable", "text":"Token expired\n\nAuthenticate this MCP server"}),
+        json!({"title":"MCP server Docs is unavailable", "text":"Previously: Authenticate this MCP server\n\nCheck this server"}),
+    ]
+    .map(codex::TranscriptItem::from);
+    assert_eq!(
+        ToolWarnings::from_notices(&notices[..1]).unwrap().label(),
+        "1 tool connection needs sign-in"
+    );
+    assert_eq!(
+        ToolWarnings::from_notices(&notices[..2]).unwrap().label(),
+        "2 tool connections need sign-in"
+    );
+    let summary = ToolWarnings::from_notices(&notices).unwrap();
+    assert_eq!(summary.servers, [("Docs", false), ("Drive", true)]);
+    assert_eq!(
+        summary.label(),
+        "2 tool connections unavailable · 1 needs sign-in"
+    );
+}
 /// Keep the review dock an overview; detailed evidence stays in the transcript.
 pub(super) fn review_overview(response: &str) -> String {
     super::super::review_summary::ReviewSummary::parse(response, std::path::Path::new("/")).text
@@ -556,17 +640,9 @@ impl CodexView {
                 .map_or_else(|| index.to_string(), str::to_owned)
         );
         let expanded = self.expanded.contains(&key);
-        let mcp = notices.iter().all(|notice| {
-            notice["title"].as_str().is_some_and(|title| {
-                title.starts_with("MCP server ") && title.ends_with(" is unavailable")
-            })
-        });
-        let mut label = if mcp {
-            format!(
-                "{} MCP server{} unavailable",
-                notices.len(),
-                if notices.len() == 1 { "" } else { "s" }
-            )
+        let tools = ToolWarnings::from_notices(notices);
+        let label = if let Some(tools) = &tools {
+            tools.label()
         } else if notices.len() == 1 {
             notices[0]["title"]
                 .as_str()
@@ -575,41 +651,19 @@ impl CodexView {
         } else {
             format!("{} provider warnings", notices.len())
         };
-        if mcp
-            && notices.iter().all(|notice| {
-                notice["text"]
-                    .as_str()
-                    .is_some_and(|text| text.contains("Authenticate this MCP server"))
-            })
-        {
-            label.push_str(" · Authentication required");
-        }
         let focus = self
             .ensure_message_focus(&key, window, cx)
             .tab_stop(true)
             .tab_index(0);
         let keyboard_key = key.clone();
-        let mut group = div()
-            .id(("provider-notice", index))
-            .debug_selector(move || format!("provider-notice-{index}"))
-            .w_full()
-            .max_w(rpx(CHAT_MAX_W))
-            .min_w_0()
-            .flex_shrink_0()
-            .flex()
-            .flex_col()
-            .gap(rpx(SPACE_SM))
-            .child(
-                super::super::components::inline_disclosure(
-                    "provider-notice-toggle",
-                    label.clone(),
-                )
+        let pointer_key = key.clone();
+        let toggle =
+            super::super::components::inline_disclosure("provider-notice-toggle", label.clone())
                 .id(("provider-notice-toggle", index))
                 .debug_selector(move || format!("provider-notice-toggle-{index}"))
                 .track_focus(&focus)
                 .tab_index(0)
                 .aria_expanded(expanded)
-                .w_full()
                 .h_auto()
                 .min_h(rpx(CHROME_CONTROL_H))
                 .justify_start()
@@ -623,7 +677,16 @@ impl CodexView {
                     c::FG_DIM(),
                 ))
                 .child(crate::icons::icon("message-warning", ICON_MD, c::AMBER()))
-                .child(div().flex_1().min_w_0().child(label))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .child(label)
+                        .when(tools.is_some(), |text| {
+                            text.text_size(rpx(TEXT_BODY))
+                                .font_weight(FontWeight::MEDIUM)
+                        }),
+                )
                 .on_key_down(cx.listener(move |this, event: &gpui::KeyDownEvent, _, cx| {
                     if action_key(event) {
                         this.toggle_expansion(&keyboard_key, cx);
@@ -632,32 +695,203 @@ impl CodexView {
                 }))
                 .on_click(cx.listener(move |this, _, window, cx| {
                     focus.focus(window, cx);
-                    this.toggle_expansion(&key, cx);
-                })),
+                    this.toggle_expansion(&pointer_key, cx);
+                }));
+        let mut group = div()
+            .id(("provider-notice", index))
+            .debug_selector(move || format!("provider-notice-{index}"))
+            .w_full()
+            .max_w(rpx(CHAT_MAX_W))
+            .min_w_0()
+            .flex_shrink_0()
+            .flex()
+            .flex_col()
+            .gap(rpx(SPACE_LG));
+        if tools.is_some() {
+            let action_focus = self.ensure_message_focus(&format!("{key}:connections"), window, cx);
+            let provider = state.saved.provider;
+            let cwd = state.saved.cwd.clone();
+            let args = state.saved.config_args.clone();
+            group = group.child(
+                div()
+                    .flex()
+                    .flex_wrap()
+                    .items_start()
+                    .gap_y(rpx(SPACE_LG))
+                    .child(
+                        div()
+                            .flex_1()
+                            .flex_basis(rpx(TOOL_WARNING_COPY_BASIS))
+                            .min_w_0()
+                            .max_w_full()
+                            .child(toggle.w_full())
+                            .child(
+                                div()
+                                    .pl(rpx(TOOL_WARNING_INSET))
+                                    .text_size(rpx(TEXT_SMALL))
+                                    .text_color(c::FG_DIM())
+                                    .child("The agent can keep working without these tools."),
+                            ),
+                    )
+                    .child(
+                        div().ml(rpx(TOOL_WARNING_INSET)).flex_none().child(
+                            super::super::components::transcript_action(
+                                ("provider-connections", index),
+                                "Open Connections",
+                                false,
+                                window,
+                                cx,
+                            )
+                            .with_focus_handle(action_focus.clone())
+                            .icon(
+                                gpui_component::Icon::default()
+                                    .path("icons/cog.svg")
+                                    .size(rpx(ICON_SM)),
+                            )
+                            .debug_selector(move || format!("provider-connections-{index}"))
+                            .on_click(cx.listener(
+                                move |_, _, window, cx| {
+                                    action_focus.focus(window, cx);
+                                    cx.emit(CodexViewEvent::OpenConnections(
+                                        provider,
+                                        cwd.clone(),
+                                        args.clone(),
+                                        Some(action_focus.clone()),
+                                    ));
+                                },
+                            )),
+                        ),
+                    ),
             );
+        } else {
+            group = group.child(toggle.w_full());
+        }
         // Expansion is immediate input feedback, matching the transcript tool disclosures.
         // Keep literal details intact and show identical recovery text once per group.
         if expanded {
             let mut details = div()
                 .w_full()
                 .min_w_0()
-                .pl(rpx(ICON_MD + SPACE_LG))
+                .pl(rpx(if tools.is_some() {
+                    TOOL_WARNING_INSET
+                } else {
+                    ICON_MD + SPACE_LG
+                }))
                 .flex()
                 .flex_col()
                 .gap(rpx(SPACE_LG));
+            if let Some(tools) = &tools {
+                let scroll = window
+                    .use_keyed_state(
+                        gpui::SharedString::from(format!("{key}:scroll")),
+                        cx,
+                        |_, _| ScrollHandle::new(),
+                    )
+                    .read(cx)
+                    .clone();
+                let mut list = div()
+                    .id(("affected-tools", index))
+                    .debug_selector(move || format!("affected-tools-{index}"))
+                    .role(gpui::Role::Group)
+                    .aria_label("Affected tools")
+                    .max_h(rpx(TOOL_WARNING_LIST_MAX_H))
+                    .overflow_y_scroll()
+                    .track_scroll(&scroll)
+                    .rounded(rpx(RADIUS_CONTROL))
+                    .tab_index(0)
+                    .focus_visible(|style| style.bg(c::BG_HOVER()))
+                    .on_key_down(move |event: &gpui::KeyDownEvent, window, cx| {
+                        let line = rpx(SPACE_3XL).to_pixels(window.rem_size());
+                        let page = scroll.bounds().size.height;
+                        let mut offset = scroll.offset();
+                        offset.y += match event.keystroke.key.as_str() {
+                            "up" => line,
+                            "down" => -line,
+                            "pageup" => page,
+                            "pagedown" => -page,
+                            _ => return,
+                        };
+                        scroll.set_offset(offset);
+                        window.refresh();
+                        cx.stop_propagation();
+                    });
+                for &(name, sign_in) in &tools.servers {
+                    list = list.child(
+                        div()
+                            .flex()
+                            .items_start()
+                            .justify_between()
+                            .gap(rpx(SPACE_LG))
+                            .py(rpx(SPACE_SM))
+                            .border_b_1()
+                            .border_color(c::BORDER_SOFT())
+                            .child(div().min_w_0().text_color(c::FG()).child(name.to_owned()))
+                            .child(
+                                div()
+                                    .flex_shrink_0()
+                                    .text_size(rpx(TEXT_MICRO))
+                                    .text_color(c::FG_DIM())
+                                    .child(if sign_in {
+                                        "Sign-in required"
+                                    } else {
+                                        "Unavailable"
+                                    }),
+                            ),
+                    );
+                }
+                details =
+                    details
+                        .child(
+                            div()
+                                .flex()
+                                .flex_col()
+                                .gap(rpx(SPACE_SM))
+                                .border_t_1()
+                                .border_color(c::BORDER_SOFT())
+                                .pt(rpx(SPACE_LG))
+                                .text_size(rpx(TEXT_SMALL))
+                                .child(
+                                    div()
+                                        .flex()
+                                        .justify_between()
+                                        .text_size(rpx(TEXT_MICRO))
+                                        .text_color(c::FG_DIM())
+                                        .child("Affected tools")
+                                        .child(tools.servers.len().to_string()),
+                                )
+                                .child(list)
+                                .when(tools.sign_in_count > 0, |summary| {
+                                    summary.child(
+                                div()
+                                    .pt(rpx(SPACE_XS))
+                                    .text_size(rpx(TEXT_MICRO))
+                                    .text_color(c::FG_DIM())
+                                    .child("After signing in, reconnect when the agent finishes."),
+                            )
+                                }),
+                        )
+                        .child(
+                            div()
+                                .text_size(rpx(TEXT_MICRO))
+                                .text_color(c::FG_DIM())
+                                .child("Provider diagnostics"),
+                        );
+            }
             let shared_text = notices
                 .iter()
                 .all(|notice| notice["text"] == notices[0]["text"]);
             for (offset, notice) in notices.iter().enumerate() {
                 let item_index = index + offset;
-                details = details.child(
-                    div().w_full().min_w_0().text_size(rpx(TEXT_SMALL)).child(
-                        notice["title"]
-                            .as_str()
-                            .unwrap_or("Provider warning")
-                            .to_owned(),
-                    ),
-                );
+                if tools.is_none() || !shared_text {
+                    details = details.child(
+                        div().w_full().min_w_0().text_size(rpx(TEXT_SMALL)).child(
+                            notice["title"]
+                                .as_str()
+                                .unwrap_or("Provider warning")
+                                .to_owned(),
+                        ),
+                    );
+                }
                 if !shared_text || offset + 1 == notices.len() {
                     details = details.child(literal_notice_text(
                         gpui::SharedString::from(format!("provider-notice-text-{item_index}")),
@@ -666,34 +900,6 @@ impl CodexView {
                 }
             }
             group = group.child(details);
-        }
-        if mcp {
-            let provider = state.saved.provider;
-            let cwd = state.saved.cwd.clone();
-            let args = state.saved.config_args.clone();
-            group = group.child(
-                super::super::components::form_action(
-                    ("provider-connections", index),
-                    "Manage connection",
-                    false,
-                    window,
-                    cx,
-                )
-                .icon(
-                    gpui_component::Icon::default()
-                        .path("icons/external-link.svg")
-                        .size(rpx(ICON_SM)),
-                )
-                .debug_selector(move || format!("provider-connections-{index}"))
-                .on_click(cx.listener(move |_, _, window, cx| {
-                    cx.emit(CodexViewEvent::OpenConnections(
-                        provider,
-                        cwd.clone(),
-                        args.clone(),
-                        window.focused(cx),
-                    ));
-                })),
-            );
         }
         group.into_any_element()
     }
