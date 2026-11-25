@@ -2,6 +2,7 @@
 use super::*;
 use crate::views::components::{
     compact_field_well, disabled_header_control, header_control_with_label_tooltip,
+    truncation_safe_label_width,
 };
 use gpui_component::input::{Input, InputEvent};
 
@@ -166,20 +167,34 @@ impl Sidebar {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let label = div()
-            .debug_selector(move || format!("session-header-title-{}", id.raw()))
-            .min_w_0()
-            .truncate()
-            .font_weight(gpui::FontWeight::MEDIUM)
-            .text_color(c::FG())
-            .child(self.session_title_label(id, title, "session-header-title-shimmer", cx));
+        let label = |this: &Self, window: &Window, cx: &Context<Self>| {
+            let text = single_line_session_title(title);
+            let mut run = window.text_style().to_run(text.len());
+            run.font.family = crate::fonts::UI_FAMILY.into();
+            run.font.weight = gpui::FontWeight::MEDIUM;
+            let width = truncation_safe_label_width(
+                &text,
+                rpx(TEXT_BODY).to_pixels(window.rem_size()),
+                &run,
+                window.text_system(),
+            );
+            div()
+                .debug_selector(move || format!("session-header-title-{}", id.raw()))
+                .w(width)
+                .min_w_0()
+                .truncate()
+                .font_family(crate::fonts::UI_FAMILY)
+                .font_weight(gpui::FontWeight::MEDIUM)
+                .text_color(c::FG())
+                .child(this.session_title_label(id, &text, "session-header-title-shimmer", cx))
+        };
         if !editable {
             return div()
                 .min_w_0()
                 .flex()
                 .items_center()
                 .gap(rpx(SPACE_SM))
-                .child(label)
+                .child(label(self, window, cx))
                 .child(status)
                 .into_any_element();
         }
@@ -277,6 +292,7 @@ impl Sidebar {
                 .child(status)
                 .into_any_element();
         }
+        let label = label(self, window, cx);
         let title = title.to_owned();
         let keyboard_title = title.clone();
         row.child(label)

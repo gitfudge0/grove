@@ -322,6 +322,47 @@ fn native_claude_keeps_shared_header_and_grid_drag_controls(cx: &mut gpui::TestA
     native_header_title_edit_fixture(cx, grove_core::codex::Provider::Claude);
 }
 
+fn header_fixture_snapshot(
+    provider: grove_core::codex::Provider,
+    project: &str,
+    cwd: &str,
+) -> grove_core::codex::Snapshot {
+    let saved = grove_core::codex::SavedSession {
+        html_policy: grove_core::visuals::HtmlPolicy::Legacy,
+        visuals: Vec::new(),
+        session_review: grove_core::codex::SessionReview::default(),
+        rich_plans: grove_core::rich_plan::PlanStore::default(),
+        side_chats: std::collections::HashMap::default(),
+        fork_origin: None,
+        claude_resume: None,
+        claude_subagents: std::collections::HashMap::default(),
+        edit_checkpoints: Vec::new(),
+        pending_edit: None,
+        rewind_drafts: Vec::new(),
+        provider,
+        composer: grove_core::codex::ComposerSettings::default(),
+        context: None,
+        context_details: None,
+        key: "native-chrome".into(),
+        project: project.into(),
+        cwd: cwd.into(),
+        label: "Codex".into(),
+        title: None,
+        title_generation: None,
+        roots: Vec::new(),
+        thread_id: Some("fixture-thread".into()),
+        items: Vec::new().into(),
+        work_periods: Vec::new(),
+        draft: String::new(),
+        draft_images: Vec::new(),
+        draft_reference: None,
+        config_args: Vec::new(),
+        native_config_version: 1,
+        activity_reporting: false,
+    };
+    grove_core::codex::Snapshot::new(saved)
+}
+
 fn native_header_title_edit_fixture(
     cx: &mut gpui::TestAppContext,
     provider: grove_core::codex::Provider,
@@ -352,40 +393,7 @@ fn native_header_title_edit_fixture(
                 provider.agent(),
             )
         });
-        let saved = grove_core::codex::SavedSession {
-            html_policy: grove_core::visuals::HtmlPolicy::Legacy,
-            visuals: Vec::new(),
-            session_review: grove_core::codex::SessionReview::default(),
-            rich_plans: grove_core::rich_plan::PlanStore::default(),
-            side_chats: std::collections::HashMap::default(),
-            fork_origin: None,
-            claude_resume: None,
-            claude_subagents: std::collections::HashMap::default(),
-            edit_checkpoints: Vec::new(),
-            pending_edit: None,
-            rewind_drafts: Vec::new(),
-            provider,
-            composer: grove_core::codex::ComposerSettings::default(),
-            context: None,
-            context_details: None,
-            key: "native-chrome".into(),
-            project: "demo".into(),
-            cwd: "/grove-native-chrome-fixture".into(),
-            label: "Codex".into(),
-            title: None,
-            title_generation: None,
-            roots: Vec::new(),
-            thread_id: Some("fixture-thread".into()),
-            items: Vec::new().into(),
-            work_periods: Vec::new(),
-            draft: String::new(),
-            draft_images: Vec::new(),
-            draft_reference: None,
-            config_args: Vec::new(),
-            native_config_version: 1,
-            activity_reporting: false,
-        };
-        let mut state = grove_core::codex::Snapshot::new(saved);
+        let mut state = header_fixture_snapshot(provider, "demo", "/grove-native-chrome-fixture");
         state.status = grove_core::codex::Status::Idle;
         let connection = grove_core::codex::Connection {
             handle: handle.clone(),
@@ -542,6 +550,176 @@ fn native_header_title_edit_fixture(
         sidebar.read_with(cx, super::super::Sidebar::dashboard_destination_for_test),
         Some((0, "/grove-native-chrome-fixture".into()))
     );
+}
+
+#[gpui::test]
+fn codex_session_header_prioritizes_title_over_context(cx: &mut gpui::TestAppContext) {
+    title_first_header_fixture(cx, grove_core::codex::Provider::Codex);
+}
+
+#[gpui::test]
+fn claude_session_header_prioritizes_title_over_context(cx: &mut gpui::TestAppContext) {
+    title_first_header_fixture(cx, grove_core::codex::Provider::Claude);
+}
+
+const HEADER_TEST_PROJECT: &str = "Tooling";
+const HEADER_TEST_TITLE: &str = "Raycast Docker prune script";
+const HEADER_TEST_ROOT: &str = "/grove-header-fixture";
+const HEADER_TEST_WORKTREE: &str =
+    "/grove-docker-maintenance-and-developer-tooling-worktree-with-an-extra-long-name";
+const HEADER_TEST_DIRECTORY: &str = "/Users/example-with-a-long-account-name";
+
+fn header_layout_store() -> grove_core::storage::Store {
+    grove_core::storage::Store {
+        sidebar_collapsed: true,
+        projects: vec![grove_core::storage::Project {
+            name: HEADER_TEST_PROJECT.into(),
+            path: HEADER_TEST_ROOT.into(),
+            scripts: grove_core::storage::ProjectScripts::default(),
+            archived: false,
+            worktree_dir: None,
+        }],
+        ..Default::default()
+    }
+}
+
+fn header_layout_sidebar(
+    window: &mut Window,
+    cx: &mut Context<Sidebar>,
+    provider: grove_core::codex::Provider,
+) -> Sidebar {
+    let runtime = cx.new(crate::runtime::Runtime::new);
+    let registry = runtime.read(cx).registry.clone();
+    runtime.read(cx).tree.clone().update(cx, |tree, _| {
+        tree.set_active_worktrees(
+            0,
+            vec![grove_core::git::Worktree {
+                path: HEADER_TEST_WORKTREE.into(),
+                branch: "docker-maintenance".into(),
+                mtime: None,
+                is_main: false,
+            }],
+        );
+    });
+    for (project, cwd) in [
+        ("", HEADER_TEST_DIRECTORY),
+        (HEADER_TEST_PROJECT, HEADER_TEST_WORKTREE),
+    ] {
+        let id = registry.update(cx, |registry, _| {
+            let id = registry.insert_meta(project.into(), cwd.into(), provider.agent());
+            registry.set_restored_title(id, Some(HEADER_TEST_TITLE.into()));
+            id
+        });
+        let (handle, _actions) = grove_core::codex::Handle::channel();
+        let (_updates, receive) = std::sync::mpsc::channel();
+        let mut state = header_fixture_snapshot(provider, project, cwd);
+        state.status = grove_core::codex::Status::Working;
+        let connection = grove_core::codex::Connection {
+            handle: handle.clone(),
+            updates: receive.into(),
+        };
+        let session = cx.new(|cx| {
+            crate::entities::codex_session::CodexSession::from_connection(state, connection, cx)
+        });
+        registry.update(cx, |registry, _| registry.attach_codex(id, session, handle));
+    }
+    let mut sidebar = Sidebar::new(runtime, window, cx);
+    sidebar.sync(window, cx);
+    sidebar.select(
+        Selection::Session(crate::entities::session_registry::SessionId::from_raw(1)),
+        cx,
+    );
+    sidebar
+}
+
+fn title_first_header_fixture(
+    cx: &mut gpui::TestAppContext,
+    provider: grove_core::codex::Provider,
+) {
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        cx.set_global(SettingsState::new(header_layout_store()));
+        cx.set_global(crate::zoom::CurrentPtyDims::default());
+    });
+    let (sidebar, cx) =
+        cx.add_window_view(|window, cx| header_layout_sidebar(window, cx, provider));
+    let bounds = |cx: &mut gpui::VisualTestContext, name| cx.debug_bounds(name).unwrap();
+    cx.simulate_resize(gpui::size(gpui::px(650.), gpui::px(500.)));
+    draw(cx);
+    for segment in [
+        "session-header-project-1",
+        "session-header-project-separator-1",
+        "session-header-worktree-1",
+        "session-header-title-separator-1",
+    ] {
+        assert!(
+            cx.debug_bounds(segment).is_none(),
+            "No project must omit the {segment} breadcrumb"
+        );
+    }
+    let header = bounds(cx, "terminal-header-1");
+    let logo = bounds(cx, "session-header-provider-1");
+    assert_eq!(logo.left() - header.left(), gpui::px(SPACE_3XL));
+    let natural_title = bounds(cx, "session-header-title-1").size.width;
+    let full_status = bounds(cx, "session-header-status-1").size.width;
+
+    cx.simulate_resize(gpui::size(gpui::px(475.), gpui::px(500.)));
+    draw(cx);
+    draw(cx);
+    assert_eq!(
+        bounds(cx, "session-header-title-1").size.width,
+        natural_title
+    );
+
+    cx.simulate_resize(gpui::size(gpui::px(320.), gpui::px(500.)));
+    draw(cx);
+    draw(cx);
+    let title = bounds(cx, "session-header-title-1");
+    let status = bounds(cx, "session-header-status-1");
+    assert!(title.size.width > gpui::px(0.) && title.right() <= status.left());
+    assert!(bounds(cx, "session-header-status-1").size.width < full_status);
+    let edit = bounds(cx, "edit-session-title-1");
+    assert!(edit.right() <= bounds(cx, "terminal-header-1").right());
+
+    let project_id = crate::entities::session_registry::SessionId::from_raw(2);
+    cx.update(|_, cx| {
+        sidebar.update(cx, |sidebar, cx| {
+            sidebar.select(Selection::Session(project_id), cx)
+        });
+    });
+    cx.simulate_resize(gpui::size(gpui::px(1080.), gpui::px(500.)));
+    draw(cx);
+    let worktree_wide = bounds(cx, "session-header-worktree-2").size.width;
+    assert_eq!(
+        bounds(cx, "session-header-title-2").size.width,
+        natural_title
+    );
+    cx.simulate_resize(gpui::size(gpui::px(560.), gpui::px(500.)));
+    draw(cx);
+    draw(cx);
+    let worktree = bounds(cx, "session-header-worktree-2");
+    assert!(worktree.size.width < worktree_wide);
+    assert_eq!(
+        bounds(cx, "session-header-title-2").size.width,
+        natural_title
+    );
+    assert!(worktree.size.width >= gpui::px(ICON_SM));
+
+    cx.update(|window, cx| {
+        window.set_rem_size(gpui::px(20.));
+        sidebar.update(cx, |sidebar, cx| {
+            sidebar.mode = ViewMode::Grid;
+            cx.notify();
+        });
+    });
+    draw(cx);
+    draw(cx);
+    let header = bounds(cx, "terminal-header-2");
+    let status = bounds(cx, "session-header-status-2");
+    let edit = bounds(cx, "edit-session-title-2");
+    let close = bounds(cx, "canvas-close-2");
+    assert!(status.right() <= edit.left() && edit.right() <= close.left());
+    assert!(close.right() <= header.right());
 }
 
 #[gpui::test]

@@ -34,7 +34,7 @@ use grove_core::agent::Agent;
 
 const SESSION_HEADER_H: f32 = 36.;
 const SESSION_ICON_SLOT: f32 = 24.;
-const HEADER_PREFIX_FRACTION: f32 = 0.4;
+const HEADER_BREADCRUMB_MAX_W: f32 = 264.;
 // Keep identity/title and Close usable when both navigation columns are visible.
 const HEADER_STATUS_LABEL_MIN_W: f32 = 320.0;
 const EMPTY_CARD_W: f32 = 430.;

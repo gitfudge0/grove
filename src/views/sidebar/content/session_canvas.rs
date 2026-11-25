@@ -3,7 +3,7 @@
 use super::{
     agent_name, c, canvas_state, form_action, icon, motion, rpx, session_display_title,
     session_signature, sidebar_worktree_name, Action, ActivityState, CanvasState, Selection,
-    SettingsState, Sidebar, TerminalView, ViewMode, HEADER_PREFIX_FRACTION,
+    SettingsState, Sidebar, TerminalView, ViewMode, HEADER_BREADCRUMB_MAX_W,
     HEADER_STATUS_LABEL_MIN_W, SESSION_HEADER_H, SESSION_ICON_SLOT,
 };
 use crate::views::tokens::{
@@ -168,6 +168,8 @@ impl Sidebar {
         );
         let context = if home {
             format!("{workspace} / Standalone terminal / ~")
+        } else if meta.project.is_empty() {
+            format!("{workspace} / No project / {}", meta.wt_path)
         } else {
             format!("{workspace} / {} / {location}", meta.project)
         };
@@ -403,6 +405,21 @@ impl Sidebar {
             .child(status)
             .when_some(task_progress, gpui::ParentElement::child)
             .into_any_element();
+        let breadcrumbs = (home || !meta.project.is_empty()).then(|| {
+            self.session_breadcrumbs(
+                id,
+                if home {
+                    workspace
+                } else {
+                    meta.project.clone()
+                },
+                if home { "~".into() } else { location },
+                breadcrumb_project,
+                &meta.wt_path,
+                window,
+                cx,
+            )
+        });
         header = header
             .h(rpx(if grid { SESSION_HEADER_H } else { APPBAR_H }))
             .child(
@@ -426,61 +443,7 @@ impl Sidebar {
                             .gap(rpx(SPACE_MD))
                             .text_size(rpx(TEXT_BODY))
                             .text_color(c::FG_MUTE())
-                            .child(
-                                div()
-                                    .min_w_0()
-                                    .max_w(gpui::relative(HEADER_PREFIX_FRACTION))
-                                    .flex()
-                                    .items_center()
-                                    .gap(rpx(SPACE_MD))
-                                    .text_size(rpx(TEXT_SMALL))
-                                    .child(self.session_breadcrumb(
-                                        id,
-                                        false,
-                                        if home {
-                                            workspace.clone()
-                                        } else {
-                                            meta.project.clone()
-                                        },
-                                        breadcrumb_project.clone(),
-                                        meta.wt_path.clone(),
-                                        cx,
-                                    ))
-                                    .child(
-                                        div()
-                                            .debug_selector(move || {
-                                                format!(
-                                                    "session-header-project-separator-{}",
-                                                    id.raw()
-                                                )
-                                            })
-                                            .flex_shrink_0()
-                                            .child("/"),
-                                    )
-                                    .child(self.session_breadcrumb(
-                                        id,
-                                        true,
-                                        if home {
-                                            "~".to_owned()
-                                        } else {
-                                            location.clone()
-                                        },
-                                        breadcrumb_project,
-                                        meta.wt_path.clone(),
-                                        cx,
-                                    ))
-                                    .child(
-                                        div()
-                                            .debug_selector(move || {
-                                                format!(
-                                                    "session-header-title-separator-{}",
-                                                    id.raw()
-                                                )
-                                            })
-                                            .flex_shrink_0()
-                                            .child("/"),
-                                    ),
-                            )
+                            .when_some(breadcrumbs, gpui::ParentElement::child)
                             .child(agent_icon)
                             .child(self.session_header_title(
                                 id,
@@ -750,27 +713,100 @@ impl Sidebar {
             .into_any_element(),
         )
     }
+    #[allow(clippy::too_many_arguments)]
+    fn session_breadcrumbs(
+        &mut self,
+        id: crate::entities::session_registry::SessionId,
+        project_label: String,
+        location_label: String,
+        project: Option<(usize, String)>,
+        checkout: &str,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let rem = window.rem_size();
+        let font_size = rpx(TEXT_SMALL).to_pixels(rem);
+        let label_width = |label: &str| {
+            let mut run = window.text_style().to_run(label.len());
+            run.font.family = crate::fonts::UI_FAMILY.into();
+            crate::views::components::truncation_safe_label_width(
+                label,
+                font_size,
+                &run,
+                window.text_system(),
+            )
+        };
+        let separator_width = label_width("/");
+        let gap = rpx(SPACE_MD).to_pixels(rem);
+        let crumb_floor = rpx(ICON_SM).to_pixels(rem);
+        let glyph_and_gap = project
+            .as_ref()
+            .map_or(gpui::px(0.), |_| rpx(ICON_SM + SPACE_SM).to_pixels(rem));
+        let fixed = separator_width * 2. + gap * 3.;
+        let project_width = (label_width(&project_label) + glyph_and_gap).max(crumb_floor);
+        let location_width = (label_width(&location_label) + glyph_and_gap).max(crumb_floor);
+        let cap = rpx(HEADER_BREADCRUMB_MAX_W).to_pixels(rem);
+
+        // Start at the two glyph slots and take only the space the title and
+        // its controls leave. The worktree text also grows after the project.
+        div()
+            .flex_basis(gpui::px(0.))
+            .flex_grow_1()
+            .min_w(fixed + crumb_floor * 2.)
+            .max_w((fixed + project_width + location_width).min(cap))
+            .flex()
+            .items_center()
+            .gap(gap)
+            .font_family(crate::fonts::UI_FAMILY)
+            .text_size(rpx(TEXT_SMALL))
+            .child(
+                self.session_breadcrumb(id, false, project_label, project.clone(), checkout, cx)
+                    .max_w(project_width),
+            )
+            .child(
+                div()
+                    .debug_selector(move || {
+                        format!("session-header-project-separator-{}", id.raw())
+                    })
+                    .w(separator_width)
+                    .flex_shrink_0()
+                    .child("/"),
+            )
+            .child(
+                self.session_breadcrumb(id, true, location_label, project, checkout, cx)
+                    .flex_basis(gpui::px(0.))
+                    .flex_grow_1(),
+            )
+            .child(
+                div()
+                    .debug_selector(move || format!("session-header-title-separator-{}", id.raw()))
+                    .w(separator_width)
+                    .flex_shrink_0()
+                    .child("/"),
+            )
+            .into_any_element()
+    }
+
     fn session_breadcrumb(
         &mut self,
         id: crate::entities::session_registry::SessionId,
         worktree: bool,
         label: String,
         project: Option<(usize, String)>,
-        checkout: String,
+        checkout: &str,
         cx: &mut Context<Self>,
-    ) -> AnyElement {
+    ) -> gpui::Stateful<gpui::Div> {
         let selector = format!(
             "session-header-{}-{}",
             if worktree { "worktree" } else { "project" },
             id.raw()
         );
+        let crumb = div()
+            .id(gpui::SharedString::from(selector.clone()))
+            .debug_selector(move || selector.clone())
+            .min_w(rpx(ICON_SM));
         let Some((project_idx, project_path)) = project else {
-            return div()
-                .debug_selector(move || selector.clone())
-                .min_w_0()
-                .truncate()
-                .child(label)
-                .into_any_element();
+            return crumb.truncate().child(label);
         };
         let focus = self
             .canvas_breadcrumb_focus
@@ -778,17 +814,14 @@ impl Sidebar {
             .or_insert_with(|| cx.focus_handle())
             .clone();
         let click_path = project_path.clone();
+        let checkout = checkout.to_owned();
         let click_checkout = checkout.clone();
-        div()
-            .id(gpui::SharedString::from(selector.clone()))
-            .debug_selector(move || selector.clone())
+        crumb
             .track_focus(&focus)
             .role(gpui::Role::Button)
             .tab_index(0)
             .aria_label(label.clone())
             .cursor_pointer()
-            .min_w_0()
-            .truncate()
             .hover(|style| style.text_color(c::FG()))
             .focus_visible(|style| style.bg(c::BG_HOVER()))
             .on_mouse_down(gpui::MouseButton::Left, move |_, window, cx| {
@@ -824,7 +857,7 @@ impl Sidebar {
             .items_center()
             .gap(rpx(SPACE_SM))
             .when(worktree, |link| {
-                link.child(crate::icons::icon("git-branch", ICON_SM, c::FG_DIM()))
+                link.child(crate::icons::icon("git-branch", ICON_SM, c::FG_DIM()).flex_shrink_0())
             })
             .when(!worktree, |link| {
                 let store = &cx.global::<SettingsState>().store;
@@ -836,8 +869,7 @@ impl Sidebar {
                     ))
                 })
             })
-            .child(label)
-            .into_any_element()
+            .child(div().min_w_0().truncate().child(label))
     }
     fn canvas_close_button(
         &mut self,
